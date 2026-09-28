@@ -1,0 +1,7 @@
+telethon
+toml
+rich
+gitpython
+phonenumbers
+pyarrow
+python-socks[asyncio]

@@ -1,0 +1,1 @@
+from .telethon import TelethonFunction

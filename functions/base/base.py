@@ -1,0 +1,101 @@
+import asyncio
+import random
+from rich.prompt import Prompt
+from telethon import types
+from telethon.errors import (
+    FloodWaitError as RateLimitError,
+    PeerFloodError as PeerLimitError,
+    UserDeactivatedBanError as AccountDeactivatedError,
+    UserRestrictedError as AccountRestrictedError,
+)
+
+
+class AccountLimited(Exception):
+    """The account can no longer perform the action (rate limit / restriction / too long wait)."""
+
+
+_END = object()  # sentinel for "no more items" (so a real None item isn't mistaken for the end)
+
+
+class BaseFunction:
+    rate_wait_limit = 300  # seconds; a longer wait means the account is exhausted
+    max_rate_retries = 5   # consecutive rate-limit waits on one call before giving up
+
+    def parse_delay(self, string: str):
+        return list(
+            map(int, string.split("-"))
+        )
+
+    @staticmethod
+    def parse_message_link(link):
+        """Parse a t.me message link into (peer, message_id).
+
+        Public: t.me/<name>/<id> -> ("<name>", id).
+        Private: t.me/c/<channel_id>/<id> -> (PeerChannel(channel_id), id).
+        """
+        parts = link.rstrip("/").split("/")
+        message_id = int(parts[-1])
+
+        if len(parts) >= 3 and parts[-3] == "c":
+            return types.PeerChannel(int(parts[-2])), message_id
+
+        return parts[-2], message_id
+
+    async def safe_call(self, make_awaitable):
+        """Run make_awaitable() (a no-arg callable returning a coroutine), waiting out
+        short rate-limit waits and flagging inactive accounts via AccountLimited."""
+        retries = 0
+
+        while True:
+            try:
+                return await make_awaitable()
+            except RateLimitError as err:
+                if err.seconds <= self.rate_wait_limit and retries < self.max_rate_retries:
+                    retries += 1
+                    await asyncio.sleep(err.seconds + 1)
+                    continue
+
+                raise AccountLimited(f"rate limit {err.seconds}s")
+            except (PeerLimitError, AccountDeactivatedError, AccountRestrictedError) as err:
+                raise AccountLimited(str(err))
+
+    async def run_with_rotation(self, items, action):
+        """Process items with one account, rotating to the next when it gets limited.
+
+        `action(session, item)` does the per-item work (via `safe_call`); on
+        `AccountLimited` the same item is retried on the next account.
+        """
+        items = iter(items)
+        item = next(items, _END)
+
+        for session in self.sessions:
+            if item is _END:
+                break
+
+            async with self.storage.ainitialize_session(session):
+                while item is not _END:
+                    try:
+                        await action(session, item)
+                    except AccountLimited:
+                        break
+
+                    item = next(items, _END)
+                    await self.delay()
+
+    def ask_accounts_count(self):
+        self.sessions = self.storage.sessions  # reset to full list (instance is reused across runs)
+
+        accounts_count = int(Prompt.ask(
+            "[bold magenta]how many accounts to use? [/]",
+            default=str(len(self.sessions))
+        ))
+
+        self.sessions = self.sessions[:accounts_count]
+
+    async def delay(self):
+        if len(self.settings.delay) == 1:
+            await asyncio.sleep(self.settings.delay[0])
+        else:
+            await asyncio.sleep(
+                random.randint(*self.settings.delay)
+            )
