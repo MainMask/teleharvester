@@ -1,5 +1,6 @@
 import asyncio
 import random
+from rich.markup import escape
 from rich.prompt import Prompt
 from telethon import types
 from telethon.errors import (
@@ -20,6 +21,11 @@ _END = object()  # sentinel for "no more items" (so a real None item isn't mista
 class BaseFunction:
     rate_wait_limit = 300  # seconds; a longer wait means the account is exhausted
     max_rate_retries = 5   # consecutive rate-limit waits on one call before giving up
+
+    @staticmethod
+    def safe(value) -> str:
+        """Escape a value for safe use inside Rich markup (None -> '')."""
+        return escape("" if value is None else str(value))
 
     def parse_delay(self, string: str):
         return list(

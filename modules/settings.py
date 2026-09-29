@@ -23,6 +23,10 @@ class Settings:
         self.trigger: str = config["broadcast"]["trigger"]
         self.delay: List[int] = config["broadcast"]["delay"]
 
+        limits = config.get("limits", {})
+        self.per_account_daily: int = limits.get("per_account_daily", 30)
+        self.account_pause: List[int] = limits.get("account_pause", [30, 60])
+
     def save(
         self,
         api_id: int,
@@ -42,6 +46,10 @@ class Settings:
                 delay=delay,
                 messages_count=messages_count,
                 trigger=trigger
+            ),
+            limits=dict(
+                per_account_daily=30,
+                account_pause=[30, 60]
             )
         )
 

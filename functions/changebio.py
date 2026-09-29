@@ -18,9 +18,9 @@ class ChangeBioFunc(TelethonFunction):
                     UpdateProfileRequest(about=bio)
                 )
             except Exception as err:
-                console.print(f"[{me.first_name}] [bold red]not changed:[/] {err}")
+                console.print(f"[{self.safe(me.first_name)}] [bold red]not changed:[/] {self.safe(err)}")
             else:
-                console.print(f"[{me.first_name}] [bold green]bio changed[/]")
+                console.print(f"[{self.safe(me.first_name)}] [bold green]bio changed[/]")
 
     async def execute(self):
         bio = console.input("[bold red]bio> [/]")

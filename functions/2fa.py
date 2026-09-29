@@ -1,7 +1,6 @@
 import asyncio
 
 from rich.console import Console
-from rich.markup import escape
 
 from telethon import TelegramClient
 from functions.base import TelethonFunction
@@ -20,12 +19,12 @@ class SetPasswordFunc(TelethonFunction):
             except Exception as err:
                 console.print(
                     "[{name}] : [bold red]Password not changed[/]. Error: {error}"
-                    .format(name=escape(me.first_name), error=err)
+                    .format(name=self.safe(me.first_name), error=self.safe(err))
                 )
             else:
                 console.print(
                     "[{name}] : [bold green]Successfully updated password"
-                    .format(name=escape(me.first_name))
+                    .format(name=self.safe(me.first_name))
                 )
 
     async def execute(self):

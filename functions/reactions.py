@@ -27,9 +27,9 @@ class ReactionsFunc(TelethonFunction):
                     reaction=[types.ReactionEmoji(emoticon=reaction)]
                 ))
             except Exception as err:
-                console.print(f"[bold red][ERROR][/] [bold yellow][{me.first_name}][/] : {err}")
+                console.print(f"[bold red][ERROR][/] [bold yellow][{self.safe(me.first_name)}][/] : {self.safe(err)}")
             else:
-                console.print(f"[bold green][SUCCESS] [{me.first_name}][/] : Reaction \"{reaction}\" was sent")
+                console.print(f"[bold green][SUCCESS] [{self.safe(me.first_name)}][/] : Reaction \"{reaction}\" was sent")
 
     async def execute(self):
         link_to_message = console.input("[bold red]link to msg/post> [/]")

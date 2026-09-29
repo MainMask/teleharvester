@@ -7,7 +7,6 @@ import unittest
 
 from functions.base.base import BaseFunction
 from functions.inviting import InvitingFunc
-from functions.pmmailing import PmMailingFunc
 from functions.changename import ChangeNameFunc
 from modules.types.proxy import Proxy
 from modules.types.account_settings import AccountSettings
@@ -39,12 +38,6 @@ class ParseMessageLinkTest(unittest.TestCase):
 class ChunkifyTest(unittest.TestCase):
     def test_split(self):
         self.assertEqual(InvitingFunc.chunkify([1, 2, 3, 4, 5], 2), [[1, 3, 5], [2, 4]])
-
-    def test_same_as_pmmailing(self):
-        self.assertEqual(
-            InvitingFunc.chunkify([1, 2, 3], 2),
-            PmMailingFunc.chunkify([1, 2, 3], 2),
-        )
 
 
 class InviteLinkTest(unittest.TestCase):

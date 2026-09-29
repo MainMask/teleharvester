@@ -89,26 +89,26 @@ class InvitingFunc(TelethonFunction):
                             users=[user]
                         )))
                     except AccountLimited as err:
-                        console.print(f"[{me.first_name}] [bold red]limit, stopping.[/] {err}")
+                        console.print(f"[{self.safe(me.first_name)}] [bold red]limit, stopping.[/] {self.safe(err)}")
                         break
                     except ChatAdminRequiredError:
-                        console.print(f"[{me.first_name}] [bold red]no invite rights in destination[/]")
+                        console.print(f"[{self.safe(me.first_name)}] [bold red]no invite rights in destination[/]")
                         break
                     except (UserPrivacyRestrictedError, UserNotMutualContactError,
                             UserChannelsTooMuchError, UserBotError):
                         continue
                     except Exception as err:
-                        console.print(f"[{me.first_name}] [bold red]skip[/] {user.id}: {err}")
+                        console.print(f"[{self.safe(me.first_name)}] [bold red]skip[/] {user.id}: {self.safe(err)}")
                         continue
                     else:
                         added += 1
                         console.print(
-                            f"[{me.first_name}] [bold green]invited[/] {user.id} total: [yellow]{added}[/]"
+                            f"[{self.safe(me.first_name)}] [bold green]invited[/] {user.id} total: [yellow]{added}[/]"
                         )
 
                     await self.delay()
             except Exception as err:
-                console.print(f"[{me.first_name}] [bold red]can't read participants:[/] {err}")
+                console.print(f"[{self.safe(me.first_name)}] [bold red]can't read participants:[/] {self.safe(err)}")
 
     async def execute(self):
         self.ask_accounts_count()

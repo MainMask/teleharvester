@@ -25,12 +25,12 @@ class ChangeProfilePhotoFunc(TelethonFunction):
             except Exception as err:
                 console.print(
                     "[{name}] [bold red]Error[/] : {err}"
-                    .format(name=me.first_name, err=err)
+                    .format(name=self.safe(me.first_name), err=self.safe(err))
                 )
             else:
                 console.print(
                     "[{name}] Photo uploaded [bold green]successfully[/] ({photo_path})"
-                    .format(name=me.first_name, photo_path=photo_path)
+                    .format(name=self.safe(me.first_name), photo_path=photo_path)
                 )
 
 

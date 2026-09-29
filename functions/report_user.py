@@ -63,5 +63,5 @@ class ReportUserFunc(TelethonFunction):
                 except Exception as err:
                     console.print(
                         "[{name}] [bold red]error.[/] {error}"
-                        .format(name=me.first_name, error=err)
+                        .format(name=self.safe(me.first_name), error=self.safe(err))
                     )

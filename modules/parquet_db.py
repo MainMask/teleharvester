@@ -10,6 +10,12 @@ def load(path):
     `phone` and `username` are used when present.
     """
     table = pq.read_table(path)
+
+    def normalize(name):
+        name = name.strip().lower().replace(" ", "_")
+        return "user_id" if name == "id" else name
+
+    table = table.rename_columns([normalize(c) for c in table.column_names])
     columns = set(table.column_names)
 
     missing = REQUIRED_COLUMNS - columns

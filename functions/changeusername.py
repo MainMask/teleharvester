@@ -34,15 +34,15 @@ class ChangeUsernameFunc(TelethonFunction):
                 username = await self.generate_username(session, base)
 
                 if not username:
-                    console.print(f"[{me.first_name}] [bold red]couldn't find a free username[/]")
+                    console.print(f"[{self.safe(me.first_name)}] [bold red]couldn't find a free username[/]")
                     return
 
             try:
                 await session(UpdateUsernameRequest(username))
             except Exception as err:
-                console.print(f"[{me.first_name}] [bold red]not changed:[/] {err}")
+                console.print(f"[{self.safe(me.first_name)}] [bold red]not changed:[/] {self.safe(err)}")
             else:
-                console.print(f"[{me.first_name}] [bold green]username set:[/] @{username}")
+                console.print(f"[{self.safe(me.first_name)}] [bold green]username set:[/] @{username}")
 
     async def execute(self):
         self.ask_accounts_count()

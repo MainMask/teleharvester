@@ -60,7 +60,13 @@ On the first run the app creates `config.toml` and asks for:
 - **Broadcast messages**, **delay** (e.g. `1-3`) and a **trigger** phrase used by the
   trigger-based broadcast functions.
 
-`config.toml` holds your credentials and is git-ignored.
+The optional `[limits]` section throttles the **Mailing to PM** function: `per_account_daily`
+caps how many messages each account sends per day (rotating to the next account when reached),
+and `account_pause` (`[min, max]` seconds) is the pause taken when switching accounts. If the
+section is missing, defaults (`30` and `[30, 60]`) apply.
+
+See [`config.toml.example`](config.toml.example) for the full structure. `config.toml` holds
+your credentials and is git-ignored.
 
 ## Adding accounts
 

@@ -36,7 +36,7 @@ class ChangeNameFunc(TelethonFunction):
         async with self.storage.ainitialize_session(session):
             me = await session.get_me()
             
-            full_name = me.first_name + (" " + me.last_name if me.last_name else "")
+            full_name = (me.first_name or "") + (" " + me.last_name if me.last_name else "")
 
             try:
                 await session(
@@ -46,9 +46,9 @@ class ChangeNameFunc(TelethonFunction):
                     )
                 )
             except Exception as error:
-                console.print(f"[bold red][!][/] {error}")
+                console.print(f"[bold red][!][/] {self.safe(error)}")
             else:
-                console.print(f"Name changed [bold green]successfully.[/] ( {full_name} → {first_name} {last_name or ''} )")
+                console.print(f"Name changed [bold green]successfully.[/] ( {self.safe(full_name)} → {self.safe(first_name)} {self.safe(last_name)} )")
 
     async def execute(self):
         self.ask_accounts_count()

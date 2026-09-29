@@ -1,0 +1,13 @@
+[sessions]
+api_id = 0
+api_hash = ""
+
+[broadcast]
+messages = []
+delay = [2, 5]
+messages_count = 0
+trigger = ""
+
+[limits]
+per_account_daily = 30
+account_pause = [30, 60]

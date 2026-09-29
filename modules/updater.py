@@ -25,15 +25,24 @@ def check_update() -> dict:
     try:
         repo = git.Repo(os.getcwd())
     except git.exc.GitError:
-        repo = Repo.init(os.getcwd())
-        origin = repo.create_remote("origin", "https://github.com/MainMask/teleharvester")
-        origin.fetch()
-        repo.create_head("master", origin.refs.master)
-        repo.heads.master.set_tracking_branch(origin.refs.master)
-        repo.heads.master.checkout(True)
+        try:
+            repo = Repo.init(os.getcwd())
+            origin = repo.create_remote("origin", "https://github.com/MainMask/teleharvester")
+            origin.fetch()
+            repo.create_head("master", origin.refs.master)
+            repo.heads.master.set_tracking_branch(origin.refs.master)
+            repo.heads.master.checkout(True)
+        except Exception as err:
+            print(f"Warning: could not initialize repo for updates: {err}")
+            return {"has_update": False}
 
     try:
-        upcoming_commit = git.Remote(repo, "origin").fetch()[0].commit
+        fetch_infos = git.Remote(repo, "origin").fetch()
+
+        if not fetch_infos:
+            return {"has_update": False}
+
+        upcoming_commit = fetch_infos[0].commit
     except GitCommandError as err:
         if "detected dubious ownership" in (err.stderr or ""):
             subprocess.run(
@@ -41,10 +50,13 @@ def check_update() -> dict:
                 check=True,
             )
             return check_update()
-    
+
         else:
             print(f"Warning: could not check for updates: {err}")
             return {"has_update": False}
+    except Exception as err:
+        print(f"Warning: could not check for updates: {err}")
+        return {"has_update": False}
 
     current_commit = get_current_commit()
 

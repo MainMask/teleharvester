@@ -119,13 +119,13 @@ class Broadcast(TelethonFunction):
             except AccountLimited as err:
                 console.print(
                     "[{name}] [bold red]limit, stopping.[/] {err}"
-                    .format(name=me.first_name, err=err)
+                    .format(name=self.safe(me.first_name), err=self.safe(err))
                 )
                 break
             except Exception as err:
                 console.print(
                     "[{name}] [bold red]not sent.[/] [bold white]{err}[/]"
-                    .format(name=me.first_name, err=err)
+                    .format(name=self.safe(me.first_name), err=self.safe(err))
                 )
 
                 errors += 1
@@ -142,7 +142,7 @@ class Broadcast(TelethonFunction):
                 count += 1
                 console.print(
                     "[{name}] [bold green]sent.[/] COUNT: [yellow]{count}[/]"
-                    .format(name=me.first_name, count=count)
+                    .format(name=self.safe(me.first_name), count=count)
                 )
             finally:
                 await self.delay()

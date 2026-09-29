@@ -131,6 +131,8 @@ config.toml
 .pyre/
 *.jsession
 stats/
+assets/targets.txt
+assets/databases/
 
 # OS files
 .DS_Store
