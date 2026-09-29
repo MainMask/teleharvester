@@ -10,7 +10,7 @@ from modules.storages.sessions_storage import SessionsStorage
 
 console = Console()
 
-if "UTF-8" not in locale.getlocale():
+if "utf-8" not in (locale.getlocale()[1] or "").lower():
     console.print("[bold yellow]WARNING:[/] You don't have UTF-8 encoding. teleharvester may not work")
 
 with console.status("Checking updates..."):

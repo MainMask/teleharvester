@@ -26,7 +26,7 @@ class SessionsStorage:
                 session_path = os.path.join(directory, file)
 
                 with open(session_path) as fileobj:
-                    auth_key = fileobj.read()
+                    auth_key = fileobj.read().strip()
 
                 if len(auth_key) != 353:
                     continue
@@ -160,10 +160,11 @@ class SessionsStorage:
         if not self.initialize:
             await session.connect()
 
-        yield
-
-        if not self.initialize:
-            await session.disconnect()
+        try:
+            yield
+        finally:
+            if not self.initialize:
+                await session.disconnect()
 
     def __len__(self):
         return len(self.sessions)

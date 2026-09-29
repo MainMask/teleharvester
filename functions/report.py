@@ -39,7 +39,12 @@ class ReportFunc(TelethonFunction):
                 for i, opt in enumerate(result.options):
                     console.print(f"[bold white][{i + 1}] {opt.text}[/]")
 
-                choice = int(console.input("[bold white]>> ")) - 1
+                choice = console.input("[bold white]>> ")
+
+                while not (choice.isdigit() and 1 <= int(choice) <= len(result.options)):
+                    choice = console.input("[bold white]>> ")
+
+                choice = int(choice) - 1
                 selections.append(choice)
                 option = result.options[choice].option
                 continue

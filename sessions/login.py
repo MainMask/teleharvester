@@ -39,7 +39,7 @@ with client:
 
 @client.on(events.NewMessage)
 async def handler(msg):
-    if msg.from_id.user_id == 777000:
+    if getattr(msg.from_id, "user_id", None) == 777000:
         print(msg.text)
 
 client.start()

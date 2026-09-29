@@ -42,7 +42,7 @@ def check_update() -> dict:
         if not fetch_infos:
             return {"has_update": False}
 
-        upcoming_commit = fetch_infos[0].commit
+        upcoming_commit = repo.remotes.origin.refs.master.commit
     except GitCommandError as err:
         if "detected dubious ownership" in (err.stderr or ""):
             subprocess.run(

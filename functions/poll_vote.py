@@ -30,7 +30,12 @@ class PollVoteFunc(TelethonFunction):
         self.ask_accounts_count()
 
         post_link = console.input("[bold red]enter link to msg/post> ")
-        option_number = int(console.input("[bold red]enter answer number (e.g 1, 2)> ")) - 1
+        option_number = console.input("[bold red]enter answer number (e.g 1, 2)> ")
+
+        while not (option_number.isdigit() and int(option_number) >= 1):
+            option_number = console.input("[bold red]enter answer number (e.g 1, 2)> ")
+
+        option_number = int(option_number) - 1
 
         channel, post_id = self.parse_message_link(post_link)
 

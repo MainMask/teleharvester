@@ -40,8 +40,12 @@ class ReportUserFunc(TelethonFunction):
 
         print()
 
-        choice = int(console.input("[bold white]>> [/]"))
-        reason_type = self.reasons[choice - 1][1]
+        choice = console.input("[bold white]>> [/]")
+
+        while not (choice.isdigit() and 1 <= int(choice) <= len(self.reasons)):
+            choice = console.input("[bold white]>> [/]")
+
+        reason_type = self.reasons[int(choice) - 1][1]
 
         comment = console.input("[bold red]comment> [/]")
 
