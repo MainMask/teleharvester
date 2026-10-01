@@ -6,6 +6,7 @@ from telethon import TelegramClient
 from telethon.tl.functions.account import UpdateProfileRequest
 from rich.console import Console
 from functions.base import TelethonFunction
+from functions.base.base import console_report
 
 console = Console()
 
@@ -25,7 +26,7 @@ class ChangeNameFunc(TelethonFunction):
     async def change_name(
         self,
         session: TelegramClient,
-        account_index: int,
+        report,
         names: Optional[List[str]] = None,
         first_name: Optional[str] = None,
         last_name: Optional[str] = None
@@ -35,7 +36,7 @@ class ChangeNameFunc(TelethonFunction):
 
         async with self.storage.ainitialize_session(session):
             me = await session.get_me()
-            
+
             full_name = (me.first_name or "") + (" " + me.last_name if me.last_name else "")
 
             try:
@@ -46,9 +47,18 @@ class ChangeNameFunc(TelethonFunction):
                     )
                 )
             except Exception as error:
-                console.print(f"[bold red][!][/] {self.safe(error)}")
+                await report(f"[!] {error}")
             else:
-                console.print(f"Name changed [bold green]successfully.[/] ( {self.safe(full_name)} → {self.safe(first_name)} {self.safe(last_name)} )")
+                await report(f"Name changed successfully. ( {full_name} → {first_name} {last_name} )")
+
+    async def run(self, report, names=None, first_name=None, last_name=None):
+        await asyncio.gather(*[
+            self.change_name(
+                session, report,
+                names=names, first_name=first_name, last_name=last_name
+            )
+            for session in self.sessions
+        ])
 
     async def execute(self):
         self.ask_accounts_count()
@@ -67,10 +77,7 @@ class ChangeNameFunc(TelethonFunction):
                 console.print("[bold red]Names list is empty!")
                 return
 
-            await asyncio.gather(*[
-                self.change_name(session=session, account_index=index, names=names)
-                for index, session in enumerate(self.sessions)
-            ])
+            await self.run(console_report, names=names)
 
         else:
             name = console.input("[bold red]name> [/]").split(maxsplit=1)
@@ -83,13 +90,5 @@ class ChangeNameFunc(TelethonFunction):
             first_name = name[0]
             last_name = name[1] if len(name) == 2 else None
 
-            await asyncio.gather(*[
-                self.change_name(
-                    session=session,
-                    account_index=index,
-                    first_name=first_name,
-                    last_name=last_name
-                )
-                for index, session in enumerate(self.sessions)
-            ])
+            await self.run(console_report, first_name=first_name, last_name=last_name)
 

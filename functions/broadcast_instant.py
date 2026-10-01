@@ -1,5 +1,6 @@
 import asyncio
 from functions.base import TelethonFunction
+from functions.base.base import console_report
 from functions.broadcast import Broadcast
 from rich.console import Console
 
@@ -8,6 +9,20 @@ console = Console()
 
 class InstantBroadcastFunc(TelethonFunction):
     """Instant broadcast (no trigger)"""
+
+    async def _one(self, broadcast, session, link, report):
+        async with self.storage.ainitialize_session(session):
+            await broadcast.broadcast(session, link, broadcast.function, report)
+
+    async def run(self, choice, mention_all, mention_mode, sticker_set, link, report):
+        broadcast = Broadcast(self.storage, self.settings)
+        broadcast.configure(choice, mention_all, mention_mode, sticker_set, self.settings.delay)
+        broadcast.sessions = list(self.sessions)
+
+        await asyncio.gather(*[
+            self._one(broadcast, session, link, report)
+            for session in self.sessions
+        ])
 
     async def execute(self):
         link = console.input("[bold red]link> [/]")
@@ -19,7 +34,7 @@ class InstantBroadcastFunc(TelethonFunction):
                 await session.connect()
 
         await asyncio.gather(*[
-            broadcast.broadcast(session, link, broadcast.function)
+            broadcast.broadcast(session, link, broadcast.function, console_report)
             for session in broadcast.sessions
         ])
 

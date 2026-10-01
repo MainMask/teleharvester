@@ -6,7 +6,7 @@ from rich.prompt import Prompt, Confirm
 from rich.console import Console
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited
+from functions.base.base import AccountLimited, console_report
 
 console = Console()
 
@@ -14,7 +14,7 @@ console = Console()
 class PmBroadcastFunc(TelethonFunction):
     """Broadcast to PM"""
 
-    async def broadcast(self, session, peer, text, media, by_phone_number):
+    async def broadcast(self, session, peer, text, media, by_phone_number, report):
         count = 0
         errors = 0
 
@@ -35,10 +35,7 @@ class PmBroadcastFunc(TelethonFunction):
                 ))
 
                 if not result.users:
-                    console.print(
-                        "[{name}] [bold red]couldn't resolve phone[/] {phone}"
-                        .format(name=self.safe(me.first_name), phone=self.safe(peer))
-                    )
+                    await report(f"[{me.first_name}] couldn't resolve phone {peer}")
                     return
 
                 peer = result.users[0]
@@ -58,16 +55,10 @@ class PmBroadcastFunc(TelethonFunction):
                             parse_mode="html"
                         ))
                 except AccountLimited as err:
-                    console.print(
-                        "[{name}] [bold red]limit, stopping.[/] {err}"
-                        .format(name=self.safe(me.first_name), err=self.safe(err))
-                    )
+                    await report(f"[{me.first_name}] limit, stopping. {err}")
                     break
                 except Exception as err:
-                    console.print(
-                        "[{name}] [bold red]not sent.[/] {err}"
-                        .format(name=self.safe(me.first_name), err=self.safe(err))
-                    )
+                    await report(f"[{me.first_name}] not sent. {err}")
 
                     if errors >= 5:
                         break
@@ -75,12 +66,17 @@ class PmBroadcastFunc(TelethonFunction):
                     errors += 1
                 else:
                     count += 1
-                    console.print(
-                        "[{name}] [bold green]sent.[/] COUNT: [yellow]{count}[/]"
-                        .format(name=self.safe(me.first_name), count=count)
-                    )
+                    await report(f"[{me.first_name}] sent. COUNT: {count}")
                 finally:
                     await self.delay()
+
+    async def run(self, peer, text, media, by_phone_number, delay, report):
+        self.delay_range = delay
+
+        await asyncio.gather(*[
+            self.broadcast(session, peer, text, media, by_phone_number, report)
+            for session in self.sessions
+        ])
 
     async def execute(self):
         self.ask_accounts_count()
@@ -109,9 +105,6 @@ class PmBroadcastFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        self.delay_range = self.parse_delay(delay)
-
-        await asyncio.gather(*[
-            self.broadcast(session, peer, text, media, by_phone_number=by_phone_number)
-            for session in self.sessions
-        ])
+        await self.run(
+            peer, text, media, by_phone_number, self.parse_delay(delay), console_report
+        )

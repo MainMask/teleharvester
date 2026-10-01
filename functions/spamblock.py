@@ -5,21 +5,19 @@ import re
 from typing import Dict, List
 
 from rich.prompt import Confirm
-from rich.console import Console
 
 from telethon.errors import YouBlockedUserError
 from telethon.sync import TelegramClient
 from telethon.tl.functions.contacts import UnblockRequest
 
 from functions.base import TelethonFunction
-
-console = Console()
+from functions.base.base import console_report
 
 
 class SpamBlockFunc(TelethonFunction):
     """Check accounts status"""
 
-    async def check(self, session: TelegramClient):
+    async def check(self, session: TelegramClient, report):
         async with self.storage.ainitialize_session(session):
             try:
                 async with session.conversation("SpamBot") as conv:
@@ -27,36 +25,35 @@ class SpamBlockFunc(TelethonFunction):
                     response = await conv.get_response()
             except YouBlockedUserError:
                 await session(UnblockRequest("spambot"))
-                return await self.check(session)
+                return await self.check(session, report)
 
             except Exception as err:
-                console.print(f"[bold red][!] {err}[/]")
+                await report(f"[!] {err}")
                 return
 
             text = response.message
             lines = text.split("\n")
-            
+
             if len(lines) == 1:
-                console.print("[bold green][+] Account active (no restriction)[/]")
+                await report("[+] Account active (no restriction)")
 
             else:
                 result = re.findall(r"\d+\s\w+\s\d{4}", text)
 
                 if not result:
-                    console.print(f"[bold red][-] Account permanently restricted[/]")
+                    await report("[-] Account permanently restricted")
                     return "permanent", session
                 else:
                     date = result[0]
-                    console.print(f"[bold red][-] Account restricted until: {date}[/]")
-                    return result[0], session 
+                    await report(f"[-] Account restricted until: {date}")
+                    return result[0], session
 
-    async def execute(self):
-        self.ask_accounts_count()
-
+    async def scan(self, report) -> Dict[str, List[TelegramClient]]:
+        """Check every worker against @SpamBot; return {restriction_date: [sessions]}."""
         blocks: Dict[str, List[TelegramClient]] = {}
 
         results = await asyncio.gather(*[
-            self.check(session)
+            self.check(session, report)
             for session in self.sessions
         ])
 
@@ -65,30 +62,43 @@ class SpamBlockFunc(TelethonFunction):
                 continue
 
             date, session = result
+            blocks.setdefault(date, []).append(session)
 
-            if not blocks.get(date):
-                blocks[date] = []
+        return blocks
 
-            blocks[date].append(session)
+    def move_restricted(self, blocks: Dict[str, List[TelegramClient]]):
+        """Move restricted sessions into sessions/restricted/<date>/ (local filesystem op)."""
+        if not os.path.exists("sessions/restricted"):
+            os.mkdir("sessions/restricted")
 
-        move_sessions = Confirm.ask("[bold magenta]Move restricted sessions to other folders?[/]")
+        for date, sessions in blocks.items():
+            for session in sessions:
+                path = os.path.join("sessions", "restricted", date)
 
-        if move_sessions:
-            if not os.path.exists("sessions/restricted"):
-                os.mkdir("sessions/restricted")
+                if not os.path.exists(path):
+                    os.mkdir(path)
 
-            for date, sessions in blocks.items():
-                for session in sessions:
-                    path = os.path.join("sessions", "restricted", date)
+                session_path = self.storage.get_session_path(session)
+                session_name = os.path.basename(session_path)
 
-                    if not os.path.exists(path):
-                        os.mkdir(path)
+                os.rename(
+                    session_path,
+                    os.path.join(path, session_name)
+                )
 
-                    session_path = self.storage.get_session_path(session)
-                    session_name = os.path.basename(session_path)
+    async def run(self, report, move_restricted: bool = False) -> Dict[str, List[TelegramClient]]:
+        blocks = await self.scan(report)
 
-                    os.rename(
-                        session_path,
-                        os.path.join(path, session_name)
-                    )
+        if move_restricted:
+            self.move_restricted(blocks)
+
+        return blocks
+
+    async def execute(self):
+        self.ask_accounts_count()
+
+        blocks = await self.scan(console_report)
+
+        if Confirm.ask("[bold magenta]Move restricted sessions to other folders?[/]"):
+            self.move_restricted(blocks)
 

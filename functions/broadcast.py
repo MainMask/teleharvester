@@ -70,7 +70,19 @@ class Broadcast(TelethonFunction):
             parse_mode="html"
         )
 
-    async def broadcast(self, session, peer, function):
+    def configure(self, choice, mention_all=False, mention_mode=None, sticker_set=None, delay=None):
+        """Set campaign parameters without prompting (used by the bot)."""
+        self.choice = choice
+        self.function = self.modes[choice][1]
+        self.mention_all = mention_all
+        self.mention_mode = mention_mode
+
+        if sticker_set:
+            self.sticker_set = sticker_set.replace("https://t.me/addstickers/", "")
+
+        self.delay_range = delay or self.settings.delay
+
+    async def broadcast(self, session, peer, function, report):
         users = []
         admins = []
 
@@ -82,7 +94,7 @@ class Broadcast(TelethonFunction):
         try:
             me = await session.get_me()
         except Exception as err:
-            console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+            await report(f"get_me failed: {err}")
             return
 
         if self.mention_all:
@@ -122,16 +134,10 @@ class Broadcast(TelethonFunction):
             try:
                 await self.safe_call(lambda: function(session, peer, text))
             except AccountLimited as err:
-                console.print(
-                    "[{name}] [bold red]limit, stopping.[/] {err}"
-                    .format(name=self.safe(me.first_name), err=self.safe(err))
-                )
+                await report(f"[{me.first_name}] limit, stopping. {err}")
                 break
             except Exception as err:
-                console.print(
-                    "[{name}] [bold red]not sent.[/] [bold white]{err}[/]"
-                    .format(name=self.safe(me.first_name), err=self.safe(err))
-                )
+                await report(f"[{me.first_name}] not sent. {err}")
 
                 errors += 1
 
@@ -139,21 +145,17 @@ class Broadcast(TelethonFunction):
                     try:
                         await session.delete_dialog(peer)
                     except Exception as err:
-                        console.print(f"[bold red]ERROR[/] while leaving from chat: {err}")
+                        await report(f"ERROR while leaving from chat: {err}")
 
                     break
 
             else:
                 count += 1
-                console.print(
-                    "[{name}] [bold green]sent.[/] COUNT: [yellow]{count}[/]"
-                    .format(name=self.safe(me.first_name), count=count)
-                )
+                await report(f"[{me.first_name}] sent. COUNT: {count}")
             finally:
                 await self.delay()
 
-    async def handle(self, session, function):
-        @session.on(events.NewMessage)
+    async def handle(self, session, function, report):
         async def handler(message: types.Message):
             if message.raw_text == self.settings.trigger:
                 if message.reply_to:
@@ -163,12 +165,18 @@ class Broadcast(TelethonFunction):
                     session,
                     message.chat_id,
                     function,
+                    report,
                 )
 
-        if not self.storage.initialize:
-            await session.connect()
+        session.add_event_handler(handler, events.NewMessage)
 
-        await session.run_until_disconnected()
+        try:
+            if not self.storage.initialize:
+                await session.connect()
+
+            await session.run_until_disconnected()
+        finally:
+            session.remove_event_handler(handler, events.NewMessage)
 
     def ask(self):
         for index, mode in enumerate(self.modes):
@@ -211,29 +219,27 @@ class Broadcast(TelethonFunction):
         
         return self.choice
     
-    async def start_single_campaign(self, sessions, link):
+    async def start_single_campaign(self, sessions, link, report):
         for session in sessions:
             async with self.storage.ainitialize_session(session):
                 await self.broadcast(
                     session,
                     link,
                     self.function,
+                    report,
                 )
 
-    async def start_campaign(self):
+    async def start_campaign(self, report):
         if self.choice == 1:
             link = Prompt.ask("[bold red]link to chat[/]")
 
-            await self.start_single_campaign(self.sessions, link)
+            await self.start_single_campaign(self.sessions, link, report)
             return
 
-        console.print(
-            "[bold white][*] Send \"[green]{trigger}[/]\" to chat[/]"
-            .format(trigger=self.settings.trigger)
-        )
+        await report('[*] Send "{trigger}" to chat'.format(trigger=self.settings.trigger))
 
         await asyncio.gather(*[
-            self.handle(session, self.function)
+            self.handle(session, self.function, report)
             for session in self.sessions
         ])
 

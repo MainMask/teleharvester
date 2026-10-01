@@ -47,12 +47,15 @@ The scraping and analysis features are also available as a command-line tool for
 automation and server/Docker use: `python -m scraper <command>` (see
 [*Scraping & analysis*](#scraping--analysis) below).
 
+These functions can also be driven from Telegram through a control bot instead of the terminal
+menu (see [*Control bot*](#control-bot-telegram) below).
+
 ## Requirements
 
 - Python **3.11+** (some features rely on a recent Telethon; the scraper uses `X | None` syntax).
-- Dependencies from [`requirements.txt`](requirements.txt): Telethon, Rich, toml,
-  phonenumbers, GitPython, python-socks, pyarrow, and — for scraping/analysis — pandas,
-  numpy, tqdm, openpyxl and python-dotenv.
+- Dependencies from [`requirements.txt`](requirements.txt): Telethon, aiogram (for the
+  control bot), Rich, toml, phonenumbers, GitPython, python-socks, pyarrow, and — for
+  scraping/analysis — pandas, numpy, tqdm, openpyxl and python-dotenv.
 
 ## Installation
 
@@ -74,6 +77,12 @@ The optional `[limits]` section throttles the **Mailing to PM** function: `per_a
 caps how many messages each account sends per day (rotating to the next account when reached),
 and `account_pause` (`[min, max]` seconds) is the pause taken when switching accounts. If the
 section is missing, defaults (`30` and `[30, 60]`) apply.
+
+The optional `[bot]` section configures the Telegram control bot (see
+[*Control bot*](#control-bot-telegram)): `token` (from [@BotFather](https://t.me/BotFather))
+and `admins` (a list of Telegram user IDs allowed to control it). The first-run setup does not
+create it — add it yourself (copy from [`config.toml.example`](config.toml.example)), or set the
+`BOT_TOKEN` and `BOT_ADMINS` environment variables instead (they override the file).
 
 See [`config.toml.example`](config.toml.example) for the full structure. `config.toml` holds
 your credentials and is git-ignored.
@@ -103,6 +112,8 @@ python login.py <file.jsession>   # connect a session and print service messages
 - `media/` — media files picked at random for media broadcasts.
 - `assets/photos/` — images for **Change profile photo**.
 - `stats/pm_mailing.json` — mailing stats, created at runtime (git-ignored).
+- `stats/account_limits.json` — per-account daily send counts for **Mailing to PM**'s
+  `per_account_daily` cap, created at runtime (git-ignored).
 
 ## Usage
 
@@ -112,6 +123,39 @@ python main.py
 
 Choose whether to initialize sessions, then pick a function by its number. On startup
 the tool checks for updates via git and can pull them automatically.
+
+## Control bot (Telegram)
+
+As an alternative to the terminal menu, teleharvester can be driven from Telegram through an
+[aiogram](https://docs.aiogram.dev) 3.x bot. The CLI (`python main.py`) keeps working
+unchanged; the bot is a separate entry point.
+
+```bash
+# config.toml → [bot] token = "..." and admins = [<your_user_id>]
+python -m bot
+```
+
+**Host / worker model (anti-ban).** The bot itself is the **host**: being a Bot API account it
+cannot (and never does) perform the risky MTProto actions. Every task is **delegated to the
+worker accounts** in `sessions/` — the bot only orchestrates them. Access is restricted to the
+Telegram user IDs in `[bot].admins` (everyone else is ignored).
+
+Send `/start`, then **📋 Функции** to pick a function by category:
+
+- **📣 Рассылки** — PM mailing (with stats), PM broadcast, comments, instant, trigger-based chat.
+- **👤 Профиль** — name, username, bio, photo, 2FA.
+- **👥 Аудитория** — invite from chat, add contacts from `.parquet`.
+- **⚡ Активность** — join chat, reactions, poll vote.
+- **🛡 Модерация** — report message/post, report user.
+- **🧹 Сервис** — account status (@SpamBot), phone stats, terminate sessions, clear dialogs.
+- **🔎 Скрапинг** — scrape, verify, analyse (runs on one worker's session; results come back as files).
+
+Risky functions are marked ⚠️ and refuse to run with no workers. Only **one task runs at a time**
+(the worker pool is shared); long or looping jobs — and the trigger-based chat listener — show a
+**⏹ Стоп** button, and `/cancel` aborts an in-progress dialog.
+
+Media for broadcasts and photos are taken from the local `media/` and `assets/photos/` folders
+(as in the CLI); the bot does not accept uploads in this version.
 
 ## Scraping & analysis
 

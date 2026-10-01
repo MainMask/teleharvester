@@ -1,7 +1,16 @@
 import asyncio
 import random
+from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Prompt
+
+
+_report_console = Console()
+
+
+async def console_report(text: str) -> None:
+    """Default progress reporter (CLI path): print plain text, no Rich markup parsing."""
+    _report_console.print(text, markup=False, highlight=False)
 from telethon import types
 from telethon.errors import (
     FloodWaitError as RateLimitError,

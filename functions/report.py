@@ -74,6 +74,41 @@ class ReportFunc(TelethonFunction):
 
             return
 
+    async def step(self, state, option):
+        """Advance the report flow one step on the first worker (bot-driven).
+
+        Auto-follows AddComment. Returns ("choose", options) when the operator must
+        pick, or ("done", None) when the report is submitted.
+        """
+        while True:
+            result = await self.report_step(
+                state["session"], state["peer"], state["ids"], state["comment"], option
+            )
+
+            if isinstance(result, types.ReportResultReported):
+                return "done", None
+
+            if isinstance(result, types.ReportResultAddComment):
+                option = result.option
+                continue
+
+            if isinstance(result, types.ReportResultChooseOption):
+                return "choose", result.options
+
+            return "done", None
+
+    async def replay_rest(self, sessions, peer, ids, comment, selections, report):
+        """Replay the recorded report path on the remaining workers."""
+        for session in sessions:
+            async with self.storage.ainitialize_session(session):
+                me = await session.get_me()
+                try:
+                    await self.replay(session, peer, ids, comment, selections)
+                except Exception as err:
+                    await report(f"[{me.first_name}] error. {err}")
+                else:
+                    await report(f"[{me.first_name}] submitted.")
+
     async def execute(self):
         self.ask_accounts_count()
 

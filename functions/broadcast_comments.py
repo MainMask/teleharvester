@@ -5,19 +5,19 @@ from rich.prompt import Prompt, Confirm
 from rich.console import Console
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited
+from functions.base.base import AccountLimited, console_report
 console = Console()
 
 
 class CommentsBroadcastFunc(TelethonFunction):
     """Broadcast to channel comments"""
 
-    async def broadcast(self, session, channel, post_id, media):
+    async def broadcast(self, session, channel, post_id, media, messages, report):
         async with self.storage.ainitialize_session(session):
             try:
                 me = await session.get_me()
             except Exception as err:
-                console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+                await report(f"get_me failed: {err}")
                 return
 
             count = 0
@@ -25,7 +25,7 @@ class CommentsBroadcastFunc(TelethonFunction):
 
             while count < self.settings.messages_count \
                     or self.settings.messages_count == 0:
-                text = random.choice(self._messages)
+                text = random.choice(messages)
 
                 try:
                     if not media:
@@ -47,16 +47,10 @@ class CommentsBroadcastFunc(TelethonFunction):
                             parse_mode="html"
                         ))
                 except AccountLimited as err:
-                    console.print(
-                        "[{name}] [bold red]limit, stopping.[/] {err}"
-                        .format(name=self.safe(me.first_name), err=self.safe(err))
-                    )
+                    await report(f"[{me.first_name}] limit, stopping. {err}")
                     break
                 except Exception as err:
-                    console.print(
-                        "[{name}] [bold red]not sent.[/] {err}"
-                        .format(name=self.safe(me.first_name), err=self.safe(err))
-                    )
+                    await report(f"[{me.first_name}] not sent. {err}")
 
                     errors += 1
 
@@ -64,12 +58,20 @@ class CommentsBroadcastFunc(TelethonFunction):
                         break
                 else:
                     count += 1
-                    console.print(
-                        "[{name}] [bold green]sent.[/] COUNT: [yellow]{count}[/]"
-                        .format(name=self.safe(me.first_name), count=count)
-                    )
+                    await report(f"[{me.first_name}] sent. COUNT: {count}")
                 finally:
                     await self.delay()
+
+    async def run(self, link, media, messages, delay, report):
+        self.delay_range = delay
+
+        channel = "/".join(link.split("/")[:-1])
+        post_id = int(link.split("/")[-1])
+
+        await asyncio.gather(*[
+            self.broadcast(session, channel, post_id, media, messages, report)
+            for session in self.sessions
+        ])
 
     async def execute(self):
         self.ask_accounts_count()
@@ -85,16 +87,8 @@ class CommentsBroadcastFunc(TelethonFunction):
         from_config = Confirm.ask("[bold red]use messages from config?[/]")
 
         if from_config:
-            self._messages = self.settings.messages
+            messages = self.settings.messages
         else:
-            self._messages = [console.input("[bold red]message: [/]")]
+            messages = [console.input("[bold red]message: [/]")]
 
-        self.delay_range = self.parse_delay(delay)
-
-        channel = "/" .join(link.split("/")[:-1])
-        post_id = link.split("/")[-1]
-
-        await asyncio.gather(*[
-            self.broadcast(session, channel, int(post_id), media)
-            for session in self.sessions
-        ])
+        await self.run(link, media, messages, self.parse_delay(delay), console_report)

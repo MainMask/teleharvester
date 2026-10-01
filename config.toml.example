@@ -2,6 +2,12 @@
 api_id = 0
 api_hash = ""
 
+[bot]
+# Telegram control-panel bot (host). Get a token from @BotFather.
+# admins = Telegram user IDs allowed to control the bot (whitelist).
+token = ""
+admins = []
+
 [broadcast]
 messages = []
 delay = [2, 5]

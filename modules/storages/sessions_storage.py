@@ -14,12 +14,15 @@ console = Console()
 
 
 class SessionsStorage:
-    def __init__(self, directory: str, api_id: Union[str, int], api_hash: str):
+    def __init__(self, directory: str, api_id: Union[str, int], api_hash: str, initialize: bool | None = None):
         self.full_sessions: Dict[str, Union[TelegramClient, JsonSession]] = {}
         self.json_sessions: List[JsonSession] = []
         self.jsessions_paths: Dict[str, JsonSession] = {}
 
-        self.initialize = True if input("Initialize sessions? (y/n) ") == "y" else False
+        if initialize is None:
+            self.initialize = True if input("Initialize sessions? (y/n) ") == "y" else False
+        else:
+            self.initialize = initialize
 
         for file in os.listdir(directory):
             if file.endswith(".session"):

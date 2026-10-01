@@ -3,6 +3,7 @@ import random
 
 from telethon import functions, types
 from functions.base import TelethonFunction
+from functions.base.base import console_report
 from rich.console import Console
 
 console = Console()
@@ -13,7 +14,7 @@ class ReactionsFunc(TelethonFunction):
 
     reactions = ['👍', '❤️', '🔥', '🥰', '👏', '😁', '🎉', '🤩', '👎', '🤯', '😱', '🤬', '😢', '🤮', '💩', '🙏']
 
-    async def set_reaction(self, session, peer, message_id, reaction=None):
+    async def set_reaction(self, session, peer, message_id, report, reaction=None):
         if not reaction:
             reaction = random.choice(self.reactions)
 
@@ -21,7 +22,7 @@ class ReactionsFunc(TelethonFunction):
             try:
                 me = await session.get_me()
             except Exception as err:
-                console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+                await report(f"get_me failed: {err}")
                 return
 
             try:
@@ -31,27 +32,26 @@ class ReactionsFunc(TelethonFunction):
                     reaction=[types.ReactionEmoji(emoticon=reaction)]
                 ))
             except Exception as err:
-                console.print(f"[bold red][ERROR][/] [bold yellow][{self.safe(me.first_name)}][/] : {self.safe(err)}")
+                await report(f"[ERROR] [{me.first_name}] : {err}")
             else:
-                console.print(f"[bold green][SUCCESS] [{self.safe(me.first_name)}][/] : Reaction \"{reaction}\" was sent")
+                await report(f"[SUCCESS] [{me.first_name}] : Reaction \"{reaction}\" was sent")
+
+    async def run(self, link, reaction, report):
+        peer, message_id = self.parse_message_link(link)
+
+        await asyncio.gather(*[
+            self.set_reaction(session, peer, message_id, report, reaction=reaction)
+            for session in self.sessions
+        ])
 
     async def execute(self):
         self.ask_accounts_count()
 
         link_to_message = console.input("[bold red]link to msg/post> [/]")
-        peer, message_id = self.parse_message_link(link_to_message)
 
         reaction = console.input(
             "[bold red]enter reaction ({reactions}) or skip for random> [/]"
             .format(reactions=", ".join(self.reactions))
         )
 
-        await asyncio.gather(*[
-            self.set_reaction(
-                session=session,
-                peer=peer,
-                message_id=message_id,
-                reaction=reaction
-            )
-            for session in self.sessions
-        ])
+        await self.run(link_to_message, reaction, console_report)

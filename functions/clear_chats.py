@@ -5,6 +5,7 @@ from rich.console import Console
 from rich.prompt import Confirm
 
 from functions.base import TelethonFunction
+from functions.base.base import console_report
 
 console = Console()
 
@@ -12,7 +13,7 @@ console = Console()
 class ClearDialogsFunc(TelethonFunction):
     """Clear all dialogs"""
 
-    async def clear(self, session: TelegramClient):
+    async def clear(self, session: TelegramClient, report):
         async with self.storage.ainitialize_session(session):
             async for dialog in session.iter_dialogs():
                 try:
@@ -28,10 +29,16 @@ class ClearDialogsFunc(TelethonFunction):
                             functions.channels.LeaveChannelRequest(dialog.id)
                         )
                 except Exception as err:
-                    console.print(f"[bold red][!][/] {dialog.id}: {err}")
+                    await report(f"[!] {dialog.id}: {err}")
                     continue
 
-                console.log(f"Dialog {dialog.id} | {dialog.title} has been deleted")
+                await report(f"Dialog {dialog.id} | {dialog.title} has been deleted")
+
+    async def run(self, report):
+        await asyncio.gather(*[
+            self.clear(session, report)
+            for session in self.sessions
+        ])
 
     async def execute(self):
         self.ask_accounts_count()
@@ -39,8 +46,5 @@ class ClearDialogsFunc(TelethonFunction):
         confirm = Confirm.ask("[bold red]are you sure?[/]")
 
         if confirm:
-            await asyncio.gather(*[
-                self.clear(session)
-                for session in self.sessions
-            ])
+            await self.run(console_report)
 

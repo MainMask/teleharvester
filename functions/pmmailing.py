@@ -8,11 +8,10 @@ from telethon import functions, types
 from telethon.errors import PeerIdInvalidError
 from rich.prompt import Prompt, Confirm
 from rich.console import Console
-from rich.markup import escape
 from rich.table import Table
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited
+from functions.base.base import AccountLimited, console_report
 from modules import parquet_db
 
 console = Console()
@@ -140,7 +139,7 @@ class PmMailingFunc(TelethonFunction):
             pause = self.settings.account_pause
             seconds = pause[0] if len(pause) == 1 else random.randint(*pause)
 
-            console.print(f"[bold white]switching to {escape(name)}, pause {seconds}s[/]")
+            await self._report(f"switching to {name}, pause {seconds}s")
             await asyncio.sleep(seconds)
 
         self._active_accounts.add(account_key)
@@ -171,23 +170,46 @@ class PmMailingFunc(TelethonFunction):
         except AccountLimited:
             raise
         except Exception as err:
-            console.print(
-                "[{name}] [bold red]not sent.[/] {recipient} {err}"
-                .format(name=escape(name), recipient=key, err=escape(str(err)))
-            )
+            await self._report(f"[{name}] not sent. {key} {err}")
             return
 
         self.record_success(key)
         self.bump_account(account_key)
-        console.print(
-            "[{name}] [bold green]sent{via}.[/] {recipient} COUNT: [yellow]{count}[/]"
-            .format(
-                name=escape(name),
+        await self._report(
+            "[{name}] sent{via}. {recipient} COUNT: {count}".format(
+                name=name,
                 via=" (via username)" if fallback else "",
                 recipient=key,
-                count=self.stats[key]["count"]
+                count=self.stats[key]["count"],
             )
         )
+
+    def load_recipients(self, path):
+        """Read recipients from a .parquet DB (dict rows) or a .txt list (strings)."""
+        if path.endswith(".parquet"):
+            return parquet_db.load(path)
+
+        with open(path, encoding="utf-8") as fileobj:
+            return [line.strip() for line in fileobj if line.strip()]
+
+    def filter_unsent(self, recipients):
+        """Drop recipients already recorded in stats (requires load_stats first)."""
+        return [r for r in recipients if self.recipient_key(r) not in self.stats]
+
+    async def run(self, recipients, media, text, delay, report):
+        self._report = report
+        self._text = text
+        self._media = media
+        self._me_cache = {}
+        self._active_accounts = set()
+        self.delay_range = delay
+
+        self.load_stats()
+        self.load_limits()
+
+        await self.run_with_rotation(recipients, self.send_one)
+
+        await report(f"Done. Recipients processed: {len(recipients)}")
 
     def print_stats(self):
         table = Table()
@@ -229,15 +251,11 @@ class PmMailingFunc(TelethonFunction):
             console.print("[bold red]File not found!")
             return
 
-        if path.endswith(".parquet"):
-            try:
-                recipients = parquet_db.load(path)
-            except Exception as err:
-                console.print(f"[bold red]{err}")
-                return
-        else:
-            with open(path, encoding="utf-8") as fileobj:
-                recipients = [line.strip() for line in fileobj if line.strip()]
+        try:
+            recipients = self.load_recipients(path)
+        except Exception as err:
+            console.print(f"[bold red]{err}")
+            return
 
         if not recipients:
             console.print("[bold red]Recipients list is empty!")
@@ -285,13 +303,6 @@ class PmMailingFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        self.delay_range = self.parse_delay(delay)
-
-        self._text = text
-        self._media = media
-        self._me_cache = {}
-        self._active_accounts = set()
-
-        await self.run_with_rotation(recipients, self.send_one)
+        await self.run(recipients, media, text, self.parse_delay(delay), console_report)
 
         self.print_stats()

@@ -3,6 +3,7 @@ from rich.console import Console
 
 from telethon import functions
 from functions.base import TelethonFunction
+from functions.base.base import console_report
 
 console = Console()
 
@@ -10,7 +11,7 @@ console = Console()
 class PollVoteFunc(TelethonFunction):
     """Vote in poll"""
 
-    async def vote(self, session, channel, post_id, option_number):
+    async def vote(self, session, channel, post_id, option_number, report):
         async with self.storage.ainitialize_session(session):
             try:
                 message = await session.get_messages(channel, ids=post_id)
@@ -24,7 +25,15 @@ class PollVoteFunc(TelethonFunction):
                     )
                 )
             except Exception as err:
-                console.print(f"[bold red][!][/] {err}")
+                await report(f"[!] {err}")
+
+    async def run(self, link, option_number, report):
+        channel, post_id = self.parse_message_link(link)
+
+        await asyncio.gather(*[
+            self.vote(session, channel, post_id, option_number, report)
+            for session in self.sessions
+        ])
 
     async def execute(self):
         self.ask_accounts_count()
@@ -37,12 +46,7 @@ class PollVoteFunc(TelethonFunction):
 
         option_number = int(option_number) - 1
 
-        channel, post_id = self.parse_message_link(post_link)
-
         with console.status("Voting"):
-            await asyncio.gather(*[
-                self.vote(session, channel, post_id, option_number)
-                for session in self.sessions
-            ])
+            await self.run(post_link, option_number, console_report)
 
         

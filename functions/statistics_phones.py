@@ -23,23 +23,10 @@ class PhoneNumbersStatsFunc(TelethonFunction):
         except Exception:
             return
 
-    async def execute(self):
-        self.ask_accounts_count()
-
-        with console.status("Wait..."):
-            phones = await asyncio.gather(*[
-                self.get_phone_number(session)
-                for session in self.sessions
-            ])
-
+    def tally(self, phones):
+        """Reduce a list of phone numbers to [(country_code, country_name, count)]."""
         countries = []
         countries_by_country_code = {}
-        
-        table = Table()
-
-        table.add_column("Phone country code", justify="left", style="white")
-        table.add_column("Country", style="white")
-        table.add_column("Count", justify="center", style="white")
 
         for phone in phones:
             if phone is not None:
@@ -52,19 +39,45 @@ class PhoneNumbersStatsFunc(TelethonFunction):
 
                 if not countries_by_country_code.get(parsed_phone.country_code):
                     countries_by_country_code[parsed_phone.country_code] = country
-                
+
                 countries.append(parsed_phone.country_code)
 
-        countries = Counter(countries)
+        return [
+            (code, countries_by_country_code[code] or "N/A", count)
+            for code, count in Counter(countries).items()
+        ]
 
-        for country_code, count in countries.items():
-            country_name = countries_by_country_code[country_code]
+    async def run(self, report):
+        phones = await asyncio.gather(*[
+            self.get_phone_number(session)
+            for session in self.sessions
+        ])
 
-            if not country_name:
-                country_name = "N/A"
+        rows = self.tally(phones)
 
-            table.add_row(
-                str(country_code), country_name, str(count)
-            )
-        
+        if not rows:
+            await report("No phone numbers resolved.")
+            return
+
+        for code, name, count in rows:
+            await report(f"+{code} — {name} — {count}")
+
+    async def execute(self):
+        self.ask_accounts_count()
+
+        with console.status("Wait..."):
+            phones = await asyncio.gather(*[
+                self.get_phone_number(session)
+                for session in self.sessions
+            ])
+
+        table = Table()
+
+        table.add_column("Phone country code", justify="left", style="white")
+        table.add_column("Country", style="white")
+        table.add_column("Count", justify="center", style="white")
+
+        for code, name, count in self.tally(phones):
+            table.add_row(str(code), name, str(count))
+
         console.print(table)

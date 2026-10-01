@@ -1,0 +1,140 @@
+import asyncio
+
+from bot.keyboards.common import stop_kb
+from bot.services.runner import TelegramReporter
+
+
+class JobManager:
+    """One active job at a time across the whole bot.
+
+    Coro jobs (one-shot functions + the chat trigger-listener) run as a cancellable
+    background task with a ⏹ Stop button. Interactive/threaded jobs (the report flow,
+    scraping) take the same single slot via acquire()/release().
+
+    A single global slot is correct: every admin shares one worker pool, and the
+    worker TelegramClient objects must not be driven by two jobs at once.
+    """
+
+    def __init__(self):
+        self._active = False
+        self._label = ""
+        self._kind = None            # "task" | "interactive"
+        self._task = None
+        self._stop_sessions = []
+        self._on_abort = None
+        self._cancelable = True
+        self._timeout_task = None
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+    # --- coro jobs ---------------------------------------------------------
+
+    async def run(self, bot, chat_id, pool, instance, bot_function, factory, header, done, stop_sessions=None) -> bool:
+        # Take the slot synchronously (before any await) to avoid a race between tasks.
+        if self._active:
+            await bot.send_message(chat_id, f"⛔ Занят: {self._label}. Остановите текущую задачу.")
+            return False
+
+        self._active = True
+        self._label = header
+        self._kind = "task"
+        self._cancelable = True
+
+        reporter = TelegramReporter(bot, chat_id, header=header, reply_markup=stop_kb())
+        try:
+            await reporter.start()
+        except Exception:
+            self._clear()
+            raise
+
+        self._stop_sessions = list(stop_sessions) if stop_sessions is not None else list(pool.workers)
+        self._task = asyncio.create_task(
+            self._wrap(pool, instance, bot_function, factory, reporter, done)
+        )
+        return True
+
+    async def _wrap(self, pool, instance, bot_function, factory, reporter, done):
+        try:
+            await pool.run(instance, bot_function, lambda f: factory(f, reporter), reporter)
+            await reporter.finish(done)
+        except asyncio.CancelledError:
+            await reporter.finish("⏹ Остановлено")
+        except Exception as err:  # noqa: BLE001 - surface any job failure to the operator
+            await reporter.finish(f"⚠️ Ошибка: {err}")
+        finally:
+            for session in self._stop_sessions:
+                try:
+                    await session.disconnect()
+                except Exception:
+                    pass
+            self._clear()
+
+    # --- interactive / threaded jobs --------------------------------------
+
+    def acquire(self, label, on_abort=None, cancelable=True, timeout=600) -> bool:
+        if self._active:
+            return False
+
+        self._active = True
+        self._label = label
+        self._kind = "interactive"
+        self._on_abort = on_abort
+        self._cancelable = cancelable
+
+        if timeout:
+            self._timeout_task = asyncio.create_task(self._expire(timeout))
+
+        return True
+
+    async def _expire(self, timeout):
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            return
+        if self._active and self._kind == "interactive":
+            await self.stop()
+
+    def release(self):
+        self._clear()
+
+    # --- stop / cleanup ----------------------------------------------------
+
+    async def stop(self) -> bool:
+        if not self._active:
+            return False
+
+        if self._kind == "task":
+            if self._task is not None:
+                self._task.cancel()  # _wrap's finally clears the slot
+            return True
+
+        # interactive
+        if not self._cancelable:
+            return False
+
+        on_abort = self._on_abort
+        self._clear()
+        if on_abort is not None:
+            result = on_abort()
+            if asyncio.iscoroutine(result):
+                await result
+        return True
+
+    def _clear(self):
+        # Don't cancel the timeout task if it's the one currently running _clear via stop().
+        if self._timeout_task is not None and self._timeout_task is not asyncio.current_task():
+            self._timeout_task.cancel()
+        self._active = False
+        self._label = ""
+        self._kind = None
+        self._task = None
+        self._stop_sessions = []
+        self._on_abort = None
+        self._cancelable = True
+        self._timeout_task = None

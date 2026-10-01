@@ -15,7 +15,7 @@ from rich.prompt import Prompt
 from rich.console import Console
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited
+from functions.base.base import AccountLimited, console_report
 
 console = Console()
 
@@ -62,7 +62,7 @@ class InvitingFunc(TelethonFunction):
             info = await session(CheckChatInviteRequest(hash_))
             return info.chat
 
-    async def invite(self, session, source_link, destination, target_ids):
+    async def invite(self, session, source_link, destination, target_ids, report):
         if not target_ids:
             return
 
@@ -72,7 +72,7 @@ class InvitingFunc(TelethonFunction):
                 source = await self.resolve_source(session, source_link)
                 dest = await session.get_entity(destination)
             except Exception as err:
-                console.print(f"[bold red][!] can't prepare account:[/] {err}")
+                await report(f"[!] can't prepare account: {err}")
                 return
 
             added = 0
@@ -89,26 +89,60 @@ class InvitingFunc(TelethonFunction):
                             users=[user]
                         )))
                     except AccountLimited as err:
-                        console.print(f"[{self.safe(me.first_name)}] [bold red]limit, stopping.[/] {self.safe(err)}")
+                        await report(f"[{me.first_name}] limit, stopping. {err}")
                         break
                     except ChatAdminRequiredError:
-                        console.print(f"[{self.safe(me.first_name)}] [bold red]no invite rights in destination[/]")
+                        await report(f"[{me.first_name}] no invite rights in destination")
                         break
                     except (UserPrivacyRestrictedError, UserNotMutualContactError,
                             UserChannelsTooMuchError, UserBotError):
                         continue
                     except Exception as err:
-                        console.print(f"[{self.safe(me.first_name)}] [bold red]skip[/] {user.id}: {self.safe(err)}")
+                        await report(f"[{me.first_name}] skip {user.id}: {err}")
                         continue
                     else:
                         added += 1
-                        console.print(
-                            f"[{self.safe(me.first_name)}] [bold green]invited[/] {user.id} total: [yellow]{added}[/]"
-                        )
+                        await report(f"[{me.first_name}] invited {user.id} total: {added}")
 
                     await self.delay()
             except Exception as err:
-                console.print(f"[{self.safe(me.first_name)}] [bold red]can't read participants:[/] {self.safe(err)}")
+                await report(f"[{me.first_name}] can't read participants: {err}")
+
+    async def parse_targets(self, source_link, report):
+        """Resolve the source chat with the first able worker; return member ids."""
+        for session in self.sessions:
+            async with self.storage.ainitialize_session(session):
+                try:
+                    source = await self.resolve_source(session, source_link)
+                    participants = await session.get_participants(source)
+                except Exception as err:
+                    await report(f"[!] {err}")
+                    continue
+
+                return [
+                    user.id for user in participants
+                    if not (user.bot or user.deleted or user.is_self)
+                ]
+
+        return None
+
+    async def run(self, source_link, destination, delay, report):
+        self.delay_range = delay
+
+        target_ids = await self.parse_targets(source_link, report)
+
+        if not target_ids:
+            await report("Couldn't parse the source chat with any account")
+            return
+
+        await report(f"[*] Parsed {len(target_ids)} users")
+
+        chunks = self.chunkify(target_ids, len(self.sessions))
+
+        await asyncio.gather(*[
+            self.invite(session, source_link, destination, chunk, report)
+            for session, chunk in zip(self.sessions, chunks)
+        ])
 
     async def execute(self):
         self.ask_accounts_count()
@@ -125,36 +159,4 @@ class InvitingFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        self.delay_range = self.parse_delay(delay)
-
-        target_ids = None
-
-        with console.status("Parsing users...", spinner="dots"):
-            for session in self.sessions:
-                async with self.storage.ainitialize_session(session):
-                    try:
-                        source = await self.resolve_source(session, source_link)
-                        participants = await session.get_participants(source)
-                    except Exception as err:
-                        console.print(f"[bold red][!][/] {err}")
-                        continue
-
-                    target_ids = [
-                        user.id for user in participants
-                        if not (user.bot or user.deleted or user.is_self)
-                    ]
-                    break
-
-        if not target_ids:
-            console.print("[bold red]Couldn't parse the source chat with any account")
-            return
-
-        console.print(f"[bold green][*] Parsed {len(target_ids)} users[/]")
-
-        chunks = self.chunkify(target_ids, len(self.sessions))
-
-        with console.status("Inviting...", spinner="dots"):
-            await asyncio.gather(*[
-                self.invite(session, source_link, destination, chunk)
-                for session, chunk in zip(self.sessions, chunks)
-            ])
+        await self.run(source_link, destination, self.parse_delay(delay), console_report)

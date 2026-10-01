@@ -15,7 +15,7 @@ from telethon.sync import TelegramClient
 
 from functions.broadcast import Broadcast
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited
+from functions.base.base import AccountLimited, console_report
 
 console = Console()
 
@@ -23,7 +23,13 @@ console = Console()
 class JoinerFunc(TelethonFunction):
     """Join chat"""
 
-    async def join(self, session, link, index, mode):
+    async def join(self, session, link, index, mode, report=None):
+        async def emit(msg):
+            if report is not None:
+                await report(msg)
+            else:
+                print(msg)
+
         if mode == "1":
             try:
                 if not "joinchat" in link:
@@ -32,10 +38,10 @@ class JoinerFunc(TelethonFunction):
                     invite = link.split("/")[-1]
                     await self.safe_call(lambda: session(ImportChatInviteRequest(invite)))
             except AccountLimited as error:
-                print(f"[-] [acc {index + 1}] limit: {error}")
+                await emit(f"[-] [acc {index + 1}] limit: {error}")
                 return False
             except Exception as error:
-                print(f"[-] [acc {index + 1}] {error}")
+                await emit(f"[-] [acc {index + 1}] {error}")
             else:
                 return True
 
@@ -45,23 +51,39 @@ class JoinerFunc(TelethonFunction):
                 linked_id = full.full_chat.linked_chat_id
 
                 if not linked_id:
-                    print(f"[-] [acc {index + 1}] no linked chat")
+                    await emit(f"[-] [acc {index + 1}] no linked chat")
                     return False
 
                 chat = next((c for c in full.chats if c.id == linked_id), None)
 
                 if chat is None:
-                    print(f"[-] [acc {index + 1}] linked chat not found")
+                    await emit(f"[-] [acc {index + 1}] linked chat not found")
                     return False
 
                 await self.safe_call(lambda: session(JoinChannelRequest(chat)))
             except AccountLimited as error:
-                print(f"[-] [acc {index + 1}] limit: {error}")
+                await emit(f"[-] [acc {index + 1}] limit: {error}")
                 return False
             except Exception as error:
-                print(f"[-] [acc {index + 1}] {error}")
+                await emit(f"[-] [acc {index + 1}] {error}")
             else:
                 return True
+
+    async def run(self, mode, link, delay, report):
+        """Simplified join for the bot: join `mode` into `link` on every worker."""
+        self.delay_range = delay
+        link = link.replace("+", "joinchat/")
+
+        joined = 0
+
+        for index, session in enumerate(self.sessions):
+            async with self.storage.ainitialize_session(session):
+                if await self.join(session, link, index, mode, report):
+                    joined += 1
+
+            await self.delay()
+
+        await report(f"[+] {joined}/{len(self.sessions)} accounts joined")
 
     async def solve_captcha(self, session: TelegramClient):
         session.add_event_handler(
@@ -163,7 +185,7 @@ class JoinerFunc(TelethonFunction):
                     
                     console.print("[bold white]Starting broadcast[/]")
 
-                    await broadcast_func.broadcast(session, link, broadcast_func.function)
+                    await broadcast_func.broadcast(session, link, broadcast_func.function, console_report)
                     await asyncio.sleep(delay)
 
         if speed == "fast":
@@ -189,7 +211,7 @@ class JoinerFunc(TelethonFunction):
 
             if broadcast and function_index == 1:
                 for session in self.sessions:
-                    await broadcast_func.broadcast(session, link, broadcast_func.function)
+                    await broadcast_func.broadcast(session, link, broadcast_func.function, console_report)
 
 
         joined_time = round(perf_counter() - start, 2)
@@ -197,7 +219,7 @@ class JoinerFunc(TelethonFunction):
 
         if broadcast and function_index != 1:
             await asyncio.gather(*[
-                broadcast_func.broadcast(session, link, broadcast_func.function)
+                broadcast_func.broadcast(session, link, broadcast_func.function, console_report)
                 for session in self.sessions
             ])
 

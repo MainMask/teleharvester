@@ -5,6 +5,7 @@ from telethon.tl.functions.account import UpdateUsernameRequest, CheckUsernameRe
 from rich.console import Console
 
 from functions.base import TelethonFunction
+from functions.base.base import console_report
 
 console = Console()
 
@@ -26,7 +27,7 @@ class ChangeUsernameFunc(TelethonFunction):
 
         return None
 
-    async def change(self, session, username=None, base=None):
+    async def change(self, session, report, username=None, base=None):
         async with self.storage.ainitialize_session(session):
             me = await session.get_me()
 
@@ -34,15 +35,27 @@ class ChangeUsernameFunc(TelethonFunction):
                 username = await self.generate_username(session, base)
 
                 if not username:
-                    console.print(f"[{self.safe(me.first_name)}] [bold red]couldn't find a free username[/]")
+                    await report(f"[{me.first_name}] couldn't find a free username")
                     return
 
             try:
                 await session(UpdateUsernameRequest(username))
             except Exception as err:
-                console.print(f"[{self.safe(me.first_name)}] [bold red]not changed:[/] {self.safe(err)}")
+                await report(f"[{me.first_name}] not changed: {err}")
             else:
-                console.print(f"[{self.safe(me.first_name)}] [bold green]username set:[/] @{username}")
+                await report(f"[{me.first_name}] username set: @{username}")
+
+    async def run(self, report, usernames=None, base=None):
+        if usernames is not None:
+            await asyncio.gather(*[
+                self.change(session, report, username=username)
+                for session, username in zip(self.sessions, usernames)
+            ])
+        else:
+            await asyncio.gather(*[
+                self.change(session, report, base=base)
+                for session in self.sessions
+            ])
 
     async def execute(self):
         self.ask_accounts_count()
@@ -61,14 +74,8 @@ class ChangeUsernameFunc(TelethonFunction):
                 console.print("[bold red]Usernames list is empty!")
                 return
 
-            await asyncio.gather(*[
-                self.change(session, username=username)
-                for session, username in zip(self.sessions, usernames)
-            ])
+            await self.run(console_report, usernames=usernames)
         else:
             base = console.input("[bold red]base username> [/]")
 
-            await asyncio.gather(*[
-                self.change(session, base=base)
-                for session in self.sessions
-            ])
+            await self.run(console_report, base=base)
