@@ -5,3 +5,8 @@ gitpython
 phonenumbers
 pyarrow
 python-socks[asyncio]
+pandas>=2.1
+numpy
+tqdm
+openpyxl
+python-dotenv

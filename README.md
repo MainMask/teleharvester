@@ -37,12 +37,22 @@ menu on startup (the in-app menu is in English):
 - **Terminate other authorized sessions** — reset other logins on each account.
 - **Check accounts status** — check each account against @SpamBot for account restrictions.
 - **Statistics (phone numbers)** — breakdown of accounts by country code.
+- **Scrape channel/group** — collect posts, comments, reactions and participants from a
+  channel/group into `.parquet`/`.xlsx` (absorbed from scraper; see below).
+- **Verify scrape against live channel** — cross-check a scrape for posts it missed.
+- **Analyze scraped data** — offline tools over scraped files: combine, comments,
+  participants, summary, sample, filter, links, read.
+
+The scraping and analysis features are also available as a command-line tool for
+automation and server/Docker use: `python -m scraper <command>` (see
+[*Scraping & analysis*](#scraping--analysis) below).
 
 ## Requirements
 
-- Python **3.8+** (some features rely on a recent Telethon).
+- Python **3.10+** (some features rely on a recent Telethon; the scraper uses `X | None` syntax).
 - Dependencies from [`requirements.txt`](requirements.txt): Telethon, Rich, toml,
-  phonenumbers, GitPython, python-socks, and pyarrow (for the `.parquet` database).
+  phonenumbers, GitPython, python-socks, pyarrow, and — for scraping/analysis — pandas,
+  numpy, tqdm, openpyxl and python-dotenv.
 
 ## Installation
 
@@ -102,3 +112,121 @@ python main.py
 
 Choose whether to initialize sessions, then pick a function by its number. On startup
 the tool checks for updates via git and can pull them automatically.
+
+## Scraping & analysis
+
+teleharvester includes a full Telegram scraper and analyser: scraping Telegram channels,
+groups and chats (message content, authors, reactions, views, shares, comments) and
+analysing the result, stored as **Apache Parquet** (`.parquet`) or **Excel** (`.xlsx`).
+
+> Scraper and analysis originally by **Ergon Cugler de Moraes Silva** —
+> <https://github.com/ergoncugler/web-scraping-telegram/>. See *Citation* below.
+
+Two ways to run it:
+
+- **From the menu** — pick *Scrape channel/group*, *Verify scrape against live channel*,
+  or *Analyze scraped data*. These reuse your `config.toml` API credentials and one of
+  your existing `sessions/` accounts (you pick which at run time) — no separate login.
+  Scrapes default to `assets/databases/`, so a `_participants` file flows straight into
+  *Add users to contacts from a .parquet database*.
+- **From the command line** — `python -m scraper <command>` (or the `scraper`
+  console script after `pip install -e .`). This path is for automation, long resumable
+  runs and Docker; it reads credentials from `.env` (`TG_API_ID`, `TG_API_HASH`), falling
+  back to `config.toml` (`[sessions]`) when no `.env` is set, and uses its own
+  `scraper.session` (run `python -m scraper login` once, or set `TG_SESSION_STRING`).
+
+| Command   | What it does |
+|-----------|--------------|
+| `scrape`  | scrape channels/groups into `.parquet` or `.xlsx` |
+| `verify`  | probe the live channel for posts a scrape missed |
+| `login`   | authorise once and save a session (CLI path only) |
+| `read`    | print the head of a data file, optionally convert it |
+| `combine` | merge many `.parquet` files, drop duplicates, recount comments |
+| `comments`| flatten `Comments List` into one row per comment |
+| `participants`| unique `ID` + `Username` + `Access Hash` + `Name` of everyone who commented or reacted |
+| `summary` | per-group monthly tables (contents / comments / total) |
+| `sample`  | proportional per-category sample to `.xlsx` |
+| `filter`  | keep rows matching keywords, add one 0/1 column per keyword |
+| `links`   | extract and count `t.me` links from `Content` |
+
+Run `python -m scraper <command> --help` for the full flag list.
+
+### Scrape
+
+```bash
+python -m scraper scrape \
+  --channels "@LulanoTelegram, @jairbolsonarobrasil" \
+  --date-min 2024-10-15 --date-max 2025-01-15 \
+  --name Test --out-dir output
+```
+
+A channel may be `@name`, `t.me/name`, a full `https://t.me/name` URL, a `t.me/+hash`
+invite link, or a **numeric ID** such as `-1001629147115` (the account must already be a
+member). Dates are `DD.MM.YYYY` or ISO `YYYY-MM-DD`, both inclusive. Output is parquet by
+default (`--format excel` only for small runs — Excel truncates cells over 32,767 chars).
+
+Output files are named after `--name` with the scraped post-date span appended:
+`<name>_posts_<from>-<to>`, plus `<name>_participants_…` (unless `--no-participants`) and
+`<name>_reactors_…` (unless `--no-reactors`; slow — one API call per reacted message).
+`FLOOD_WAIT` rate limits are waited out automatically.
+
+### Interruptions / resume
+
+A dropped connection is retried for hours. If a run dies (long outage, crash, `Ctrl-C`)
+it prints the ready-to-paste command that resumes it — the same arguments plus `--resume`,
+which continues from the checkpoint in `<name>_partial/`.
+
+### Verify
+
+```bash
+python -m scraper verify --input output/Test_posts_02.01.2024-30.01.2024.parquet \
+  --channel @Test --date-min 01.01.2020 --date-max 31.12.2024 --output output/Test_missed.parquet
+```
+
+`scrape` walks the channel with `iter_messages`; `verify` cross-checks with
+`get_messages(ids=…)` and lists any real message inside the date window the scrape missed.
+
+### Analyse
+
+```bash
+python -m scraper combine      --input 'output/*_posts_*.parquet' --output output/unified.parquet
+python -m scraper participants --input output/unified.parquet --output output/people.parquet
+python -m scraper summary      --input output/unified.parquet --output-base output/resume
+python -m scraper read         output/unified.parquet --head 20 --to xlsx
+```
+
+`Access Hash` (and `Comment Author Access Hash`) is the user's Telegram `access_hash`:
+with the `ID` it forms an `InputPeerUser`, so the user can be addressed without resolving
+them again (only from the account that scraped it). This is exactly what *Add users to
+contacts from a .parquet database* consumes.
+
+### Output columns
+
+`Type, Group, Author ID, Content, Date, Message ID, Author, Views, Reactions, Shares,
+Media, Url, Comments List` (plus a `Comments` count added on write).
+
+### Docker
+
+Deploy the scraper CLI on a server without a local Python setup. The session and every
+scraped file live in `./data/`.
+
+```bash
+cp .env.example .env        # set TG_API_ID, TG_API_HASH
+docker compose build
+docker compose run --rm scraper login          # authorise once
+docker compose run --rm scraper scrape --channels '@channel' \
+  --date-min 01.01.2024 --date-max 31.01.2024 --name Test
+```
+
+### Notes
+
+- **Telegram soft ban:** scraping more than ~150–200 communities in one block can trigger a
+  24-hour soft ban. There is no practical limit on the number of messages from fewer communities.
+- Respect Telegram's Terms of Service and applicable data-protection law.
+
+### Citation
+
+If you use the scraper in research, please cite the original work:
+
+> SILVA, Ergon Cugler de Moraes. *TelegramScrap: A comprehensive tool for scraping Telegram data*.
+> (Feb) 2023. Available at: <https://doi.org/10.48550/arXiv.2412.16786>.

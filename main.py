@@ -36,8 +36,8 @@ if update["has_update"]:
 else:
     console.print("You using the latest version of teleharvester :)")
 
-if sys.version_info < (3, 8, 0):
-    console.print("\n[red]Error: you using an outdated Python version. Install Python 3.8.0 at least.")
+if sys.version_info < (3, 10, 0):
+    console.print("\n[red]Error: you using an outdated Python version. Install Python 3.10.0 at least.")
 else:
     if sys.platform == "win32":
         console.print("[yellow]Warning: you using Windows. Some features may not work properly\n")

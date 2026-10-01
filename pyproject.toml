@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scraper"
+dynamic = ["version"]
+description = "Terminal tool for scraping and analysing Telegram channels, groups and chats"
+requires-python = ">=3.11"
+dependencies = [
+    "telethon<2",
+    "python-dotenv",
+    "pandas>=2.1",
+    "numpy",
+    "tqdm",
+    "pyarrow",
+    "openpyxl",
+    "toml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+scraper = "scraper.cli:main"
+
+[tool.setuptools]
+packages = ["scraper"]
+
+[tool.setuptools.dynamic]
+version = {attr = "scraper.__version__"}

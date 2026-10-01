@@ -133,6 +133,8 @@ config.toml
 stats/
 assets/targets.txt
 assets/databases/
+output/
+data/
 
 # OS files
 .DS_Store
