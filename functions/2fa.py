@@ -12,7 +12,11 @@ class SetPasswordFunc(TelethonFunction):
     
     async def edit_2fa(self, session: TelegramClient, password: str):
         async with self.storage.ainitialize_session(session):
-            me = await session.get_me()
+            try:
+                me = await session.get_me()
+            except Exception as err:
+                console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+                return
 
             try:
                 await session.edit_2fa(new_password=password)
@@ -28,6 +32,8 @@ class SetPasswordFunc(TelethonFunction):
                 )
 
     async def execute(self):
+        self.ask_accounts_count()
+
         password = console.input("[bold red]new password> [/]")
 
         with console.status("Setting password..."):

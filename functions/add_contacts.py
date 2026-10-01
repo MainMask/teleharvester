@@ -56,7 +56,7 @@ class AddContactsFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        self.settings.delay = self.parse_delay(delay)
+        self.delay_range = self.parse_delay(delay)
 
         self.added = 0
 

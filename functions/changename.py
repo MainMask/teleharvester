@@ -56,8 +56,16 @@ class ChangeNameFunc(TelethonFunction):
         from_file = console.input("[bold red]from file? (y/n)> ")
 
         if from_file == "y":
-            with open("assets/names.txt") as file:
-                names = file.read().strip().splitlines()
+            try:
+                with open("assets/names.txt") as file:
+                    names = file.read().strip().splitlines()
+            except FileNotFoundError:
+                console.print("[bold red]File assets/names.txt not found!")
+                return
+
+            if not names:
+                console.print("[bold red]Names list is empty!")
+                return
 
             await asyncio.gather(*[
                 self.change_name(session=session, account_index=index, names=names)
@@ -66,14 +74,14 @@ class ChangeNameFunc(TelethonFunction):
 
         else:
             name = console.input("[bold red]name> [/]").split(maxsplit=1)
+
+            while not name:
+                name = console.input("[bold red]name> [/]").split(maxsplit=1)
+
             print()
-            
+
             first_name = name[0]
-            
-            if len(name) == 2:
-                last_name = name[1]
-            else:
-                last_name = None
+            last_name = name[1] if len(name) == 2 else None
 
             await asyncio.gather(*[
                 self.change_name(

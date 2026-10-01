@@ -81,8 +81,11 @@ class ReportFunc(TelethonFunction):
             return
 
         link = Prompt.ask("[bold red]link[/]")
-        posts = Prompt.ask("[bold red]enter the post ids[/]")
-        posts = [int(i) for i in posts.split(",")]
+        while True:
+            parts = [p.strip() for p in Prompt.ask("[bold red]enter the post ids[/]").split(",") if p.strip()]
+            if parts and all(p.isdigit() for p in parts):
+                posts = [int(p) for p in parts]
+                break
 
         comment = console.input("[bold red]comment> [/]")
 

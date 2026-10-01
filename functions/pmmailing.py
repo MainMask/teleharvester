@@ -257,13 +257,18 @@ class PmMailingFunc(TelethonFunction):
                 console.print("[bold red]Nothing left to send!")
                 return
 
-        limit = Prompt.ask(
-            "[bold red]how many recipients (blank = all)[/]",
-            default=""
-        )
+        while True:
+            limit = Prompt.ask(
+                "[bold red]how many recipients (blank = all)[/]",
+                default=""
+            )
 
-        if limit:
-            recipients = recipients[:int(limit)]
+            if not limit:
+                break
+
+            if limit.isdigit() and int(limit) > 0:
+                recipients = recipients[:int(limit)]
+                break
 
         console.print("[bold white]first recipients:[/]")
         for recipient in recipients[:5]:
@@ -280,7 +285,7 @@ class PmMailingFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        self.settings.delay = self.parse_delay(delay)
+        self.delay_range = self.parse_delay(delay)
 
         self._text = text
         self._media = media

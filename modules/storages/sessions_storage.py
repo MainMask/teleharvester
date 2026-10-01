@@ -100,6 +100,13 @@ class SessionsStorage:
                     )
                 )
 
+    def _forget_session(self, path: str):
+        """Drop a session from every index, so no stale reference survives a removal."""
+        self.full_sessions.pop(path, None)
+        json_session = self.jsessions_paths.pop(path, None)
+        if json_session is not None and json_session in self.json_sessions:
+            self.json_sessions.remove(json_session)
+
     async def check_session(self, session: TelegramClient, path: str):
         console.log(f"Initializing session {path}")
 
@@ -115,17 +122,17 @@ class SessionsStorage:
             else:
                 console.log(f"Error with connection to session {path}")
 
-            del self.full_sessions[path]
+            self._forget_session(path)
             return
 
         except Exception as err:
             console.log(f"Session {path} returned error. {err}. Skipping.")
-            del self.full_sessions[path]
+            self._forget_session(path)
             return
 
         if not await session.is_user_authorized():
             console.log(f"Session {path} is inactive. Moving it to sessions/inactive")
-            del self.full_sessions[path]
+            self._forget_session(path)
 
             inactive_dir = os.path.join(os.path.dirname(path), "inactive")
             os.makedirs(inactive_dir, exist_ok=True)
@@ -144,7 +151,7 @@ class SessionsStorage:
             if json_session == json_session_:
                 return path
 
-    def is_phone_exists(self, phone: int) -> bool | JsonSession:
+    def is_phone_exists(self, phone: str) -> bool | JsonSession:
         for session in self.json_sessions:
             if session.account.account.phone_number == phone:
                 return session

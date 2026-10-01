@@ -21,6 +21,8 @@ _END = object()  # sentinel for "no more items" (so a real None item isn't mista
 class BaseFunction:
     rate_wait_limit = 300  # seconds; a longer wait means the account is exhausted
     max_rate_retries = 5   # consecutive rate-limit waits on one call before giving up
+    delay_range = None     # per-run delay override; set by functions that prompt for a
+                           # delay, so a choice doesn't leak into the shared Settings
 
     @staticmethod
     def safe(value) -> str:
@@ -31,6 +33,19 @@ class BaseFunction:
         return list(
             map(int, string.split("-"))
         )
+
+    @staticmethod
+    def ask_int(label: str, default=None, min_value: int | None = None) -> int:
+        """Prompt for an integer, re-asking until the input is valid."""
+        while True:
+            raw = Prompt.ask(label, default=None if default is None else str(default))
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if min_value is not None and value < min_value:
+                continue
+            return value
 
     @staticmethod
     def parse_message_link(link):
@@ -91,17 +106,22 @@ class BaseFunction:
     def ask_accounts_count(self):
         self.sessions = self.storage.sessions  # reset to full list (instance is reused across runs)
 
-        accounts_count = int(Prompt.ask(
+        if not self.sessions:
+            return  # nothing to choose from; functions guard the empty case themselves
+
+        accounts_count = self.ask_int(
             "[bold magenta]how many accounts to use? [/]",
-            default=str(len(self.sessions))
-        ))
+            default=len(self.sessions),
+            min_value=1,
+        )
 
         self.sessions = self.sessions[:accounts_count]
 
     async def delay(self):
-        if len(self.settings.delay) == 1:
-            await asyncio.sleep(self.settings.delay[0])
+        delay = self.delay_range or self.settings.delay
+        if len(delay) == 1:
+            await asyncio.sleep(delay[0])
         else:
             await asyncio.sleep(
-                random.randint(*self.settings.delay)
+                random.randint(*delay)
             )

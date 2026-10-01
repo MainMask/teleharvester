@@ -14,13 +14,18 @@ class CommentsBroadcastFunc(TelethonFunction):
 
     async def broadcast(self, session, channel, post_id, media):
         async with self.storage.ainitialize_session(session):
-            me = await session.get_me()
+            try:
+                me = await session.get_me()
+            except Exception as err:
+                console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+                return
+
             count = 0
             errors = 0
 
             while count < self.settings.messages_count \
                     or self.settings.messages_count == 0:
-                text = random.choice(self.settings.messages)
+                text = random.choice(self._messages)
 
                 try:
                     if not media:
@@ -79,10 +84,12 @@ class CommentsBroadcastFunc(TelethonFunction):
         media = Confirm.ask("[bold red]media[/]")
         from_config = Confirm.ask("[bold red]use messages from config?[/]")
 
-        if not from_config:
-            self.settings.messages = [console.input("[bold red]message: [/]")]
+        if from_config:
+            self._messages = self.settings.messages
+        else:
+            self._messages = [console.input("[bold red]message: [/]")]
 
-        self.settings.delay = self.parse_delay(delay)
+        self.delay_range = self.parse_delay(delay)
 
         channel = "/" .join(link.split("/")[:-1])
         post_id = link.split("/")[-1]

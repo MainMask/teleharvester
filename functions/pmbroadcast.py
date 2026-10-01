@@ -33,7 +33,14 @@ class PmBroadcastFunc(TelethonFunction):
                         last_name=''
                     )]
                 ))
-                
+
+                if not result.users:
+                    console.print(
+                        "[{name}] [bold red]couldn't resolve phone[/] {phone}"
+                        .format(name=self.safe(me.first_name), phone=self.safe(peer))
+                    )
+                    return
+
                 peer = result.users[0]
 
             while True:
@@ -102,7 +109,7 @@ class PmBroadcastFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        self.settings.delay = self.parse_delay(delay)
+        self.delay_range = self.parse_delay(delay)
 
         await asyncio.gather(*[
             self.broadcast(session, peer, text, media, by_phone_number=by_phone_number)

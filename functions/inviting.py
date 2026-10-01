@@ -125,7 +125,7 @@ class InvitingFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        self.settings.delay = self.parse_delay(delay)
+        self.delay_range = self.parse_delay(delay)
 
         target_ids = None
 

@@ -78,7 +78,12 @@ class Broadcast(TelethonFunction):
 
         count = 0
         errors = 0
-        me = await session.get_me()
+
+        try:
+            me = await session.get_me()
+        except Exception as err:
+            console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+            return
 
         if self.mention_all:
             admins = await session.get_participants(
@@ -176,13 +181,12 @@ class Broadcast(TelethonFunction):
             "[bold white]>> [/]"
         )
 
-        while not choice.isdigit():
+        while not (choice.isdigit() and 1 <= int(choice) <= len(self.modes)):
             choice = console.input(
                 "[bold white]>> [/]"
             )
 
-        else:
-            self.choice = int(choice) - 1
+        self.choice = int(choice) - 1
 
         self.function = self.modes[self.choice][1]
         self.ask_accounts_count()
@@ -196,7 +200,7 @@ class Broadcast(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        self.settings.delay = self.parse_delay(delay)
+        self.delay_range = self.parse_delay(delay)
         self.mention_all = Confirm.ask("[bold red]mention all?[/]", default=True)
 
         if self.mention_all:

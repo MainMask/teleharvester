@@ -5,7 +5,7 @@ bulk DM broadcasts with per-recipient stats, chat/comment broadcast campaigns,
 joining and inviting, reactions, poll voting, content moderation reports, profile
 and session management.
 
-![Python](https://img.shields.io/badge/python-3.8%2B-blue)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 
 > **Disclaimer.** This project is provided for educational purposes and for use on
 > accounts and chats you own or are authorized to act on. Bulk messaging, broadcast
@@ -49,7 +49,7 @@ automation and server/Docker use: `python -m scraper <command>` (see
 
 ## Requirements
 
-- Python **3.10+** (some features rely on a recent Telethon; the scraper uses `X | None` syntax).
+- Python **3.11+** (some features rely on a recent Telethon; the scraper uses `X | None` syntax).
 - Dependencies from [`requirements.txt`](requirements.txt): Telethon, Rich, toml,
   phonenumbers, GitPython, python-socks, pyarrow, and — for scraping/analysis — pandas,
   numpy, tqdm, openpyxl and python-dotenv.

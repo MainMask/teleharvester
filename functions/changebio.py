@@ -11,7 +11,11 @@ class ChangeBioFunc(TelethonFunction):
     
     async def change_bio(self, session, bio: str):
         async with self.storage.ainitialize_session(session):
-            me = await session.get_me()
+            try:
+                me = await session.get_me()
+            except Exception as err:
+                console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+                return
 
             try:
                 await session(
@@ -23,6 +27,8 @@ class ChangeBioFunc(TelethonFunction):
                 console.print(f"[{self.safe(me.first_name)}] [bold green]bio changed[/]")
 
     async def execute(self):
+        self.ask_accounts_count()
+
         bio = console.input("[bold red]bio> [/]")
         
         await asyncio.gather(*[

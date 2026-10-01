@@ -24,6 +24,8 @@ class PhoneNumbersStatsFunc(TelethonFunction):
             return
 
     async def execute(self):
+        self.ask_accounts_count()
+
         with console.status("Wait..."):
             phones = await asyncio.gather(*[
                 self.get_phone_number(session)

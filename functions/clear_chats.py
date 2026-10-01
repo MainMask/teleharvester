@@ -34,6 +34,8 @@ class ClearDialogsFunc(TelethonFunction):
                 console.log(f"Dialog {dialog.id} | {dialog.title} has been deleted")
 
     async def execute(self):
+        self.ask_accounts_count()
+
         confirm = Confirm.ask("[bold red]are you sure?[/]")
 
         if confirm:

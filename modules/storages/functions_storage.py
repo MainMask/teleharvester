@@ -18,6 +18,15 @@ class FunctionsStorage:
         self.storage = sessions_storage
         self.settings = settings
 
+        # keep one loop for the whole run: sessions are connected on it at startup,
+        # and a scraper function's asyncio.run() must not leave it detached for the
+        # next telethon function (which would then rebuild clients on a foreign loop)
+        try:
+            self.loop = asyncio.get_event_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+
         self.functions: List[Union[Callable, Awaitable]] = []
 
         for file in os.listdir(directory):
@@ -52,10 +61,6 @@ class FunctionsStorage:
         function = function_instance.execute()
 
         if inspect.isawaitable(function):
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-            loop.run_until_complete(function)
+            # restore our loop in case a scraper function's asyncio.run() cleared it
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(function)

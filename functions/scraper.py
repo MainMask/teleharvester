@@ -35,7 +35,7 @@ class ScrapeFunc(TelethonFunction):
         date_min = Prompt.ask("[bold red]date-min (DD.MM.YYYY or YYYY-MM-DD)[/]")
         date_max = Prompt.ask("[bold red]date-max (DD.MM.YYYY or YYYY-MM-DD)[/]")
         keyword = Prompt.ask("[bold red]keyword (optional)[/]", default="")
-        max_messages = int(Prompt.ask("[bold red]max messages[/]", default="1000000"))
+        max_messages = self.ask_int("[bold red]max messages[/]", default=1000000, min_value=1)
         fmt = Prompt.ask("[bold red]format[/]", choices=["parquet", "excel"], default="parquet")
         with_comments = Confirm.ask("[bold red]fetch comments?[/]", default=True)
         with_reactors = Confirm.ask("[bold red]fetch reactors? (slow)[/]", default=True)
@@ -75,7 +75,7 @@ class VerifyFunc(TelethonFunction):
         date_min = Prompt.ask("[bold red]date-min (same as scrape)[/]")
         date_max = Prompt.ask("[bold red]date-max (same as scrape)[/]")
         output = Prompt.ask("[bold red]output file (optional)[/]", default="")
-        comment_sample = int(Prompt.ask("[bold red]comment threads to re-check[/]", default="0"))
+        comment_sample = self.ask_int("[bold red]comment threads to re-check[/]", default=0, min_value=0)
 
         try:
             params = VerifyParams(

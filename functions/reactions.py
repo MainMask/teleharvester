@@ -18,7 +18,11 @@ class ReactionsFunc(TelethonFunction):
             reaction = random.choice(self.reactions)
 
         async with self.storage.ainitialize_session(session):
-            me = await session.get_me()
+            try:
+                me = await session.get_me()
+            except Exception as err:
+                console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+                return
 
             try:
                 await session(functions.messages.SendReactionRequest(
@@ -32,6 +36,8 @@ class ReactionsFunc(TelethonFunction):
                 console.print(f"[bold green][SUCCESS] [{self.safe(me.first_name)}][/] : Reaction \"{reaction}\" was sent")
 
     async def execute(self):
+        self.ask_accounts_count()
+
         link_to_message = console.input("[bold red]link to msg/post> [/]")
         peer, message_id = self.parse_message_link(link_to_message)
 

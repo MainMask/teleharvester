@@ -41,8 +41,19 @@ class JoinerFunc(TelethonFunction):
 
         elif mode == "2":
             try:
-                channel = await self.safe_call(lambda: session(GetFullChannelRequest(link)))
-                chat = channel.chats[1]
+                full = await self.safe_call(lambda: session(GetFullChannelRequest(link)))
+                linked_id = full.full_chat.linked_chat_id
+
+                if not linked_id:
+                    print(f"[-] [acc {index + 1}] no linked chat")
+                    return False
+
+                chat = next((c for c in full.chats if c.id == linked_id), None)
+
+                if chat is None:
+                    print(f"[-] [acc {index + 1}] linked chat not found")
+                    return False
+
                 await self.safe_call(lambda: session(JoinChannelRequest(chat)))
             except AccountLimited as error:
                 print(f"[-] [acc {index + 1}] limit: {error}")
@@ -83,6 +94,10 @@ class JoinerFunc(TelethonFunction):
         print()
 
         mode = console.input("[bold red]mode> [/]")
+
+        while mode not in ("1", "2"):
+            mode = console.input("[bold red]mode> [/]")
+
         link = console.input("[bold red]link> [/]")
         
         link = link.replace("+", "joinchat/")
@@ -105,7 +120,7 @@ class JoinerFunc(TelethonFunction):
         captcha_tasks = []
 
         if speed == "normal":
-            delay = Prompt.ask("[bold red]delay[/]", default="0")
+            delay = self.ask_int("[bold red]delay[/]", default=0, min_value=0)
             captcha = Confirm.ask("[bold red]captcha[/]")
 
             start = perf_counter()
@@ -128,8 +143,8 @@ class JoinerFunc(TelethonFunction):
                     if is_joined:
                         joined += 1
 
-                    await asyncio.sleep(int(delay))
-            
+                    await asyncio.sleep(delay)
+
             elif function_index == 1:
                 for index, session in enumerate(self.sessions):
                     await session.start()
@@ -149,7 +164,7 @@ class JoinerFunc(TelethonFunction):
                     console.print("[bold white]Starting broadcast[/]")
 
                     await broadcast_func.broadcast(session, link, broadcast_func.function)
-                    await asyncio.sleep(int(delay))
+                    await asyncio.sleep(delay)
 
         if speed == "fast":
             if not self.storage.initialize:
@@ -185,6 +200,12 @@ class JoinerFunc(TelethonFunction):
                 broadcast_func.broadcast(session, link, broadcast_func.function)
                 for session in self.sessions
             ])
+
+        for task in captcha_tasks:
+            task.cancel()
+
+        if captcha_tasks:
+            await asyncio.gather(*captcha_tasks, return_exceptions=True)
 
         if not self.storage.initialize:
             for session in self.sessions:

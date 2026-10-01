@@ -51,6 +51,8 @@ class SpamBlockFunc(TelethonFunction):
                     return result[0], session 
 
     async def execute(self):
+        self.ask_accounts_count()
+
         blocks: Dict[str, List[TelegramClient]] = {}
 
         results = await asyncio.gather(*[

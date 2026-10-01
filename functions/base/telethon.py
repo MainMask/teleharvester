@@ -12,5 +12,5 @@ class TelethonFunction(BaseFunction):
     def __init__(self, storage: SessionsStorage, settings: Settings):
         self.storage = storage
         self.settings = settings
-        
+
         self.sessions: List[TelegramClient] = storage.sessions

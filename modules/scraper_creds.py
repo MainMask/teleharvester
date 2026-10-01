@@ -33,7 +33,13 @@ def pick_session_string(storage) -> str | None:
         path = storage.get_session_path(client)
         console.print(f"[bold white][{index + 1}] {path}[/]")
 
-    choice = int(Prompt.ask("[bold magenta]account to use[/]", default="1")) - 1
+    raw = Prompt.ask("[bold magenta]account to use[/]", default="1")
+
+    if not raw.isdigit():
+        console.print("[bold red]Invalid account number.[/]")
+        return None
+
+    choice = int(raw) - 1
 
     if choice < 0 or choice >= len(sessions):
         console.print("[bold red]Invalid account number.[/]")

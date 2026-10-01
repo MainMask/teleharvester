@@ -105,9 +105,11 @@ class Settings:
 
         print()
 
-        delay = console.input("[bold white]Sending delay (e.g. 1-3): [/]")
-        delay = delay.split("-")
-        delay = [int(x) for x in delay]
+        while True:
+            parts = console.input("[bold white]Sending delay (e.g. 1-3): [/]").split("-")
+            if parts and all(part.strip().isdigit() for part in parts):
+                delay = [int(part) for part in parts]
+                break
 
         trigger = console.input("[bold white]Enter the trigger text after which accounts start the broadcast: [/]")
 

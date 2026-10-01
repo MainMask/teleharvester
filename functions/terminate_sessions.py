@@ -32,6 +32,8 @@ class TerminateSessionsFunc(TelethonFunction):
                         console.print(f"Reset authorization {authorization.ip} ({authorization.device_model}, {authorization.platform})")
 
     async def execute(self):
+        self.ask_accounts_count()
+
         await asyncio.gather(*[
             self.terminate_sessions(session)
             for session in track(self.sessions, "Terminating...")

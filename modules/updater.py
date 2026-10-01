@@ -8,6 +8,19 @@ import subprocess
 from git.exc import GitCommandError
 from git import Repo
 
+REPO_URL = "https://github.com/MainMask/teleharvester"
+
+
+def _init_repo() -> Repo:
+    """Initialise a local repo tracking teleharvester's master, for update checks."""
+    repo = Repo.init(os.getcwd())
+    origin = repo.create_remote("origin", REPO_URL)
+    origin.fetch()
+    repo.create_head("master", origin.refs.master)
+    repo.heads.master.set_tracking_branch(origin.refs.master)
+    repo.heads.master.checkout(True)
+    return repo
+
 
 def get_current_commit() -> typing.Union[bool, str]:
     """Get current commit"""
@@ -26,12 +39,7 @@ def check_update() -> dict:
         repo = git.Repo(os.getcwd())
     except git.exc.GitError:
         try:
-            repo = Repo.init(os.getcwd())
-            origin = repo.create_remote("origin", "https://github.com/MainMask/teleharvester")
-            origin.fetch()
-            repo.create_head("master", origin.refs.master)
-            repo.heads.master.set_tracking_branch(origin.refs.master)
-            repo.heads.master.checkout(True)
+            repo = _init_repo()
         except Exception as err:
             print(f"Warning: could not initialize repo for updates: {err}")
             return {"has_update": False}
@@ -126,9 +134,4 @@ def update(console):
         
         restart_app()
     except git.exc.InvalidGitRepositoryError:
-        repo = Repo.init(os.getcwd())
-        origin = repo.create_remote("origin", "https://github.com/MainMask/teleharvester")
-        origin.fetch()
-        repo.create_head("master", origin.refs.master)
-        repo.heads.master.set_tracking_branch(origin.refs.master)
-        repo.heads.master.checkout(True)
+        repo = _init_repo()

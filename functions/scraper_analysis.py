@@ -42,7 +42,7 @@ def _summary():
 def _sample():
     inp = Prompt.ask("[bold red]input[/]")
     out = Prompt.ask("[bold red]output[/]")
-    size = int(Prompt.ask("[bold red]sample size[/]", default="10000"))
+    size = TelethonFunction.ask_int("[bold red]sample size[/]", default=10000, min_value=1)
     analysis.sample(inp, out, "Content", "Group", size, 20)
 
 
@@ -64,7 +64,7 @@ def _links():
 
 def _read():
     inp = Prompt.ask("[bold red]input[/]")
-    head = int(Prompt.ask("[bold red]rows to show[/]", default="10"))
+    head = TelethonFunction.ask_int("[bold red]rows to show[/]", default=10, min_value=1)
     df = read_table(inp)
     console.print(df.head(head).to_string())
     console.print(f"[{len(df)} rows x {len(df.columns)} columns]")
