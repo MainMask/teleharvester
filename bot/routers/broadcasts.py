@@ -70,7 +70,9 @@ async def mail_run(
     instance, bot_function = resolve(functions, "pmmailing")
 
     try:
-        recipients = instance.load_recipients(data["path"])
+        # off the event loop: a .parquet recipients DB can be large and load_recipients
+        # is blocking (pq.read_table), which would otherwise stall the bot's polling loop
+        recipients = await asyncio.to_thread(instance.load_recipients, data["path"])
     except Exception as err:
         await message.answer(f"Файл не прочитан: {err}")
         return

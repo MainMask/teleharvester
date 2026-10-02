@@ -84,8 +84,8 @@ class SessionsStorage:
 
             with console.status("Initializing..."):
                 try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:  # no running loop (CLI path): make one for run_until_complete
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
@@ -170,6 +170,14 @@ class SessionsStorage:
         finally:
             if not self.initialize:
                 await session.disconnect()
+                # Bot mode reuses the same worker clients for the whole process life.
+                # Telethon keeps appending every RPC result's users/chats to the
+                # StringSession's in-memory _entities set, which never shrinks, so drop
+                # it when the client is released (the next use re-resolves peers anyway).
+                try:
+                    session.session._entities.clear()
+                except Exception:
+                    pass
 
     def __len__(self):
         return len(self.sessions)

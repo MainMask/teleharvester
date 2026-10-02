@@ -33,7 +33,11 @@ class ChangeNameFunc(TelethonFunction):
             first_name, last_name = self.get_random_name(names)
 
         async with self.storage.ainitialize_session(session):
-            me = await session.get_me()
+            try:
+                me = await session.get_me()
+            except Exception as err:
+                await report(f"get_me failed: {err}")
+                return
 
             full_name = (me.first_name or "") + (" " + me.last_name if me.last_name else "")
 

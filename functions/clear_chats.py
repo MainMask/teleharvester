@@ -23,8 +23,11 @@ class ClearDialogsFunc(TelethonFunction):
                             revoke=True
                         ))
                     else:
+                        # pass the (freshly iterated) Channel entity, not the marked id,
+                        # so the InputChannel is built directly instead of via a cache lookup
+                        # — matching the DeleteHistoryRequest branch above
                         await session(
-                            functions.channels.LeaveChannelRequest(dialog.id)
+                            functions.channels.LeaveChannelRequest(dialog.entity)
                         )
                 except Exception as err:
                     await report(f"[!] {dialog.id}: {err}")

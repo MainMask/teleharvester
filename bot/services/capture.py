@@ -5,9 +5,21 @@ worker accounts can re-upload it; formatting entities and custom emoji are carri
 through modules.rich_message.
 """
 import os
+import shutil
 import tempfile
 
 from modules.rich_message import MediaItem, RichContent, convert_entities
+
+# Broadcast media is downloaded here (project-local, not system /tmp) so a process
+# killed mid-send — e.g. the OOM killer, which never runs content.cleanup() — leaves
+# its temp dirs somewhere clear_orphan_temp() can sweep on the next start.
+BROADCAST_TMP_DIR = os.path.join("tmp", "broadcast")
+
+
+def clear_orphan_temp() -> None:
+    """Drop broadcast temp dirs left by a previous process. Safe at startup: no
+    broadcast is in flight yet, so nothing live is removed."""
+    shutil.rmtree(BROADCAST_TMP_DIR, ignore_errors=True)
 
 
 def _source_and_flags(message):
@@ -67,7 +79,8 @@ async def capture(message, bot, album=None) -> RichContent:
                 continue
 
             if content.temp_dir is None:
-                content.temp_dir = tempfile.mkdtemp(prefix="bcast_")
+                os.makedirs(BROADCAST_TMP_DIR, exist_ok=True)
+                content.temp_dir = tempfile.mkdtemp(prefix="bcast_", dir=BROADCAST_TMP_DIR)
 
             media = await _download(bot, content.temp_dir, index, found)
             content.media.append(media)

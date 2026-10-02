@@ -1,3 +1,5 @@
+import asyncio
+
 from telethon.tl.functions.contacts import AddContactRequest
 from telethon.tl.types import InputUser
 from rich.prompt import Prompt
@@ -33,7 +35,9 @@ class AddContactsFunc(TelethonFunction):
         self.added = 0
 
         try:
-            rows = parquet_db.load(path)
+            # off the event loop: pq.read_table + to_pylist is blocking and a large
+            # DB would otherwise stall the bot's polling loop for its whole duration
+            rows = await asyncio.to_thread(parquet_db.load, path)
         except Exception as err:
             await report(str(err))
             return

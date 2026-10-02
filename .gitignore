@@ -135,6 +135,7 @@ assets/targets.txt
 assets/databases/
 output/
 data/
+tmp/
 
 # OS files
 .DS_Store

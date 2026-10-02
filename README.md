@@ -149,6 +149,11 @@ Send `/start`, then **📋 Функции** to pick a function by category:
 - **🛡 Модерация** — report message/post, report user.
 - **🧹 Сервис** — account status (@SpamBot), phone stats, terminate sessions, clear dialogs.
 - **🔎 Скрапинг** — scrape, verify, analyse (runs on one worker's session; results come back as files).
+  Bot-launched scrapes run in a background thread that **cannot be stopped from the bot**, hold the single
+  job slot for their whole duration, and are **not resumable** — a bot restart (e.g. `systemctl restart`)
+  ends the run and the next launch starts it fresh. Use the bot for short, interactive scrapes; run
+  **long or multi-day scrapes through the `deploy/teleharvester-scrape@.service` template** (below), which
+  passes `--resume` and checkpoints on SIGTERM.
 
 Risky functions are marked ⚠️ and refuse to run with no workers. Only **one task runs at a time**
 (the worker pool is shared); long or looping jobs — and the trigger-based chat listener — show a
@@ -156,6 +161,41 @@ Risky functions are marked ⚠️ and refuse to run with no workers. Only **one 
 
 Media for broadcasts and photos are taken from the local `media/` and `assets/photos/` folders
 (as in the CLI); the bot does not accept uploads in this version.
+
+## Running under systemd
+
+For long-lived server use (the control bot as a daemon, or multi-day scrape runs), unit files are
+in [`deploy/`](deploy/). They assume the repo at `/opt/teleharvester` with a venv in `.venv/` and a
+`teleharvester` user — edit the `User=`, `WorkingDirectory=` and `ExecStart=` lines to match your install.
+
+**Control bot** — `deploy/teleharvester-bot.service` runs `python -m bot` with `Restart=on-failure`
+(so it survives crashes) and logs to journald. aiogram already retries transient polling errors and
+stops gracefully on SIGTERM. The worker accounts in `sessions/` are read once at startup, so after
+adding or removing a session file restart the service (`systemctl restart teleharvester-bot`) for the
+change to take effect.
+
+```bash
+sudo cp deploy/teleharvester-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now teleharvester-bot
+journalctl -u teleharvester-bot -f
+```
+
+**Scrape jobs** — `deploy/teleharvester-scrape@.service` is a template: one instance per job, with its
+arguments in `deploy/scrape-<name>.env` (see [`deploy/scrape-example.env`](deploy/scrape-example.env)).
+The unit always passes `--resume`, and the scraper turns SIGTERM (`systemctl stop`/`restart`) into a
+clean checkpoint, so a restart continues from where it left off instead of re-scraping or losing data.
+
+For multi-day runs keep the default file session (`scraper.session`) rather than `TG_SESSION_STRING`:
+Telethon caches every user/chat it sees, and a file session keeps that cache on disk (flat memory),
+while a string session keeps it all in RAM and grows unbounded over millions of scraped reactors.
+
+```bash
+sudo cp deploy/teleharvester-scrape@.service /etc/systemd/system/
+cp deploy/scrape-example.env deploy/scrape-myrun.env   # edit channels/dates/name
+sudo systemctl daemon-reload
+sudo systemctl start teleharvester-scrape@myrun
+```
 
 ## Scraping & analysis
 
@@ -213,6 +253,13 @@ Output files are named after `--name` with the scraped post-date span appended:
 `<name>_posts_<from>-<to>`, plus `<name>_participants_…` (unless `--no-participants`) and
 `<name>_reactors_…` (unless `--no-reactors`; slow — one API call per reacted message).
 `FLOOD_WAIT` rate limits are waited out automatically.
+
+The scrape itself is memory-bounded (it checkpoints and frees its buffers as it goes), but
+the final `participants` step loads the whole posts + reactors output into RAM at once. On a
+very large scrape (millions of reactors) that step can run the machine out of memory **after**
+the `_posts`/`_reactors` files are already safely written. If RAM is tight, scrape with
+`--no-participants` and build the participants file separately later
+(`python -m scraper participants …`) on a machine with more memory.
 
 ### Interruptions / resume
 

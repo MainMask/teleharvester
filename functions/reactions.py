@@ -24,11 +24,14 @@ class ReactionsFunc(TelethonFunction):
                 return
 
             try:
-                await session(functions.messages.SendReactionRequest(
+                # safe_call waits out short FloodWaits so the reaction actually lands
+                # (mass reactions on one post trip rate limits); a long wait raises
+                # AccountLimited, caught by the except below and reported.
+                await self.safe_call(lambda: session(functions.messages.SendReactionRequest(
                     peer=peer,
                     msg_id=int(message_id),
                     reaction=[types.ReactionEmoji(emoticon=reaction)]
-                ))
+                )))
             except Exception as err:
                 await report(f"[ERROR] [{me.first_name}] : {err}")
             else:

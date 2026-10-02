@@ -25,7 +25,11 @@ class ReportUserFunc(TelethonFunction):
     async def run(self, link, reason_type, comment, report):
         for session in self.sessions:
             async with self.storage.ainitialize_session(session):
-                me = await session.get_me()
+                try:
+                    me = await session.get_me()
+                except Exception as err:
+                    await report(f"get_me failed: {err}")
+                    continue
                 try:
                     await session(
                         functions.account.ReportPeerRequest(

@@ -42,8 +42,9 @@ class CommentsBroadcastFunc(TelethonFunction):
                 else:
                     count += 1
                     await report(f"[{me.first_name}] sent. COUNT: {count}")
-                finally:
-                    await self.delay()
+
+                # delay between sends only; a break (limit / 5 errors) skips it
+                await self.delay()
 
     async def run(self, link, content, delay, report):
         self.delay_range = delay

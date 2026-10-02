@@ -15,13 +15,15 @@ class PollVoteFunc(TelethonFunction):
                 message = await session.get_messages(channel, ids=post_id)
                 option = message.poll.poll.answers[option_number].option
 
-                await session(
+                # safe_call waits out short FloodWaits so the vote lands; a long wait
+                # raises AccountLimited, caught by the except below and reported.
+                await self.safe_call(lambda: session(
                     functions.messages.SendVoteRequest(
                         peer=channel,
                         msg_id=post_id,
                         options=[option]
                     )
-                )
+                ))
             except Exception as err:
                 await report(f"[!] {err}")
 

@@ -14,5 +14,5 @@ def load_toml(path: str = "config.toml") -> dict:
     if not os.path.exists(path):
         return {}
 
-    with open(path) as file:
+    with open(path, encoding="utf-8") as file:
         return toml.load(file)

@@ -76,6 +76,14 @@ class JobManager:
                     await session.disconnect()
                 except Exception:
                     pass
+                # Telethon appends every RPC result's users/chats to the StringSession's
+                # in-memory _entities set, which never shrinks; on a multi-day bot run the
+                # persistent worker clients would grow unbounded. Drop it per job (functions
+                # re-resolve peers anyway), keeping memory bounded to one job's worth.
+                try:
+                    session.session._entities.clear()
+                except Exception:
+                    pass
             self._clear()
 
     # --- interactive / threaded jobs --------------------------------------
@@ -113,6 +121,17 @@ class JobManager:
         if self._timeout_task is not None:
             self._timeout_task.cancel()
             self._timeout_task = None
+
+    def lock(self):
+        """Make the held interactive slot non-cancelable.
+
+        Called alongside disarm_timeout once the long work has started (e.g. the
+        report flow's replay_rest): a /cancel must not run on_abort and free the
+        slot while that work is still driving the workers, or a second job could
+        start on the same clients and _finish's release() would clear a slot that
+        no longer belongs to it.
+        """
+        self._cancelable = False
 
     def release(self):
         self._clear()

@@ -74,6 +74,21 @@ class TestCapture:
         assert after == before  # no leftover temp dir on failure
 
 
+class TestClearOrphanTemp:
+    def test_removes_leftover_broadcast_dirs(self):
+        from bot.services.capture import BROADCAST_TMP_DIR, clear_orphan_temp
+
+        os.makedirs(BROADCAST_TMP_DIR, exist_ok=True)
+        orphan = tempfile.mkdtemp(prefix="bcast_", dir=BROADCAST_TMP_DIR)  # a killed run's leftover
+        with open(os.path.join(orphan, "f.bin"), "w") as fileobj:
+            fileobj.write("x")
+
+        clear_orphan_temp()
+
+        assert not os.path.exists(orphan)
+        assert not os.path.exists(BROADCAST_TMP_DIR)
+
+
 class TestBuildContent:
     def _message(self, bot, **kw):
         replies = []

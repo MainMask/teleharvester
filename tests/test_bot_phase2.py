@@ -121,6 +121,35 @@ class TestRuns:
         assert rows and rows[0][0] == 1 and rows[0][2] == 2
 
 
+class _DeadSession(_Session):
+    """A worker whose session is dead/unauthorized: get_me raises."""
+
+    async def get_me(self):
+        raise RuntimeError("unauthorized")
+
+
+class TestDeadWorkerSkipped:
+    """A dead worker is skipped, not fatal to the whole batch."""
+
+    def test_report_user_skips_dead_worker(self):
+        from functions.report_user import ReportUserFunc
+        fn = ReportUserFunc(_Storage(), ns())
+        fn.sessions = [_DeadSession(), _Session()]
+        msgs, report = collect()
+        asyncio.run(fn.run("@someone", fn.reasons[0][1], "spam", report))
+        assert any("get_me failed" in m for m in msgs)  # dead one reported...
+        assert any("submitted" in m for m in msgs)      # ...and the healthy one still ran
+
+    def test_changename_survives_dead_worker(self):
+        from functions.changename import ChangeNameFunc
+        fn = ChangeNameFunc(_Storage(), ns())
+        fn.sessions = [_DeadSession(), _Session()]
+        msgs, report = collect()
+        asyncio.run(fn.run(report, first_name="Ivan", last_name=None))  # must not raise
+        assert any("get_me failed" in m for m in msgs)
+        assert any("Name changed" in m for m in msgs)
+
+
 # --- job manager (single-slot, stop, exclusivity) ---
 
 class _Bot:
@@ -212,6 +241,55 @@ class TestJobManager:
 
         started, active = asyncio.run(scenario())
         assert started is False and active is False
+
+    def test_job_clears_worker_entity_cache(self):
+        # A finished job drops each worker's Telethon in-memory entity set, so a
+        # multi-day bot run doesn't accumulate every seen user/chat until restart.
+        class S:
+            def __init__(self):
+                self.session = ns(_entities={("u", 1), ("u", 2)})
+
+            async def disconnect(self):
+                pass
+
+        async def scenario():
+            m = JobManager()
+            s = S()
+            await m.run(_Bot(), 1, _Pool([s]), object(), ns(risk="safe"),
+                        lambda f, r: asyncio.sleep(0), "H", "done", stop_sessions=[s])
+            await asyncio.sleep(0.05)
+            return s.session._entities
+
+        assert asyncio.run(scenario()) == set()
+
+
+class TestSessionRelease:
+    def test_ainitialize_session_clears_entity_cache(self, tmp_path):
+        # The shared release point for rotation/gather functions: on disconnect in bot
+        # mode (initialize=False) the worker's growing _entities set is dropped too.
+        from modules.storages.sessions_storage import SessionsStorage
+
+        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False)
+
+        class S:
+            def __init__(self):
+                self.session = ns(_entities={("u", 1)})
+                self.connected = False
+
+            async def connect(self):
+                self.connected = True
+
+            async def disconnect(self):
+                self.connected = False
+
+        async def scenario():
+            s = S()
+            async with storage.ainitialize_session(s):
+                s.session._entities.add(("u", 2))
+            return s.session._entities, s.connected
+
+        entities, connected = asyncio.run(scenario())
+        assert entities == set() and connected is False
 
     def test_acquire_is_exclusive(self):
         m = JobManager()
@@ -338,6 +416,45 @@ class TestFinishReleasesSlot:
             return m.active
 
         assert asyncio.run(scenario()) is False
+
+
+# --- report _finish locks the slot so /cancel can't free it mid-replay (race) ---
+
+class TestFinishLocksSlotDuringReplay:
+    def test_cancel_during_replay_is_refused(self):
+        from bot.routers.moderation import _finish
+
+        release = asyncio.Event()
+        in_replay = asyncio.Event()
+
+        class _Inst:
+            async def replay_rest(self, *a):
+                in_replay.set()
+                await release.wait()  # replay is driving the rest of the workers right now
+
+        class _Sess:
+            async def disconnect(self):
+                return None
+
+        async def scenario():
+            m = JobManager()
+            # on_abort would fire only if stop() were (wrongly) allowed; set release so a
+            # regression can't deadlock the test, but the assertions still catch it.
+            m.acquire("Репорт", on_abort=lambda: release.set(), timeout=0)
+            flow = {"session": _Sess(), "rest": [], "peer": "x",
+                    "ids": [1], "comment": "c", "selections": []}
+            task = asyncio.create_task(_finish(_Inst(), flow, _Bot(), 1, m))
+            await in_replay.wait()
+            stopped = await m.stop()        # a /cancel mid-replay
+            active_during = m.active
+            release.set()
+            await task
+            return stopped, active_during, m.active
+
+        stopped, active_during, active_after = asyncio.run(scenario())
+        assert stopped is False         # stop refused while locked
+        assert active_during is True    # slot stayed held during replay_rest
+        assert active_after is False    # and freed once _finish returned
 
 
 # --- mail_run bails before touching the shared instance when a job is running ---

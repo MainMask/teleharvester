@@ -7,6 +7,7 @@ from modules.storages.sessions_storage import SessionsStorage
 from bot.config import BotConfig
 from bot.middlewares.auth import AuthMiddleware
 from bot.services.album import AlbumMiddleware
+from bot.services.capture import clear_orphan_temp
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.registry import missing_classes
@@ -30,6 +31,8 @@ from bot.routers import (
 async def run_bot():
     config = BotConfig()
     config.validate()
+
+    clear_orphan_temp()  # sweep broadcast temp dirs a previous run was killed before cleaning
 
     settings = Settings()
     storage = SessionsStorage("sessions", settings.api_id, settings.api_hash, initialize=False)

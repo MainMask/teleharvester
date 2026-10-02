@@ -137,9 +137,9 @@ async def scrape_run(message: Message, state: FSMContext, pool: WorkerPool, mana
         return
 
     before = scraping.dir_snapshot(out_dir)
-    await message.answer("Скрап запущен — может занять долго. Дождитесь файлов.")
 
     try:
+        await message.answer("Скрап запущен — может занять долго. Дождитесь файлов.")
         await scraping.do_scrape(build_credentials(settings, session_string), params)
     except SystemExit as err:
         await message.answer(f"Скрап остановлен: {err}")
@@ -235,16 +235,16 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, mana
         await message.answer(f"⛔ Занят: {manager.label}. Дождитесь завершения.")
         return
 
-    await message.answer("Верификация запущена…")
-
-    # Drop a stale <input>_missed from an earlier run first, so the file existing after
-    # the run cleanly means THIS run wrote it (mtime can't tell two runs in one second apart).
-    if os.path.exists(output):
-        os.remove(output)
-
     interrupted = False
     bad_input = None
     try:
+        await message.answer("Верификация запущена…")
+
+        # Drop a stale <input>_missed from an earlier run first, so the file existing after
+        # the run cleanly means THIS run wrote it (mtime can't tell two runs in one second apart).
+        if os.path.exists(output):
+            os.remove(output)
+
         await scraping.do_verify(build_credentials(settings, session_string), params)
     except SystemExit as err:
         # verify.run raises SystemExit(1) (int code) both when it FOUND missed posts
@@ -369,8 +369,6 @@ async def analysis_arg(message: Message, state: FSMContext, manager: JobManager)
         await message.answer(f"⛔ Занят: {manager.label}. Дождитесь завершения.")
         return
 
-    await message.answer("Выполняется…")
-
     # summary/filter write several files by a prefix and return no path; snapshot the
     # output dir so the created files can be sent back, the way scrape does.
     multi_file = tool in ("summary", "filter")
@@ -378,6 +376,7 @@ async def analysis_arg(message: Message, state: FSMContext, manager: JobManager)
     before = scraping.dir_snapshot(out_dir) if multi_file else None
 
     try:
+        await message.answer("Выполняется…")
         if tool == "read":
             df = await asyncio.to_thread(read_table, collected["input"])
             await message.answer(read_preview(df), parse_mode="HTML")

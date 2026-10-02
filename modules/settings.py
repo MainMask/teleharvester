@@ -18,12 +18,19 @@ class Settings:
             console.print("[bold red]config.toml not found. Run `python main.py` once to create it.[/]")
             raise SystemExit(1)
 
-        self.api_id: int = config["sessions"]["api_id"]
-        self.api_hash: str = config["sessions"]["api_hash"]
-        self.messages: List[str] = config["broadcast"]["messages"]
-        self.messages_count: int = config["broadcast"]["messages_count"]
-        self.trigger: str = config["broadcast"]["trigger"]
-        self.delay: List[int] = config["broadcast"]["delay"]
+        try:
+            self.api_id: int = config["sessions"]["api_id"]
+            self.api_hash: str = config["sessions"]["api_hash"]
+            self.messages: List[str] = config["broadcast"]["messages"]
+            self.messages_count: int = config["broadcast"]["messages_count"]
+            self.trigger: str = config["broadcast"]["trigger"]
+            self.delay: List[int] = config["broadcast"]["delay"]
+        except KeyError as err:
+            console.print(
+                f"[bold red]config.toml is missing {err}. "
+                "Delete it and run `python main.py` once to recreate it.[/]"
+            )
+            raise SystemExit(1)
 
         limits = config.get("limits", {})
         self.per_account_daily: int = limits.get("per_account_daily", 30)

@@ -4,6 +4,8 @@ import asyncio
 import json
 import re
 import shlex
+import signal
+import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, time as dtime, timedelta, timezone
@@ -603,6 +605,21 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
     dialogs_loaded = False
     channel_closed = False  # the channel's final checkpoint is written; Ctrl-C must not roll it back
     cut_short: int | None = None  # first channel a --max-messages/--timeout stop left unfinished
+
+    # SIGTERM (systemctl stop / docker stop) is NOT turned into a KeyboardInterrupt the way
+    # SIGINT is, so without this it would kill the run mid-batch. Convert it to task
+    # cancellation so the CancelledError handler below checkpoints a clean --resume point.
+    # Only in the main thread (CLI / systemd); when the bot runs a scrape in a worker thread
+    # add_signal_handler is unavailable, and the bot owns process shutdown anyway.
+    loop = asyncio.get_running_loop()
+    main_task = asyncio.current_task()
+    sigterm_handled = False
+    if threading.current_thread() is threading.main_thread():
+        try:
+            loop.add_signal_handler(signal.SIGTERM, main_task.cancel)
+            sigterm_handled = True
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass  # Windows or a loop without signal support: fall back to per-150 checkpoints
     try:
         for i, channel in enumerate(params.channels):
             if i < resume_channel_index:
@@ -776,6 +793,11 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
             _write_checkpoint(i, last_id)
         raise
     finally:
+        if sigterm_handled:
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
         await client.disconnect()
 
     # reached only on a run that finished without an exception (a crash bubbles to

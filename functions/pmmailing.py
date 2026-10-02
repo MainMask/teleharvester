@@ -19,6 +19,15 @@ from modules.rich_message import RichContent
 STATS_PATH = os.path.join("stats", "pm_mailing.json")
 LIMITS_PATH = os.path.join("stats", "account_limits.json")
 
+# The stats ledger grows by one entry per unique recipient ever messaged and is
+# rewritten in full on each save. Buffer this many successes in memory before
+# flushing it (run() always flushes the tail), so a multi-day campaign doesn't
+# rewrite a large file on every single send. A hard crash can then lose up to this
+# many of the most recent records (at worst that many recipients re-messaged next
+# run); acceptable for a dedup/stat ledger. account_limits.json stays per-send: it
+# is small (pruned to today) and its per-send write guards the daily cap on a crash.
+STATS_SAVE_EVERY = 25
+
 
 class PmMailingFunc(TelethonFunction):
     """Mailing to PM (with stats)"""
@@ -44,7 +53,15 @@ class PmMailingFunc(TelethonFunction):
         entry["count"] += 1
         entry["last_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        self.save_stats()
+        self._unsaved += 1
+        if self._unsaved >= STATS_SAVE_EVERY:
+            self.flush_stats()
+
+    def flush_stats(self):
+        """Persist successes buffered since the last save (see STATS_SAVE_EVERY)."""
+        if self._unsaved:
+            self.save_stats()
+            self._unsaved = 0
 
     def load_limits(self):
         if os.path.exists(LIMITS_PATH):
@@ -52,6 +69,13 @@ class PmMailingFunc(TelethonFunction):
                 self.limits = json.load(fileobj)
         else:
             self.limits = {}
+
+        # keep only today's counters: stale-date entries already count as 0 (see
+        # account_sent_today), so dropping them changes nothing but stops the file
+        # growing by one entry per account forever on a long-lived process.
+        today = date.today().isoformat()
+        self.limits = {key: entry for key, entry in self.limits.items()
+                       if entry.get("date") == today}
 
     def save_limits(self):
         os.makedirs("stats", exist_ok=True)
@@ -187,12 +211,16 @@ class PmMailingFunc(TelethonFunction):
         self._content = content
         self._me_cache = {}
         self._active_accounts = set()
+        self._unsaved = 0
         self.delay_range = delay
 
         self.load_stats()
         self.load_limits()
 
-        processed = await self.run_with_rotation(recipients, self.send_one)
+        try:
+            processed = await self.run_with_rotation(recipients, self.send_one)
+        finally:
+            self.flush_stats()  # persist the tail on any exit (success, error, cancel)
 
         if processed < len(recipients):
             await report(

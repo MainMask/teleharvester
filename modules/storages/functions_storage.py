@@ -23,8 +23,8 @@ class FunctionsStorage:
         # and a scraper function's asyncio.run() must not leave it detached for the
         # next telethon function (which would then rebuild clients on a foreign loop)
         try:
-            self.loop = asyncio.get_event_loop()
-        except RuntimeError:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:  # no running loop (CLI path): make one for run_until_complete
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
 
@@ -36,7 +36,9 @@ class FunctionsStorage:
                     file[:-3], os.path.join(directory, file)
                 )
 
-        self.functions.sort(key=lambda item: item[1].lower())
+        # item[1] is the class docstring (the menu label); a *Func without one would
+        # make None.lower() crash startup, so treat a missing docstring as empty.
+        self.functions.sort(key=lambda item: (item[1] or "").lower())
 
     def load_function(self, name: str, path: str):
         spec = importlib.util.spec_from_file_location(name, path)

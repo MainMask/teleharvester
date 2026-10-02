@@ -99,7 +99,11 @@ class ReportFunc(TelethonFunction):
         """Replay the recorded report path on the remaining workers."""
         for session in sessions:
             async with self.storage.ainitialize_session(session):
-                me = await session.get_me()
+                try:
+                    me = await session.get_me()
+                except Exception as err:
+                    await report(f"get_me failed: {err}")
+                    continue
                 try:
                     await self.replay(session, peer, ids, comment, selections)
                 except Exception as err:

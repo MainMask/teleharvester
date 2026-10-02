@@ -215,6 +215,7 @@ def _options_kb(options):
 async def _finish(instance, flow, bot, chat_id, manager: JobManager):
     _FLOWS.pop(chat_id, None)
     manager.disarm_timeout()  # work starts now; don't let the inactivity timeout free the slot mid-replay
+    manager.lock()            # ...nor a /cancel: replay_rest is driving the workers until release()
     try:
         await flow["session"].disconnect()
     except Exception:

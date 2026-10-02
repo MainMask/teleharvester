@@ -232,6 +232,14 @@ def test_verify_handles_flood(tmp_path, capsys, monkeypatch):
     assert "Verification interrupted" in out and "FloodWaitError" in out
 
 
+def test_chunks_streams_a_generator_like_a_list():
+    data = list(range(0, 450))
+    expected = [data[i:i + 200] for i in range(0, len(data), 200)]
+    assert list(verify._chunks(data, 200)) == expected
+    assert list(verify._chunks((x for x in data), 200)) == expected  # lazy, not materialised
+    assert list(verify._chunks([], 200)) == []
+
+
 def test_verify_subcommand_parses():
     args = build_parser().parse_args(
         ["verify", "--input", "x.parquet", "--channel", "@c",

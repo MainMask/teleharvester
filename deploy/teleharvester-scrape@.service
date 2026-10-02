@@ -1,0 +1,30 @@
+[Unit]
+Description=teleharvester scrape job "%i"
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# --- edit these two for your install ---------------------------------------
+User=teleharvester
+WorkingDirectory=/opt/teleharvester
+# ---------------------------------------------------------------------------
+# Per-job arguments live in deploy/scrape-<name>.env as, e.g.:
+#   SCRAPE_ARGS=--channels @a,@b --date-min 01.01.2024 --date-max 31.01.2024 --name %i
+# systemd splits the unquoted $SCRAPE_ARGS on whitespace into separate argv items.
+EnvironmentFile=/opt/teleharvester/deploy/scrape-%i.env
+ExecStart=/opt/teleharvester/.venv/bin/python -m scraper scrape $SCRAPE_ARGS --resume
+
+# A crash/restart continues from the last checkpoint because of --resume (it prints
+# "not found; starting a fresh run" harmlessly on the very first start).
+Restart=on-failure
+RestartSec=15
+# SIGTERM (systemctl stop / restart) is turned into a clean checkpoint by the scraper
+# itself (scraper/scrape.py); allow time to flush the final shard + resume.json.
+TimeoutStopSec=60
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

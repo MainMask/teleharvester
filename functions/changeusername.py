@@ -27,7 +27,11 @@ class ChangeUsernameFunc(TelethonFunction):
 
     async def change(self, session, report, username=None, base=None):
         async with self.storage.ainitialize_session(session):
-            me = await session.get_me()
+            try:
+                me = await session.get_me()
+            except Exception as err:
+                await report(f"get_me failed: {err}")
+                return
 
             if base is not None:
                 username = await self.generate_username(session, base)
@@ -45,6 +49,11 @@ class ChangeUsernameFunc(TelethonFunction):
 
     async def run(self, report, usernames=None, base=None):
         if usernames is not None:
+            if len(usernames) < len(self.sessions):
+                await report(
+                    f"[!] usernames в файле: {len(usernames)}, аккаунтов: {len(self.sessions)} — "
+                    f"{len(self.sessions) - len(usernames)} аккаунт(ов) без имени будут пропущены"
+                )
             await asyncio.gather(*[
                 self.change(session, report, username=username)
                 for session, username in zip(self.sessions, usernames)

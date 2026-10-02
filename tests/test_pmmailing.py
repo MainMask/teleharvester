@@ -5,13 +5,17 @@ recipient-prep refactor must preserve.
 """
 
 import asyncio
+import json
 import types
+from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from unittest.mock import patch
 
 from telethon.tl import types as tl_types
 
+import functions.pmmailing as pm
 from functions.pmmailing import PmMailingFunc
+from modules.rich_message import RichContent
 
 
 def _fn():
@@ -80,3 +84,48 @@ class TestResolvePeer:
 
         result = asyncio.run(fn.resolve_peer(session, "+15551234567"))
         assert result is imported_user
+
+
+class TestStatsSaveBatching:
+    """pm_mailing.json is flushed every STATS_SAVE_EVERY successes, not per send,
+    and the tail is always persisted by run()."""
+
+    def _run_campaign(self, tmp_path, n_recipients):
+        @asynccontextmanager
+        async def ctx(session):
+            yield
+
+        async def get_me():
+            return types.SimpleNamespace(id=1, first_name="A")
+
+        async def anoop(*args, **kwargs):
+            return None
+
+        session = types.SimpleNamespace(get_me=get_me, send_message=anoop)
+        storage = types.SimpleNamespace(sessions=[session], ainitialize_session=ctx)
+        settings = types.SimpleNamespace(delay=[0], per_account_daily=10_000, account_pause=[0])
+        fn = PmMailingFunc(storage, settings)
+
+        recipients = [f"user{i}" for i in range(n_recipients)]
+        asyncio.run(fn.run(recipients, RichContent(text="hi"), [0], anoop))
+
+    def test_batches_saves_and_flushes_tail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm_mailing.json"))
+        monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "account_limits.json"))
+
+        saves = []
+        real_save = PmMailingFunc.save_stats
+
+        def spy(self):
+            saves.append(1)
+            real_save(self)
+
+        with patch.object(PmMailingFunc, "save_stats", spy):
+            self._run_campaign(tmp_path, 60)
+
+        # 60 successes, STATS_SAVE_EVERY=25 -> 2 periodic flushes (at 25, 50) + 1 tail flush
+        assert pm.STATS_SAVE_EVERY == 25
+        assert len(saves) == 3  # not 60 (one per send)
+
+        data = json.loads((tmp_path / "pm_mailing.json").read_text())
+        assert len(data) == 60  # tail flushed: every success persisted

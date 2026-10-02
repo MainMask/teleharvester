@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from functions.base.base import BaseFunction
 from functions.base.telethon import TelethonFunction
+from functions.changeusername import ChangeUsernameFunc
 
 
 def _fn(sessions, delay=(2, 5)):
@@ -73,3 +74,32 @@ class TestDelay:
         fn = _fn(["a"], delay=[3])
         assert fn.delay_range is None  # class default, not leaked per instance
         assert self._run_delay(fn) == [3]
+
+
+class TestChangeUsernameFileMode:
+    def _run(self, sessions, usernames):
+        storage = types.SimpleNamespace(sessions=list(sessions))
+        settings = types.SimpleNamespace(delay=[1])
+        fn = ChangeUsernameFunc(storage, settings)
+
+        reports, changed = [], []
+
+        async def report(msg):
+            reports.append(msg)
+
+        async def fake_change(session, report_, username=None, base=None):
+            changed.append(username)
+
+        fn.change = fake_change
+        asyncio.run(fn.run(report, usernames=usernames))
+        return reports, changed
+
+    def test_warns_and_skips_when_fewer_usernames_than_accounts(self):
+        reports, changed = self._run(["s1", "s2", "s3"], ["a", "b"])
+        assert any("пропущены" in m for m in reports)
+        assert changed == ["a", "b"]  # third account left untouched
+
+    def test_no_warning_when_counts_match(self):
+        reports, changed = self._run(["s1", "s2"], ["a", "b"])
+        assert not any("пропущены" in m for m in reports)
+        assert changed == ["a", "b"]

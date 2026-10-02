@@ -1,0 +1,28 @@
+[Unit]
+Description=teleharvester control bot (aiogram host over Telethon workers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# --- edit these three for your install -------------------------------------
+User=teleharvester
+WorkingDirectory=/opt/teleharvester
+ExecStart=/opt/teleharvester/.venv/bin/python -m bot
+# ---------------------------------------------------------------------------
+# token/admins come from config.toml [bot]; to override via env instead, drop
+# BOT_TOKEN / BOT_ADMINS into this file:
+#EnvironmentFile=/opt/teleharvester/.env
+
+# survive crashes and transient failures over a multi-day run
+Restart=on-failure
+RestartSec=5
+# aiogram turns SIGTERM into a graceful polling stop; give it room to finish
+TimeoutStopSec=30
+
+# logs go to journald (journalctl -u teleharvester-bot -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

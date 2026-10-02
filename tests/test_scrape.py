@@ -615,6 +615,35 @@ def test_async_cancel_checkpoints_and_hints(monkeypatch, tmp_path, capsys):
     assert meta["last_id"] == 30
 
 
+def test_sigterm_checkpoints_and_hints(monkeypatch, tmp_path, capsys):
+    import os
+    import signal
+
+    class SigtermClient(FakeClient):
+        """systemctl stop / docker stop: a SIGTERM lands after the first saved post."""
+
+        def _main_gen(self, offset_id):
+            async def gen():
+                yield _msg(40, datetime(2025, 1, 1, tzinfo=timezone.utc), "too new")
+                yield _msg(30, datetime(2024, 6, 6, tzinfo=timezone.utc), "keep")
+                os.kill(os.getpid(), signal.SIGTERM)  # default action would kill the process
+                await asyncio.sleep(0.1)              # let the loop deliver it -> task.cancel()
+                yield _msg(20, datetime(2024, 6, 5, tzinfo=timezone.utc), "must not reach")
+            return gen()
+
+    monkeypatch.setattr(scrape, "TelegramClient", SigtermClient)
+
+    # The process surviving this call at all proves _scrape installed the SIGTERM
+    # handler (otherwise the os.kill above would terminate pytest).
+    with pytest.raises(SystemExit):
+        scrape.run(Credentials(1, "h"), _params(tmp_path))
+
+    out = capsys.readouterr().out
+    assert "scraper scrape" in out and "--resume" in out
+    meta = json.loads((_ckpt(tmp_path) / "resume.json").read_text())
+    assert meta["last_id"] == 30  # post 30 saved; post 20 never reached
+
+
 def test_resume_command_is_parseable(tmp_path):
     from scraper.cli import build_parser
 

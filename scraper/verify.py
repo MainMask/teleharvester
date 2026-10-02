@@ -7,6 +7,7 @@ un-scraped post can be told apart from an ordinary deletion.
 """
 
 import asyncio
+import itertools
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -43,9 +44,12 @@ class VerifyParams:
     comment_sample: int = 0
 
 
-def _chunks(seq, n):
-    for i in range(0, len(seq), n):
-        yield seq[i:i + n]
+def _chunks(iterable, n):
+    """Yield successive lists of up to `n` items. Works on a list or a lazy
+    generator, so a huge id range can be probed without materialising it."""
+    it = iter(iterable)
+    while batch := list(itertools.islice(it, n)):
+        yield batch
 
 
 def _load_saved(pattern: str, group: str) -> pd.DataFrame:
@@ -158,10 +162,13 @@ async def _verify(creds: Credentials, params: VerifyParams):
               f"(newest id {getattr(newest, 'id', '?')}, oldest id {getattr(oldest, 'id', '?')})")
         print(SEP)
 
-        # check: every id absent from the scrape, within the scraped range
-        absent = [i for i in range(id_min, id_max + 1) if i not in saved]
-        note = "  (this will take a few minutes)" if len(absent) > 20_000 else ""
-        print(f"id range {id_min}..{id_max}: {len(absent)} absent id(s), probing...{note}")
+        # check: every id absent from the scrape, within the scraped range. Stream the
+        # ids (id_min..id_max can span millions): the count is exact arithmetically
+        # (id_min/id_max are min/max of the saved set, so every saved id is in range).
+        n_absent = (id_max - id_min + 1) - len(saved)
+        absent = (i for i in range(id_min, id_max + 1) if i not in saved)
+        note = "  (this will take a few minutes)" if n_absent > 20_000 else ""
+        print(f"id range {id_min}..{id_max}: {n_absent} absent id(s), probing...{note}")
         missed, counts = await _classify_absent(client, entity, absent, params)
         print(f"  {counts['deleted']} deleted/never existed, {counts['service']} service, "
               f"{counts['out_of_window']} outside dates, {len(missed)} REAL POSTS MISSED")

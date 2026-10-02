@@ -11,7 +11,7 @@ admins = []
 [broadcast]
 messages = []
 delay = [2, 5]
-messages_count = 0
+messages_count = 0   # per-chat cap for chat/comment campaigns; 0 = unlimited (send until stopped)
 trigger = ""
 
 [limits]
