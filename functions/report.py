@@ -1,11 +1,9 @@
 from rich.progress import track
-from rich.console import Console
+from modules.console import console
 from rich.prompt import Prompt
 
 from telethon import types, functions
 from functions.base import TelethonFunction
-
-console = Console()
 
 
 class ReportFunc(TelethonFunction):

@@ -8,7 +8,6 @@ from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, ensure_worke
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PmBroadcast
-from modules.settings import Settings
 
 router = Router()
 
@@ -55,7 +54,6 @@ async def got_message(
     pool: WorkerPool,
     functions: dict,
     manager: JobManager,
-    settings: Settings,
 ):
     data = await state.get_data()
     await state.clear()
@@ -69,7 +67,7 @@ async def got_message(
     async def job(func, reporter):
         try:
             await func.run(
-                data["peer"], content, data.get("by_phone", False), settings.delay, reporter,
+                data["peer"], content, data.get("by_phone", False), reporter,
             )
         finally:
             content.cleanup()

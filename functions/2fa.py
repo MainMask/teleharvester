@@ -1,12 +1,11 @@
 import asyncio
 
-from rich.console import Console
+from modules.console import console
 
 from telethon import TelegramClient
 from functions.base import TelethonFunction
 from functions.base.base import console_report
 
-console = Console()
 
 class SetPasswordFunc(TelethonFunction):
     """Set two-step verification password to accounts"""

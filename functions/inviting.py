@@ -12,12 +12,10 @@ from telethon.errors import (
 )
 
 from rich.prompt import Prompt
-from rich.console import Console
+from modules.console import console
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
-
-console = Console()
 
 
 class InvitingFunc(TelethonFunction):

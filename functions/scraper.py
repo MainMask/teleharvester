@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from rich.console import Console
+from modules.console import console
 from rich.prompt import Confirm, Prompt
 
 from functions.base import TelethonFunction
@@ -9,8 +9,6 @@ from modules.scraper_creds import build_credentials, pick_session_string
 
 from scraper.scrape import ScrapeParams, parse_date, run as scrape_run
 from scraper.verify import VerifyParams, run as verify_run
-
-console = Console()
 
 
 def _channels(raw: str) -> list[str]:

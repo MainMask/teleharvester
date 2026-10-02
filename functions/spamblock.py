@@ -79,6 +79,8 @@ class SpamBlockFunc(TelethonFunction):
                     os.mkdir(path)
 
                 session_path = self.storage.get_session_path(session)
+                if session_path is None:  # already moved/forgotten: nothing to relocate
+                    continue
                 session_name = os.path.basename(session_path)
 
                 os.rename(

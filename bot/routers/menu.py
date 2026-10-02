@@ -32,7 +32,7 @@ async def start(message: Message, state: FSMContext, pool: WorkerPool):
 @router.message(Command("cancel"))
 async def cancel(message: Message, state: FSMContext, manager: JobManager):
     await state.clear()
-    await manager.stop()  # abort an interactive flow (e.g. report) if one is open
+    await manager.stop()  # abort the active job if one is open (a task or an interactive flow)
     await message.answer("Отменено.", reply_markup=main_menu())
 
 

@@ -4,10 +4,10 @@ import os
 import random
 from datetime import date, datetime
 
-from telethon import functions, types
+from telethon import types
 from telethon.errors import PeerIdInvalidError
 from rich.prompt import Prompt, Confirm
-from rich.console import Console
+from modules.console import console
 from rich.table import Table
 
 from functions.base import TelethonFunction
@@ -15,7 +15,6 @@ from functions.base.base import AccountLimited, console_report
 from modules import parquet_db, rich_message
 from modules.rich_message import RichContent
 
-console = Console()
 
 STATS_PATH = os.path.join("stats", "pm_mailing.json")
 LIMITS_PATH = os.path.join("stats", "account_limits.json")
@@ -97,16 +96,10 @@ class PmMailingFunc(TelethonFunction):
             return types.InputPeerUser(recipient["user_id"], recipient["access_hash"])
 
         if recipient.startswith("+") or recipient.lstrip("+").isdigit():
-            result = await session(functions.contacts.ImportContactsRequest(
-                contacts=[types.InputPhoneContact(
-                    client_id=random.randrange(-2**63, 2**63),
-                    phone=recipient,
-                    first_name='contact',
-                    last_name=''
-                )]
-            ))
-
-            return result.users[0]
+            users = await self.import_phone_contact(session, recipient)
+            if not users:
+                raise ValueError(f"phone {recipient} not resolved")
+            return users[0]
 
         return recipient
 
@@ -199,9 +192,15 @@ class PmMailingFunc(TelethonFunction):
         self.load_stats()
         self.load_limits()
 
-        await self.run_with_rotation(recipients, self.send_one)
+        processed = await self.run_with_rotation(recipients, self.send_one)
 
-        await report(f"Done. Recipients processed: {len(recipients)}")
+        if processed < len(recipients):
+            await report(
+                f"Внимание: обработано {processed}/{len(recipients)} — аккаунты исчерпаны, "
+                "остаток не отправлен."
+            )
+        else:
+            await report(f"Done. Recipients processed: {processed}")
 
     def print_stats(self):
         table = Table()
@@ -258,9 +257,7 @@ class PmMailingFunc(TelethonFunction):
 
         if Confirm.ask("[bold red]skip already-messaged recipients?", default=True):
             before = len(recipients)
-            recipients = [
-                r for r in recipients if self.recipient_key(r) not in self.stats
-            ]
+            recipients = self.filter_unsent(recipients)
             console.print(f"[bold white]skipped {before - len(recipients)} already-messaged[/]")
 
             if not recipients:

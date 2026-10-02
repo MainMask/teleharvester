@@ -2,12 +2,10 @@ import asyncio
 import random
 
 from telethon.tl.functions.account import UpdateUsernameRequest, CheckUsernameRequest
-from rich.console import Console
+from modules.console import console
 
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-
-console = Console()
 
 
 class ChangeUsernameFunc(TelethonFunction):

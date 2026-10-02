@@ -7,6 +7,7 @@ from typing import List, Callable, Awaitable, Union
 
 from .sessions_storage import SessionsStorage
 from ..settings import Settings
+from ..console import console
 
 class FunctionsStorage:
     def __init__(
@@ -45,6 +46,11 @@ class FunctionsStorage:
         self.register_function(function)
 
     def register_function(self, module):
+        # Discovery convention: a class is a menu entry iff its name ends in "Func",
+        # and its docstring is the menu label. The bot keys the same classes by name
+        # in bot/services/registry.py (validated at bot startup). A helper base like
+        # functions/broadcast.py's `Broadcast` is deliberately named without the suffix
+        # so it is skipped here.
         for classname, classobj in inspect.getmembers(module, inspect.isclass):
             if classname.endswith("Func"):
                 self.functions.append((
@@ -55,7 +61,8 @@ class FunctionsStorage:
     def execute(self, index: int):
         try:
             function_instance = self.functions[index][0]
-        except Exception:
+        except IndexError:
+            console.print(f"[bold red]no function at index {index}[/]")
             return
 
         function = function_instance.execute()

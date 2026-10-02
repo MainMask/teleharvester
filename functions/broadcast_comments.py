@@ -1,12 +1,11 @@
 import asyncio
 from rich.prompt import Prompt
-from rich.console import Console
+from modules.console import console
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
 from modules import rich_message
 from modules.rich_message import RichContent
-console = Console()
 
 
 class CommentsBroadcastFunc(TelethonFunction):

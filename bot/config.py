@@ -1,7 +1,7 @@
 import os
 import sys
 
-import toml
+from modules.config import load_toml
 
 
 class BotConfig:
@@ -11,15 +11,10 @@ class BotConfig:
     """
 
     def __init__(self, path: str = "config.toml"):
-        token = ""
-        admins = []
+        bot = load_toml(path).get("bot", {})
 
-        if os.path.exists(path):
-            with open(path) as file:
-                bot = toml.load(file).get("bot", {})
-
-            token = bot.get("token", "")
-            admins = bot.get("admins", [])
+        token = bot.get("token", "")
+        admins = bot.get("admins", [])
 
         token = os.environ.get("BOT_TOKEN", token)
 

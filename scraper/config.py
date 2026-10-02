@@ -19,8 +19,8 @@ class Credentials:
 def _toml_credentials():
     """api_id/api_hash from teleharvester's config.toml in the cwd, when no .env is set."""
     try:
-        import toml
-        s = toml.load("config.toml")["sessions"]
+        from modules.config import load_toml  # lazy: keeps scraper importable standalone
+        s = load_toml("config.toml").get("sessions", {})
         return s.get("api_id"), s.get("api_hash")
     except Exception:
         return None, None

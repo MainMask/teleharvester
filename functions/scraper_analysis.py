@@ -1,14 +1,12 @@
 from pathlib import Path
 
-from rich.console import Console
+from modules.console import console
 from rich.prompt import Prompt
 
 from functions.base import TelethonFunction
 
 from scraper import analysis
 from scraper.datafiles import read_table, save_table
-
-console = Console()
 
 
 def _combine():

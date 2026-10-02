@@ -42,9 +42,14 @@ class AddContactsFunc(TelethonFunction):
             await report("Database is empty!")
             return
 
-        await self.run_with_rotation(rows, self.add_one)
+        processed = await self.run_with_rotation(rows, self.add_one)
 
         await report(f"Done. Added {self.added} contacts.")
+        if processed < len(rows):
+            await report(
+                f"Внимание: обработано {processed}/{len(rows)} — аккаунты исчерпаны, "
+                "остаток пропущен."
+            )
 
     async def execute(self):
         self.ask_accounts_count()

@@ -37,6 +37,8 @@ def read_preview(df) -> str:
 
 async def _send_files(bot, chat_id, paths):
     for path in paths:
+        if not os.path.isfile(path):
+            continue  # scrape leaves a <name>_partial/ dir in out_dir; never send a directory
         if os.path.getsize(path) <= scraping.TELEGRAM_UPLOAD_LIMIT:
             await bot.send_document(chat_id, FSInputFile(path))
         else:
@@ -235,20 +237,42 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, mana
 
     await message.answer("Верификация запущена…")
 
+    # Drop a stale <input>_missed from an earlier run first, so the file existing after
+    # the run cleanly means THIS run wrote it (mtime can't tell two runs in one second apart).
+    if os.path.exists(output):
+        os.remove(output)
+
+    interrupted = False
+    bad_input = None
     try:
         await scraping.do_verify(build_credentials(settings, session_string), params)
     except SystemExit as err:
-        await message.answer(f"Остановлено: {err}")
-        return
+        # verify.run raises SystemExit(1) (int code) both when it FOUND missed posts
+        # (after writing the results file) and when the run was interrupted (no file).
+        # A str code is a user-input error (unknown channel / no posts file / no rows
+        # for the group) carrying the real message — surface it instead of "прервана".
+        if isinstance(err.code, str) and err.code:
+            bad_input = err.code
+        else:
+            interrupted = True
     except Exception as err:
         await message.answer(f"Ошибка: {err}")
         return
     finally:
         manager.release()
 
-    if os.path.exists(output):
+    if bad_input:
+        await message.answer(f"Неверные параметры: {bad_input}")
+        return
+
+    # The stale file was removed above, so its presence now means this run wrote it.
+    wrote = os.path.exists(output)
+
+    if wrote:
         await message.answer("Готово ✅")
         await _send_files(message.bot, message.chat.id, [output])
+    elif interrupted:
+        await message.answer("Верификация прервана, повторите.")
     else:
         await message.answer("Готово ✅ (пропущенных постов не найдено).")
 
@@ -347,6 +371,12 @@ async def analysis_arg(message: Message, state: FSMContext, manager: JobManager)
 
     await message.answer("Выполняется…")
 
+    # summary/filter write several files by a prefix and return no path; snapshot the
+    # output dir so the created files can be sent back, the way scrape does.
+    multi_file = tool in ("summary", "filter")
+    out_dir = str(Path(collected["output"]).parent) if multi_file else None
+    before = scraping.dir_snapshot(out_dir) if multi_file else None
+
     try:
         if tool == "read":
             df = await asyncio.to_thread(read_table, collected["input"])
@@ -359,6 +389,13 @@ async def analysis_arg(message: Message, state: FSMContext, manager: JobManager)
         return
     finally:
         manager.release()
+
+    if multi_file:
+        files = scraping.new_files(out_dir, before)
+        await message.answer("Готово ✅")
+        if files:
+            await _send_files(message.bot, message.chat.id, files)
+        return
 
     if file_path and os.path.exists(file_path):
         await message.answer("Готово ✅")

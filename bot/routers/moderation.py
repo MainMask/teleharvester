@@ -136,6 +136,11 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
     instance, _ = resolve(functions, "report")
     workers = pool.delegate(instance)
 
+    if not workers:  # guard: never index into an empty pool with the slot held
+        manager.release()
+        await message.answer("Нет воркеров.")
+        return
+
     first = workers[0]
 
     try:
@@ -209,6 +214,7 @@ def _options_kb(options):
 
 async def _finish(instance, flow, bot, chat_id, manager: JobManager):
     _FLOWS.pop(chat_id, None)
+    manager.disarm_timeout()  # work starts now; don't let the inactivity timeout free the slot mid-replay
     try:
         await flow["session"].disconnect()
     except Exception:

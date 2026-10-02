@@ -4,9 +4,7 @@ import random
 from telethon import functions, types
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-from rich.console import Console
-
-console = Console()
+from modules.console import console
 
 
 class ReactionsFunc(TelethonFunction):

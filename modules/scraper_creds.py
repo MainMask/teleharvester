@@ -1,9 +1,7 @@
-from rich.console import Console
+from modules.console import console
 from rich.prompt import Prompt
 
 from scraper.config import Credentials
-
-console = Console()
 
 
 def build_credentials(settings, session_string: str) -> Credentials:

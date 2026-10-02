@@ -5,11 +5,10 @@ import os
 from telethon import TelegramClient, functions
 
 from rich.progress import track
-from rich.console import Console
+from modules.console import console
 
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-console = Console()
 
 
 class ChangeProfilePhotoFunc(TelethonFunction):

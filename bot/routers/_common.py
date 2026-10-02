@@ -27,7 +27,11 @@ async def build_content(message, album):
 
 
 def resolve(functions: dict, key: str):
-    """Return (instance, BotFunction) for a registry key."""
+    """Return (instance, BotFunction) for a registry key.
+
+    Every classname is checked against the discovered functions at bot startup
+    (see bot/app.py), so the lookup here cannot miss.
+    """
     bot_function = BOT_FUNCTIONS_BY_KEY[key]
     return functions[bot_function.classname], bot_function
 

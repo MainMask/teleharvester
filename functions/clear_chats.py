@@ -1,13 +1,11 @@
 import asyncio
 
 from telethon import functions, types, TelegramClient
-from rich.console import Console
+from modules.console import console
 from rich.prompt import Confirm
 
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-
-console = Console()
 
 
 class ClearDialogsFunc(TelethonFunction):

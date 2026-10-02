@@ -1,20 +1,22 @@
 import os
 import sys
 import toml
-from rich.console import Console
+from modules.console import console
 from typing import List, Tuple
 
-console = Console()
+from modules.config import load_toml
 
 
 class Settings:
     def __init__(self):
-        if not os.path.exists("config.toml"):
-            self.initial_setup()
-            sys.exit()
+        config = load_toml("config.toml")
 
-        with open("config.toml") as file:
-            config = toml.load(file)
+        if not config:
+            # Not interactive here: the terminal menu runs ensure_config() first, so
+            # only non-CLI entry points (the bot) reach this, and they get a clear
+            # message instead of a setup wizard.
+            console.print("[bold red]config.toml not found. Run `python main.py` once to create it.[/]")
+            raise SystemExit(1)
 
         self.api_id: int = config["sessions"]["api_id"]
         self.api_hash: str = config["sessions"]["api_hash"]
@@ -27,8 +29,20 @@ class Settings:
         self.per_account_daily: int = limits.get("per_account_daily", 30)
         self.account_pause: List[int] = limits.get("account_pause", [30, 60])
 
+    @staticmethod
+    def ensure_config(path: str = "config.toml"):
+        """CLI first-run: create config.toml interactively, then exit.
+
+        Called only from the terminal menu; the bot never triggers the wizard.
+        """
+        if os.path.exists(path):
+            return
+
+        Settings.initial_setup()
+        sys.exit()
+
+    @staticmethod
     def save(
-        self,
         api_id: int,
         api_hash: str,
         messages: List[str],
@@ -56,7 +70,8 @@ class Settings:
         with open("config.toml", "w") as file:
             toml.dump(config, file)
 
-    def initial_setup(self):
+    @staticmethod
+    def initial_setup():
         console.print(
             "[bold yellow]Initial setup[/]",
             justify="center"
@@ -70,7 +85,7 @@ class Settings:
         )
 
         print()
-        api_id, api_hash = self.setup_sessions()
+        api_id, api_hash = Settings.setup_sessions()
 
         console.print(
             "[bold blue]Broadcast[/]",
@@ -78,9 +93,9 @@ class Settings:
         )
 
         print()
-        messages, delay, trigger = self.setup_broadcast()
+        messages, delay, trigger = Settings.setup_broadcast()
 
-        self.save(
+        Settings.save(
             api_id,
             api_hash,
             messages,
@@ -89,13 +104,15 @@ class Settings:
             trigger
         )
 
-    def setup_sessions(self) -> Tuple[int, str]:
+    @staticmethod
+    def setup_sessions() -> Tuple[int, str]:
         api_id = console.input("[bold white]Enter API ID: [/]")
         api_hash = console.input("[bold white]Enter API hash: [/]")
 
         return int(api_id), api_hash
 
-    def setup_broadcast(self) -> Tuple[List[str], List[int], str]:
+    @staticmethod
+    def setup_broadcast() -> Tuple[List[str], List[int], str]:
         console.print("[bold white]Enter messages[/]")
 
         messages = []

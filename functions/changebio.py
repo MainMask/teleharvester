@@ -1,10 +1,8 @@
 import asyncio
 from telethon.tl.functions.account import UpdateProfileRequest
-from rich.console import Console
+from modules.console import console
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-
-console = Console()
 
 
 class ChangeBioFunc(TelethonFunction):

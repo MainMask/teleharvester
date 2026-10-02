@@ -50,8 +50,11 @@ class JobManager:
         try:
             await reporter.start()
         except Exception:
+            # Couldn't even post the status message (chat unreachable): free the slot and
+            # report "not started" so the caller runs its not-started cleanup (e.g. drops
+            # the captured broadcast's temp files) instead of leaking them past a raise.
             self._clear()
-            raise
+            return False
 
         self._stop_sessions = list(stop_sessions) if stop_sessions is not None else list(pool.workers)
         self._task = asyncio.create_task(
@@ -99,6 +102,17 @@ class JobManager:
             return
         if self._active and self._kind == "interactive":
             await self.stop()
+
+    def disarm_timeout(self):
+        """Cancel the inactivity timeout while keeping the slot held.
+
+        Called once the operator's input is in and the (possibly long) work has
+        started — e.g. the report flow's replay_rest — so the auto-timeout can't
+        fire mid-work and free the slot out from under a running job.
+        """
+        if self._timeout_task is not None:
+            self._timeout_task.cancel()
+            self._timeout_task = None
 
     def release(self):
         self._clear()

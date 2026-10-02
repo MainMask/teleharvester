@@ -31,7 +31,8 @@ def dir_snapshot(path) -> set:
 
 def new_files(path, before: set) -> list[str]:
     after = dir_snapshot(path)
-    return sorted(os.path.join(path, name) for name in (after - before))
+    paths = (os.path.join(path, name) for name in (after - before))
+    return sorted(p for p in paths if os.path.isfile(p))  # skip dirs (e.g. <name>_partial)
 
 
 async def do_scrape(credentials, params: ScrapeParams):

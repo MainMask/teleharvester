@@ -9,6 +9,7 @@ from bot.middlewares.auth import AuthMiddleware
 from bot.services.album import AlbumMiddleware
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.registry import missing_classes
 from bot.routers import (
     accounts,
     activity,
@@ -36,6 +37,17 @@ async def run_bot():
 
     # reuse the CLI's auto-discovery: map class name -> ready function instance
     functions = {type(instance).__name__: instance for instance, _doc in functions_storage.functions}
+
+    # fail fast with a clear message if the registry references a class that
+    # auto-discovery didn't find (e.g. a renamed class), instead of a KeyError
+    # deep inside a handler at first use.
+    absent = missing_classes(functions)
+    if absent:
+        raise RuntimeError(
+            "bot/services/registry.py lists function classes not found in functions/: "
+            + ", ".join(absent)
+            + ". Rename them back or update BOT_FUNCTIONS."
+        )
 
     pool = WorkerPool(storage)
 

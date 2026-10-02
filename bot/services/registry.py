@@ -64,3 +64,8 @@ def categories() -> list[str]:
 
 def by_category(category: str) -> list[BotFunction]:
     return [function for function in BOT_FUNCTIONS if function.category == category]
+
+
+def missing_classes(functions: dict) -> list[str]:
+    """Registry classnames with no discovered instance (would KeyError at runtime)."""
+    return [function.classname for function in BOT_FUNCTIONS if function.classname not in functions]

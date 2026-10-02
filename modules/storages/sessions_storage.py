@@ -4,25 +4,20 @@ import os
 from contextlib import asynccontextmanager
 from typing import Dict, List, Union
 
-from rich.console import Console
+from modules.console import console
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
 from modules.types.json_session import JsonSession
 
-console = Console()
-
 
 class SessionsStorage:
-    def __init__(self, directory: str, api_id: Union[str, int], api_hash: str, initialize: bool | None = None):
+    def __init__(self, directory: str, api_id: Union[str, int], api_hash: str, initialize: bool = True):
         self.full_sessions: Dict[str, Union[TelegramClient, JsonSession]] = {}
         self.json_sessions: List[JsonSession] = []
         self.jsessions_paths: Dict[str, JsonSession] = {}
 
-        if initialize is None:
-            self.initialize = True if input("Initialize sessions? (y/n) ") == "y" else False
-        else:
-            self.initialize = initialize
+        self.initialize = initialize
 
         for file in os.listdir(directory):
             if file.endswith(".session"):

@@ -1,7 +1,7 @@
 import asyncio
 import random
 from rich.prompt import Prompt, Confirm
-from rich.console import Console
+from modules.console import console
 from telethon import events, types
 from telethon.extensions import html
 from telethon.tl.functions.messages import GetStickerSetRequest
@@ -11,7 +11,6 @@ from functions.base import TelethonFunction
 from functions.base.base import AccountLimited
 from modules import rich_message
 from modules.rich_message import RichContent
-console = Console()
 
 # Invisible mention carrier: each hidden mention is these two chars linked to a user.
 _MENTION_CHARS = "⁬⁯"
@@ -37,8 +36,6 @@ class Broadcast(TelethonFunction):
             "Campaign with reply",
             "Campaign with stickers",
         )
-
-        self.reply_msg_id = 0
 
     def _base_content(self):
         """Base (text, entities, media) for one send.
@@ -68,10 +65,10 @@ class Broadcast(TelethonFunction):
 
         return text, entities
 
-    async def _send(self, session, peer, content, report):
+    async def _send(self, session, peer, content, report, reply_to=None):
         kwargs = {}
-        if self.choice == 3 and self.reply_msg_id:  # reply mode
-            kwargs["reply_to"] = self.reply_msg_id
+        if self.choice == 3 and reply_to:  # reply mode
+            kwargs["reply_to"] = reply_to
 
         if self.choice == 4 and getattr(self, "sticker_set", None):  # stickers first
             stickers = await session(
@@ -95,7 +92,7 @@ class Broadcast(TelethonFunction):
 
         self.delay_range = delay or self.settings.delay
 
-    async def broadcast(self, session, peer, report):
+    async def broadcast(self, session, peer, report, reply_to=None):
         users_ids = []
         admin_ids = []
 
@@ -139,7 +136,7 @@ class Broadcast(TelethonFunction):
             content = RichContent(text=text, entities=entities, media=media)
 
             try:
-                await self._send(session, peer, content, report)
+                await self._send(session, peer, content, report, reply_to=reply_to)
             except AccountLimited as err:
                 await report(f"[{me.first_name}] limit, stopping. {err}")
                 break
@@ -159,19 +156,22 @@ class Broadcast(TelethonFunction):
             else:
                 count += 1
                 await report(f"[{me.first_name}] sent. COUNT: {count}")
-            finally:
-                await self.delay()
+
+            # delay between sends only; a break (limit / 3 errors) skips it
+            await self.delay()
 
     async def handle(self, session, report):
         async def handler(message: types.Message):
             if message.raw_text == self.settings.trigger:
-                if message.reply_to:
-                    self.reply_msg_id = message.reply_to.reply_to_msg_id
+                # local, not shared state: concurrent per-worker listeners must not
+                # clobber each other's reply target
+                reply_to = message.reply_to.reply_to_msg_id if message.reply_to else None
 
                 await self.broadcast(
                     session,
                     message.chat_id,
                     report,
+                    reply_to=reply_to,
                 )
 
         session.add_event_handler(handler, events.NewMessage)

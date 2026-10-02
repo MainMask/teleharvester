@@ -2,9 +2,7 @@ import asyncio
 from functions.base import TelethonFunction
 from functions.base.base import console_report
 from functions.broadcast import Broadcast
-from rich.console import Console
-
-console = Console()
+from modules.console import console
 
 
 class InstantBroadcastFunc(TelethonFunction):

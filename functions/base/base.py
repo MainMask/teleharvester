@@ -3,6 +3,13 @@ import random
 from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Prompt
+from telethon import types
+from telethon.errors import (
+    FloodWaitError as RateLimitError,
+    PeerFloodError as PeerLimitError,
+    UserDeactivatedBanError as AccountDeactivatedError,
+    UserRestrictedError as AccountRestrictedError,
+)
 
 
 _report_console = Console()
@@ -11,13 +18,6 @@ _report_console = Console()
 async def console_report(text: str) -> None:
     """Default progress reporter (CLI path): print plain text, no Rich markup parsing."""
     _report_console.print(text, markup=False, highlight=False)
-from telethon import types
-from telethon.errors import (
-    FloodWaitError as RateLimitError,
-    PeerFloodError as PeerLimitError,
-    UserDeactivatedBanError as AccountDeactivatedError,
-    UserRestrictedError as AccountRestrictedError,
-)
 
 
 class AccountLimited(Exception):
@@ -94,9 +94,13 @@ class BaseFunction:
 
         `action(session, item)` does the per-item work (via `safe_call`); on
         `AccountLimited` the same item is retried on the next account.
+
+        Returns the number of items processed; a caller with a known total can tell
+        when the accounts ran out before the list did.
         """
         items = iter(items)
         item = next(items, _END)
+        processed = 0
 
         for session in self.sessions:
             if item is _END:
@@ -109,8 +113,12 @@ class BaseFunction:
                     except AccountLimited:
                         break
 
+                    processed += 1
                     item = next(items, _END)
-                    await self.delay()
+                    if item is not _END:  # no trailing delay after the final item
+                        await self.delay()
+
+        return processed
 
     def ask_accounts_count(self):
         self.sessions = self.storage.sessions  # reset to full list (instance is reused across runs)

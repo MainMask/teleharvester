@@ -4,11 +4,9 @@ import random
 from typing import List, Tuple, Optional
 from telethon import TelegramClient
 from telethon.tl.functions.account import UpdateProfileRequest
-from rich.console import Console
+from modules.console import console
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-
-console = Console()
 
 
 class ChangeNameFunc(TelethonFunction):
@@ -49,7 +47,8 @@ class ChangeNameFunc(TelethonFunction):
             except Exception as error:
                 await report(f"[!] {error}")
             else:
-                await report(f"Name changed successfully. ( {full_name} → {first_name} {last_name} )")
+                new_name = " ".join(p for p in (first_name, last_name) if p)
+                await report(f"Name changed successfully. ( {full_name} → {new_name} )")
 
     async def run(self, report, names=None, first_name=None, last_name=None):
         await asyncio.gather(*[

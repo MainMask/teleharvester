@@ -197,6 +197,22 @@ class TestJobManager:
         stopped, disconnected, active = asyncio.run(scenario())
         assert stopped is True and disconnected is True and active is False
 
+    def test_run_returns_false_when_status_message_fails(self):
+        # reporter.start() can't post (chat unreachable): run frees the slot and reports
+        # "not started" so the caller's not-started cleanup runs instead of leaking past a raise.
+        class _DeadBot(_Bot):
+            async def send_message(self, *a, **k):
+                raise RuntimeError("chat unreachable")
+
+        async def scenario():
+            m = JobManager()
+            started = await m.run(_DeadBot(), 1, _Pool(), object(), ns(risk="safe"),
+                                  lambda f, r: asyncio.sleep(0), "H", "done")
+            return started, m.active
+
+        started, active = asyncio.run(scenario())
+        assert started is False and active is False
+
     def test_acquire_is_exclusive(self):
         m = JobManager()
         assert m.acquire("A", timeout=0) is True
@@ -513,6 +529,51 @@ class TestBadDateHandled:
 
         assert any("Неверные параметры" in r for r in m.replies)
         assert manager.active is False  # slot never taken on a parse failure
+
+
+# --- verify: a user-input error (str SystemExit) surfaces its message, not "прервана" ---
+
+class TestVerifyBadInputReported:
+    def test_bad_input_shows_reason_and_frees_slot(self):
+        from bot.services import scraping as svc
+        from bot.routers import scraping
+
+        class _State:
+            async def get_data(self):
+                return {"input": "nope.parquet", "channel": "@x", "date_min": "01.01.2024"}
+
+            async def clear(self):
+                return None
+
+        class _Msg:
+            text = "02.01.2024"
+            chat = ns(id=1)
+            bot = _Bot()
+
+            def __init__(self):
+                self.replies = []
+
+            async def answer(self, text, **kwargs):
+                self.replies.append(text)
+
+        async def _boom(creds, params):  # verify.run raises SystemExit(str) on bad input
+            raise SystemExit("@x: channel not found")
+
+        client = TelegramClient(StringSession(), 1, "x")
+        m = _Msg()
+        manager = JobManager()
+        original = svc.do_verify
+        svc.do_verify = _boom
+        try:
+            asyncio.run(scraping.verify_run(
+                m, _State(), ns(workers=[client]), manager, ns(api_id=1, api_hash="x"),
+            ))
+        finally:
+            svc.do_verify = original
+
+        assert any("Неверные параметры" in r and "channel not found" in r for r in m.replies)
+        assert not any("прервана" in r for r in m.replies)
+        assert manager.active is False  # slot released on the error path
 
 
 # --- scraper helpers ---

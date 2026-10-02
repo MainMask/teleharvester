@@ -2,7 +2,7 @@ import random
 import asyncio
 
 from rich.progress import track
-from rich.console import Console
+from modules.console import console
 from rich.prompt import Prompt, Confirm
 
 from time import perf_counter
@@ -16,8 +16,6 @@ from telethon.sync import TelegramClient
 from functions.broadcast import Broadcast
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
-
-console = Console()
 
 
 class JoinerFunc(TelethonFunction):

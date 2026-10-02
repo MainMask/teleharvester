@@ -1,24 +1,16 @@
 import asyncio
-import random
-from telethon import functions, types
-from rich.prompt import Prompt
-from rich.console import Console
+from modules.console import console
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
 from modules import rich_message
 from modules.rich_message import RichContent
 
-console = Console()
-
 
 class PmBroadcastFunc(TelethonFunction):
     """Broadcast to PM"""
 
     async def broadcast(self, session, peer, content, by_phone_number, report):
-        count = 0
-        errors = 0
-
         async with self.storage.ainitialize_session(session):
             try:
                 me = await session.get_me()
@@ -26,43 +18,24 @@ class PmBroadcastFunc(TelethonFunction):
                 return
 
             if by_phone_number:
-                result = await session(functions.contacts.ImportContactsRequest(
-                    contacts=[types.InputPhoneContact(
-                        client_id=random.randrange(-2**63, 2**63),
-                        phone=peer,
-                        first_name='contact',
-                        last_name=''
-                    )]
-                ))
+                users = await self.import_phone_contact(session, peer)
 
-                if not result.users:
+                if not users:
                     await report(f"[{me.first_name}] couldn't resolve phone {peer}")
                     return
 
-                peer = result.users[0]
+                peer = users[0]
 
-            while True:
-                try:
-                    await rich_message.send(session, peer, content, self.safe_call, report=report)
-                except AccountLimited as err:
-                    await report(f"[{me.first_name}] limit, stopping. {err}")
-                    break
-                except Exception as err:
-                    await report(f"[{me.first_name}] not sent. {err}")
+            try:
+                await rich_message.send(session, peer, content, self.safe_call, report=report)
+            except AccountLimited as err:
+                await report(f"[{me.first_name}] limit. {err}")
+            except Exception as err:
+                await report(f"[{me.first_name}] not sent. {err}")
+            else:
+                await report(f"[{me.first_name}] sent.")
 
-                    if errors >= 5:
-                        break
-
-                    errors += 1
-                else:
-                    count += 1
-                    await report(f"[{me.first_name}] sent. COUNT: {count}")
-                finally:
-                    await self.delay()
-
-    async def run(self, peer, content, by_phone_number, delay, report):
-        self.delay_range = delay
-
+    async def run(self, peer, content, by_phone_number, report):
         await asyncio.gather(*[
             self.broadcast(session, peer, content, by_phone_number, report)
             for session in self.sessions
@@ -89,12 +62,5 @@ class PmBroadcastFunc(TelethonFunction):
 
         text = console.input("[bold red]text> [/]")
 
-        delay = Prompt.ask(
-            "[bold red]delay[/]",
-            default="-".join(str(x) for x in self.settings.delay)
-        )
-
         # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
-        await self.run(
-            peer, RichContent(text=text), by_phone_number, self.parse_delay(delay), console_report
-        )
+        await self.run(peer, RichContent(text=text), by_phone_number, console_report)

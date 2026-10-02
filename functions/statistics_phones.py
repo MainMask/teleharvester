@@ -5,11 +5,9 @@ from phonenumbers import geocoder
 from collections import Counter
 
 from rich.table import Table
-from rich.console import Console
+from modules.console import console
 
 from functions.base import TelethonFunction
-
-console = Console()
 
 
 class PhoneNumbersStatsFunc(TelethonFunction):
