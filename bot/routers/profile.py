@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import FunctionCB
-from bot.routers._common import ensure_workers, resolve
+from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import ChangeBio, ChangeName, ChangeUsername, SetPassword
@@ -24,11 +24,15 @@ async def bio_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool
 
 @router.message(ChangeBio.text)
 async def bio_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    if not message.text:
+        await message.answer("Ожидается текст. Попробуйте ещё раз.")
+        return
+    bio = message.text
     await state.clear()
     instance, bot_function = resolve(functions, "bio")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(message.text, r),
+        lambda f, r: f.run(bio, r),
         "Смена bio…", "Готово ✅",
     )
 
@@ -46,8 +50,11 @@ async def name_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
 
 @router.message(ChangeName.manual)
 async def name_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    name = await require_text(message)
+    if name is None:
+        return
     await state.clear()
-    parts = message.text.split(maxsplit=1)
+    parts = name.split(maxsplit=1)
     first, last = parts[0], (parts[1] if len(parts) == 2 else None)
     instance, bot_function = resolve(functions, "name")
     await manager.run(
@@ -70,11 +77,14 @@ async def username_start(callback: CallbackQuery, state: FSMContext, pool: Worke
 
 @router.message(ChangeUsername.base)
 async def username_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    base = await require_text(message)
+    if base is None:
+        return
     await state.clear()
     instance, bot_function = resolve(functions, "username")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(r, base=message.text.strip()),
+        lambda f, r: f.run(r, base=base),
         "Смена username…", "Готово ✅",
     )
 
@@ -107,10 +117,14 @@ async def twofa_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPo
 
 @router.message(SetPassword.password)
 async def twofa_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    if not message.text:
+        await message.answer("Ожидается текст. Попробуйте ещё раз.")
+        return
+    password = message.text
     await state.clear()
     instance, bot_function = resolve(functions, "2fa")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(message.text, r),
+        lambda f, r: f.run(password, r),
         "Установка 2FA…", "Готово ✅",
     )

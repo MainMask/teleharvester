@@ -107,10 +107,11 @@ class TestRuns:
 
     def test_broadcast_comments(self):
         from functions.broadcast_comments import CommentsBroadcastFunc
+        from modules.rich_message import RichContent
         fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=1))
         fn.sessions = [_Session()]
         msgs, report = collect()
-        asyncio.run(fn.run("t.me/chan/5", False, ["hi"], [0], report))
+        asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), [0], report))
         assert any("sent" in m for m in msgs)
 
     def test_statistics_tally(self):
@@ -288,11 +289,230 @@ class TestBroadcastHandleCleanup:
         async def report(_text):
             return None
 
-        asyncio.run(b.handle(session, lambda *a: None, report))
+        asyncio.run(b.handle(session, report))
 
         assert len(session.added) == 1
         assert len(session.removed) == 1
         assert session.added[0][0] is session.removed[0][0]  # same handler added and removed
+
+
+# --- report _finish always frees the slot (regression: stuck job on error) ---
+
+class TestFinishReleasesSlot:
+    def test_slot_freed_when_replay_raises(self):
+        from bot.routers.moderation import _finish
+
+        class _Inst:
+            async def replay_rest(self, *a):
+                raise RuntimeError("worker unreachable")
+
+        class _Sess:
+            async def disconnect(self):
+                return None
+
+        async def scenario():
+            m = JobManager()
+            m.acquire("Репорт", timeout=0)
+            flow = {"session": _Sess(), "rest": [], "peer": "x",
+                    "ids": [1], "comment": "c", "selections": []}
+            try:
+                await _finish(_Inst(), flow, _Bot(), 1, m)
+            except RuntimeError:
+                pass
+            return m.active
+
+        assert asyncio.run(scenario()) is False
+
+
+# --- mail_run bails before touching the shared instance when a job is running ---
+
+class TestMailRunBusyGuard:
+    def test_busy_does_not_touch_instance(self):
+        from bot.routers.broadcasts import mail_run
+
+        class _Inst:
+            def __init__(self):
+                self.touched = False
+
+            def load_recipients(self, *a):
+                self.touched = True
+                return []
+
+            def load_stats(self):
+                self.touched = True
+
+        class _State:
+            cleared = False
+
+            async def get_data(self):
+                raise AssertionError("get_data must not run while busy")
+
+            async def clear(self):
+                self.cleared = True
+
+        class _Msg:
+            bot = _Bot()
+            chat = ns(id=1)
+
+            def __init__(self):
+                self.replies = []
+
+            async def answer(self, text, **kwargs):
+                self.replies.append(text)
+
+        inst = _Inst()
+        m = JobManager()
+        m.acquire("Другая задача", timeout=0)  # something else holds the slot
+        msg = _Msg()
+
+        asyncio.run(mail_run(msg, _State(), None, _Pool(), {"PmMailingFunc": inst},
+                             m, ns(delay=[0])))
+
+        assert any("Занят" in r for r in msg.replies)
+        assert inst.touched is False  # the shared instance's stats were never reloaded
+
+
+# --- stale inline buttons don't raise KeyError (reactions_run / ru_run) ---
+
+class _EmptyState:
+    async def get_data(self):
+        return {}
+
+    async def clear(self):
+        return None
+
+
+class TestStaleFlowGuards:
+    def test_reactions_run_stale(self):
+        from bot.routers.activity import reactions_run
+
+        answered = []
+
+        class _Cb:
+            bot = _Bot()
+            message = ns(chat=ns(id=1), answer=lambda t, **k: _append(answered, t))
+
+            async def answer(self, *a, **k):
+                return None
+
+        async def scenario():
+            m = JobManager()
+            await reactions_run(_Cb(), ns(value="🔥"), _EmptyState(), _Pool(),
+                                {}, m)  # empty state -> no data["link"]
+            return m.active
+
+        active = asyncio.run(scenario())
+        assert active is False and any("устарел" in t for t in answered)
+
+    def test_ru_run_stale(self):
+        from bot.routers.moderation import ru_run
+
+        class _Msg:
+            text = "spam comment"
+            bot = _Bot()
+            chat = ns(id=1)
+
+            def __init__(self):
+                self.replies = []
+
+            async def answer(self, text, **kwargs):
+                self.replies.append(text)
+
+        async def scenario():
+            m = JobManager()
+            msg = _Msg()
+            await ru_run(msg, _EmptyState(), _Pool(), {}, m)  # no username/reason_index
+            return msg.replies, m.active
+
+        replies, active = asyncio.run(scenario())
+        assert active is False and any("устарел" in r for r in replies)
+
+
+def _append(bucket, text):
+    bucket.append(text)
+    return _noop_coro()
+
+
+async def _noop_coro():
+    return None
+
+
+# --- mention_all tolerates a get_participants failure (sends without mentions) ---
+
+class TestBroadcastMentionFailure:
+    def test_participants_error_does_not_abort(self):
+        from functions.broadcast import Broadcast
+        from modules.rich_message import RichContent
+
+        b = Broadcast(_Storage(), ns(trigger="go", messages=["m"], delay=[0], messages_count=1))
+        b.configure(0, mention_all=True, mention_mode="admins", content=RichContent(text="hi"))
+
+        class _S(_Session):
+            async def get_participants(self, *a, **k):
+                raise RuntimeError("no rights")
+
+        msgs, report = collect()
+        asyncio.run(b.broadcast(_S(), "peer", report))
+
+        assert any("can't read participants" in m for m in msgs)
+        assert any("sent" in m for m in msgs)  # the message still went out, just without mentions
+
+
+# --- text-only FSM steps reject a non-text message instead of crashing ---
+
+class TestRequireText:
+    class _Msg:
+        def __init__(self, text):
+            self.text = text
+            self.replies = []
+
+        async def answer(self, text, **kwargs):
+            self.replies.append(text)
+
+    def test_rejects_non_text(self):
+        from bot.routers._common import require_text
+        m = self._Msg(None)  # e.g. a sticker/photo on a text step
+        assert asyncio.run(require_text(m)) is None
+        assert m.replies  # the operator is re-prompted
+
+    def test_returns_stripped_text(self):
+        from bot.routers._common import require_text
+        m = self._Msg("  hello  ")
+        assert asyncio.run(require_text(m)) == "hello"
+        assert m.replies == []
+
+
+# --- a bad (but textual) date is reported, not crashed (parse_date -> SystemExit) ---
+
+class TestBadDateHandled:
+    def test_scrape_run_reports_bad_date(self):
+        from bot.routers import scraping
+
+        class _State:
+            async def get_data(self):
+                return {"out_dir": "out", "channels": "@a", "name": "n", "date_min": "01.01.2024"}
+
+            async def clear(self):
+                return None
+
+        class _Msg:
+            text = "not-a-date"
+            chat = ns(id=1)
+            bot = _Bot()
+
+            def __init__(self):
+                self.replies = []
+
+            async def answer(self, text, **kwargs):
+                self.replies.append(text)
+
+        client = TelegramClient(StringSession(), 1, "x")
+        m = _Msg()
+        manager = JobManager()
+        asyncio.run(scraping.scrape_run(m, _State(), ns(workers=[client]), manager, ns()))
+
+        assert any("Неверные параметры" in r for r in m.replies)
+        assert manager.active is False  # slot never taken on a parse failure
 
 
 # --- scraper helpers ---

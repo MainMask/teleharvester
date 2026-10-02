@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import FunctionCB
-from bot.routers._common import ensure_workers, resolve
+from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Invite
@@ -26,7 +26,10 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
 
 @router.message(Invite.source)
 async def got_source(message: Message, state: FSMContext):
-    await state.update_data(source=message.text.strip())
+    source = await require_text(message)
+    if source is None:
+        return
+    await state.update_data(source=source)
     await state.set_state(Invite.destination)
     await message.answer("Куда приглашать (ссылка/username чата назначения):")
 
@@ -40,11 +43,14 @@ async def got_destination(
     manager: JobManager,
     settings: Settings,
 ):
+    destination = await require_text(message)
+    if destination is None:
+        return
+
     data = await state.get_data()
     await state.clear()
 
     instance, bot_function = resolve(functions, "invite")
-    destination = message.text.strip()
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(data["source"], destination, settings.delay, r),

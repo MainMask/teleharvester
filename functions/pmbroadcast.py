@@ -1,12 +1,13 @@
 import asyncio
 import random
-import os
 from telethon import functions, types
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt
 from rich.console import Console
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
+from modules import rich_message
+from modules.rich_message import RichContent
 
 console = Console()
 
@@ -14,7 +15,7 @@ console = Console()
 class PmBroadcastFunc(TelethonFunction):
     """Broadcast to PM"""
 
-    async def broadcast(self, session, peer, text, media, by_phone_number, report):
+    async def broadcast(self, session, peer, content, by_phone_number, report):
         count = 0
         errors = 0
 
@@ -42,18 +43,7 @@ class PmBroadcastFunc(TelethonFunction):
 
             while True:
                 try:
-                    if not media:
-                        await self.safe_call(lambda: session.send_message(peer, text))
-                    else:
-                        file = random.choice(os.listdir("media"))
-                        path = os.path.join("media", file)
-
-                        await self.safe_call(lambda: session.send_file(
-                            peer,
-                            path,
-                            caption=text,
-                            parse_mode="html"
-                        ))
+                    await rich_message.send(session, peer, content, self.safe_call, report=report)
                 except AccountLimited as err:
                     await report(f"[{me.first_name}] limit, stopping. {err}")
                     break
@@ -70,11 +60,11 @@ class PmBroadcastFunc(TelethonFunction):
                 finally:
                     await self.delay()
 
-    async def run(self, peer, text, media, by_phone_number, delay, report):
+    async def run(self, peer, content, by_phone_number, delay, report):
         self.delay_range = delay
 
         await asyncio.gather(*[
-            self.broadcast(session, peer, text, media, by_phone_number, report)
+            self.broadcast(session, peer, content, by_phone_number, report)
             for session in self.sessions
         ])
 
@@ -97,7 +87,6 @@ class PmBroadcastFunc(TelethonFunction):
             console.print("[bold red]Invalid input!")
             return
 
-        media = Confirm.ask("[bold red]media")
         text = console.input("[bold red]text> [/]")
 
         delay = Prompt.ask(
@@ -105,6 +94,7 @@ class PmBroadcastFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
+        # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
         await self.run(
-            peer, text, media, by_phone_number, self.parse_delay(delay), console_report
+            peer, RichContent(text=text), by_phone_number, self.parse_delay(delay), console_report
         )

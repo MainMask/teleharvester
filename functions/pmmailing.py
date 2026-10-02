@@ -12,7 +12,8 @@ from rich.table import Table
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
-from modules import parquet_db
+from modules import parquet_db, rich_message
+from modules.rich_message import RichContent
 
 console = Console()
 
@@ -88,16 +89,8 @@ class PmMailingFunc(TelethonFunction):
 
         return recipient
 
-    async def _deliver(self, session, peer, text, media):
-        if not media:
-            await self.safe_call(lambda: session.send_message(peer, text))
-        else:
-            file = random.choice(os.listdir("media"))
-            path = os.path.join("media", file)
-
-            await self.safe_call(lambda: session.send_file(
-                peer, path, caption=text, parse_mode="html"
-            ))
+    async def _deliver(self, session, peer):
+        await rich_message.send(session, peer, self._content, self.safe_call, report=self._report)
 
     async def resolve_peer(self, session, recipient):
         if isinstance(recipient, dict):
@@ -160,10 +153,10 @@ class PmMailingFunc(TelethonFunction):
             peer = await self.resolve_peer(session, recipient)
 
             try:
-                await self._deliver(session, peer, self._text, self._media)
+                await self._deliver(session, peer)
             except PeerIdInvalidError:
                 if isinstance(recipient, dict) and recipient.get("username"):
-                    await self._deliver(session, recipient["username"], self._text, self._media)
+                    await self._deliver(session, recipient["username"])
                     fallback = True
                 else:
                     raise
@@ -196,10 +189,9 @@ class PmMailingFunc(TelethonFunction):
         """Drop recipients already recorded in stats (requires load_stats first)."""
         return [r for r in recipients if self.recipient_key(r) not in self.stats]
 
-    async def run(self, recipients, media, text, delay, report):
+    async def run(self, recipients, content, delay, report):
         self._report = report
-        self._text = text
-        self._media = media
+        self._content = content
         self._me_cache = {}
         self._active_accounts = set()
         self.delay_range = delay
@@ -295,7 +287,6 @@ class PmMailingFunc(TelethonFunction):
         if not Confirm.ask(f"[bold red]send to {len(recipients)} recipients?"):
             return
 
-        media = Confirm.ask("[bold red]media")
         text = console.input("[bold red]text> [/]")
 
         delay = Prompt.ask(
@@ -303,6 +294,7 @@ class PmMailingFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        await self.run(recipients, media, text, self.parse_delay(delay), console_report)
+        # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
+        await self.run(recipients, RichContent(text=text), self.parse_delay(delay), console_report)
 
         self.print_stats()

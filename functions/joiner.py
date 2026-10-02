@@ -185,7 +185,7 @@ class JoinerFunc(TelethonFunction):
                     
                     console.print("[bold white]Starting broadcast[/]")
 
-                    await broadcast_func.broadcast(session, link, broadcast_func.function, console_report)
+                    await broadcast_func.broadcast(session, link, console_report)
                     await asyncio.sleep(delay)
 
         if speed == "fast":
@@ -211,7 +211,7 @@ class JoinerFunc(TelethonFunction):
 
             if broadcast and function_index == 1:
                 for session in self.sessions:
-                    await broadcast_func.broadcast(session, link, broadcast_func.function, console_report)
+                    await broadcast_func.broadcast(session, link, console_report)
 
 
         joined_time = round(perf_counter() - start, 2)
@@ -219,7 +219,7 @@ class JoinerFunc(TelethonFunction):
 
         if broadcast and function_index != 1:
             await asyncio.gather(*[
-                broadcast_func.broadcast(session, link, broadcast_func.function, console_report)
+                broadcast_func.broadcast(session, link, console_report)
                 for session in self.sessions
             ])
 

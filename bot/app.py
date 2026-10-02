@@ -6,6 +6,7 @@ from modules.storages.sessions_storage import SessionsStorage
 
 from bot.config import BotConfig
 from bot.middlewares.auth import AuthMiddleware
+from bot.services.album import AlbumMiddleware
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.routers import (
@@ -47,6 +48,7 @@ async def run_bot():
     dp["manager"] = JobManager()
 
     dp.update.outer_middleware(AuthMiddleware(config.admins))
+    dp.message.outer_middleware(AlbumMiddleware())
 
     dp.include_router(menu.router)
     dp.include_router(accounts.router)

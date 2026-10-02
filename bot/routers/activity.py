@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.routers._common import ensure_workers, resolve
+from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PollVote, Reactions
@@ -36,7 +36,10 @@ async def reactions_start(callback: CallbackQuery, state: FSMContext, pool: Work
 
 @router.message(Reactions.link)
 async def reactions_link(message: Message, state: FSMContext):
-    await state.update_data(link=message.text.strip())
+    link = await require_text(message)
+    if link is None:
+        return
+    await state.update_data(link=link)
     await message.answer("Выберите реакцию:", reply_markup=_reactions_kb())
 
 
@@ -48,6 +51,10 @@ async def reactions_run(
     data = await state.get_data()
     await state.clear()
     await callback.answer()
+
+    if "link" not in data:  # a stale reaction button after the state was cleared
+        await callback.message.answer("Флоу устарел, начните заново.")
+        return
 
     reaction = "" if callback_data.value == "random" else callback_data.value
     instance, bot_function = resolve(functions, "reactions")
@@ -71,20 +78,24 @@ async def poll_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
 
 @router.message(PollVote.link)
 async def poll_link(message: Message, state: FSMContext):
-    await state.update_data(link=message.text.strip())
+    link = await require_text(message)
+    if link is None:
+        return
+    await state.update_data(link=link)
     await state.set_state(PollVote.option)
     await message.answer("Номер варианта (напр. 1, 2):")
 
 
 @router.message(PollVote.option)
 async def poll_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
-    if not message.text.strip().isdigit() or int(message.text) < 1:
+    raw = (message.text or "").strip()
+    if not raw.isdigit() or int(raw) < 1:
         await message.answer("Введите число ≥ 1:")
         return
 
     data = await state.get_data()
     await state.clear()
-    option = int(message.text) - 1
+    option = int(raw) - 1
 
     instance, bot_function = resolve(functions, "poll")
     await manager.run(

@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
+from bot.routers._common import require_text
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services import scraping
@@ -56,34 +57,47 @@ async def scrape_start(callback: CallbackQuery, state: FSMContext, pool: WorkerP
 
 @router.message(Scrape.channels)
 async def scrape_channels(message: Message, state: FSMContext):
-    await state.update_data(channels=message.text.strip())
+    channels = await require_text(message)
+    if channels is None:
+        return
+    await state.update_data(channels=channels)
     await state.set_state(Scrape.name)
     await message.answer("Имя для выходных файлов:")
 
 
 @router.message(Scrape.name)
 async def scrape_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
+    name = await require_text(message)
+    if name is None:
+        return
+    await state.update_data(name=name)
     await state.set_state(Scrape.out_dir)
     await message.answer(f"Папка вывода (пусто = {DEFAULT_OUT}):")
 
 
 @router.message(Scrape.out_dir)
 async def scrape_out(message: Message, state: FSMContext):
-    await state.update_data(out_dir=message.text.strip() or DEFAULT_OUT)
+    await state.update_data(out_dir=(message.text or "").strip() or DEFAULT_OUT)
     await state.set_state(Scrape.date_min)
     await message.answer("Дата с (DD.MM.YYYY или YYYY-MM-DD):")
 
 
 @router.message(Scrape.date_min)
 async def scrape_dmin(message: Message, state: FSMContext):
-    await state.update_data(date_min=message.text.strip())
+    date_min = await require_text(message)
+    if date_min is None:
+        return
+    await state.update_data(date_min=date_min)
     await state.set_state(Scrape.date_max)
     await message.answer("Дата по (DD.MM.YYYY или YYYY-MM-DD):")
 
 
 @router.message(Scrape.date_max)
 async def scrape_run(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager, settings: Settings):
+    date_max = await require_text(message)
+    if date_max is None:
+        return
+
     data = await state.get_data()
     await state.clear()
 
@@ -97,7 +111,7 @@ async def scrape_run(message: Message, state: FSMContext, pool: WorkerPool, mana
         params = ScrapeParams(
             channels=scraping.parse_channels(data["channels"]),
             date_min=parse_date(data["date_min"]),
-            date_max=parse_date(message.text.strip(), end_of_day=True),
+            date_max=parse_date(date_max, end_of_day=True),
             name=data["name"],
             keyword="",
             max_messages=1_000_000,
@@ -108,8 +122,12 @@ async def scrape_run(message: Message, state: FSMContext, pool: WorkerPool, mana
             with_participants=True,
             resume=False,
         )
-    except Exception as err:
+    except (Exception, SystemExit) as err:  # parse_date raises SystemExit on a bad date
         await message.answer(f"Неверные параметры: {err}")
+        return
+
+    if params.date_min > params.date_max:
+        await message.answer("Дата 'с' позже даты 'по'.")
         return
 
     if not manager.acquire("Скрап", cancelable=False, timeout=0):
@@ -150,27 +168,40 @@ async def verify_start(callback: CallbackQuery, state: FSMContext, pool: WorkerP
 
 @router.message(Verify.input)
 async def verify_input(message: Message, state: FSMContext):
-    await state.update_data(input=message.text.strip())
+    input_ = await require_text(message)
+    if input_ is None:
+        return
+    await state.update_data(input=input_)
     await state.set_state(Verify.channel)
     await message.answer("Канал (@name / t.me / numeric id):")
 
 
 @router.message(Verify.channel)
 async def verify_channel(message: Message, state: FSMContext):
-    await state.update_data(channel=message.text.strip())
+    channel = await require_text(message)
+    if channel is None:
+        return
+    await state.update_data(channel=channel)
     await state.set_state(Verify.date_min)
     await message.answer("Дата с:")
 
 
 @router.message(Verify.date_min)
 async def verify_dmin(message: Message, state: FSMContext):
-    await state.update_data(date_min=message.text.strip())
+    date_min = await require_text(message)
+    if date_min is None:
+        return
+    await state.update_data(date_min=date_min)
     await state.set_state(Verify.date_max)
     await message.answer("Дата по:")
 
 
 @router.message(Verify.date_max)
 async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager, settings: Settings):
+    date_max = await require_text(message)
+    if date_max is None:
+        return
+
     data = await state.get_data()
     await state.clear()
 
@@ -186,12 +217,16 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, mana
             input=data["input"],
             channel=data["channel"],
             date_min=parse_date(data["date_min"]),
-            date_max=parse_date(message.text.strip(), end_of_day=True),
+            date_max=parse_date(date_max, end_of_day=True),
             output=output,
             comment_sample=0,
         )
-    except Exception as err:
+    except (Exception, SystemExit) as err:  # parse_date raises SystemExit on a bad date
         await message.answer(f"Неверные параметры: {err}")
+        return
+
+    if params.date_min > params.date_max:
+        await message.answer("Дата 'с' позже даты 'по'.")
         return
 
     if not manager.acquire("Верификация", cancelable=False, timeout=0):
@@ -224,15 +259,15 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, mana
 ANALYSIS = {
     "combine": (
         [("input (файл/папка/glob *.parquet)", "input"), ("output", "output")],
-        lambda d: (analysis.combine(d["input"], d["output"], ["Group", "Message ID"]), d["output"]),
+        lambda d: (None, analysis.combine(d["input"], d["output"], ["Group", "Message ID"])),
     ),
     "comments": (
         [("input posts", "input"), ("output", "output")],
-        lambda d: (analysis.explode_comments(d["input"], d["output"], "parquet"), d["output"]),
+        lambda d: (None, analysis.explode_comments(d["input"], d["output"], "parquet")),
     ),
     "participants": (
         [("input posts", "input"), ("output", "output")],
-        lambda d: (analysis.participants(d["input"], d["output"], None, "parquet"), d["output"]),
+        lambda d: (None, analysis.participants(d["input"], d["output"], None, "parquet")),
     ),
     "summary": (
         [("input", "input"), ("output base (префикс)", "output")],
@@ -240,7 +275,7 @@ ANALYSIS = {
     ),
     "sample": (
         [("input", "input"), ("output", "output")],
-        lambda d: (analysis.sample(d["input"], d["output"], "Content", "Group", 10000, 20), d["output"]),
+        lambda d: (None, analysis.sample(d["input"], d["output"], "Content", "Group", 10000, 20)),
     ),
     "filter": (
         [("input", "input"), ("output base", "output"), ("ключевые слова (через запятую)", "keywords")],
@@ -254,7 +289,7 @@ ANALYSIS = {
     ),
     "links": (
         [("input", "input"), ("output", "output")],
-        lambda d: (analysis.links(d["input"], d["output"]), d["output"]),
+        lambda d: (None, analysis.links(d["input"], d["output"])),
     ),
     "read": (
         [("input", "input")],
@@ -286,13 +321,17 @@ async def analysis_tool(callback: CallbackQuery, callback_data: ChoiceCB, state:
 
 @router.message(Analysis.args)
 async def analysis_arg(message: Message, state: FSMContext, manager: JobManager):
+    value = await require_text(message)
+    if value is None:
+        return
+
     data = await state.get_data()
     tool = data["tool"]
     fields, action = ANALYSIS[tool]
     idx = data["idx"]
     collected = data["collected"]
 
-    collected[fields[idx][1]] = message.text.strip()
+    collected[fields[idx][1]] = value
     idx += 1
 
     if idx < len(fields):

@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.routers._common import ensure_workers, resolve
+from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.runner import TelegramReporter
@@ -29,7 +29,10 @@ async def ru_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool)
 
 @router.message(ReportUser.username)
 async def ru_username(message: Message, state: FSMContext, functions: dict):
-    await state.update_data(username=message.text.strip())
+    username = await require_text(message)
+    if username is None:
+        return
+    await state.update_data(username=username)
 
     instance, _ = resolve(functions, "reportuser")
     builder = InlineKeyboardBuilder()
@@ -50,8 +53,16 @@ async def ru_reason(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
 
 @router.message(ReportUser.comment)
 async def ru_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    if not message.text:
+        await message.answer("Ожидается текст (или «-» для пустого).")
+        return
+
     data = await state.get_data()
     await state.clear()
+
+    if "username" not in data or "reason_index" not in data:  # stale flow after a state clear
+        await message.answer("Флоу устарел, начните заново.")
+        return
 
     comment = "" if message.text.strip() == "-" else message.text
     instance, bot_function = resolve(functions, "reportuser")
@@ -87,14 +98,17 @@ async def rm_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool)
 
 @router.message(ReportMessage.link)
 async def rm_link(message: Message, state: FSMContext):
-    await state.update_data(link=message.text.strip())
+    link = await require_text(message)
+    if link is None:
+        return
+    await state.update_data(link=link)
     await state.set_state(ReportMessage.ids)
     await message.answer("ID постов через запятую (напр. 12,13,14):")
 
 
 @router.message(ReportMessage.ids)
 async def rm_ids(message: Message, state: FSMContext):
-    parts = [p.strip() for p in message.text.split(",") if p.strip()]
+    parts = [p.strip() for p in (message.text or "").split(",") if p.strip()]
     if not parts or not all(p.isdigit() for p in parts):
         await message.answer("Введите числовые id через запятую:")
         return
@@ -105,6 +119,10 @@ async def rm_ids(message: Message, state: FSMContext):
 
 @router.message(ReportMessage.comment)
 async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    if not message.text:
+        await message.answer("Ожидается текст (или «-» для пустого).")
+        return
+
     data = await state.get_data()
     await state.clear()
 
@@ -196,12 +214,13 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager):
     except Exception:
         pass
 
-    reporter = TelegramReporter(bot, chat_id, header="Репорт…")
-    await reporter.start()
-    await reporter("[первый аккаунт] submitted.")
-    await instance.replay_rest(
-        flow["rest"], flow["peer"], flow["ids"], flow["comment"], flow["selections"], reporter
-    )
-    await reporter.finish("Репорт отправлен ✅")
-
-    manager.release()
+    try:
+        reporter = TelegramReporter(bot, chat_id, header="Репорт…")
+        await reporter.start()
+        await reporter("[первый аккаунт] submitted.")
+        await instance.replay_rest(
+            flow["rest"], flow["peer"], flow["ids"], flow["comment"], flow["selections"], reporter
+        )
+        await reporter.finish("Репорт отправлен ✅")
+    finally:
+        manager.release()

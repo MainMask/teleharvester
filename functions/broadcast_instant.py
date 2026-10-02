@@ -12,11 +12,11 @@ class InstantBroadcastFunc(TelethonFunction):
 
     async def _one(self, broadcast, session, link, report):
         async with self.storage.ainitialize_session(session):
-            await broadcast.broadcast(session, link, broadcast.function, report)
+            await broadcast.broadcast(session, link, report)
 
-    async def run(self, choice, mention_all, mention_mode, sticker_set, link, report):
+    async def run(self, choice, mention_all, mention_mode, sticker_set, content, link, report):
         broadcast = Broadcast(self.storage, self.settings)
-        broadcast.configure(choice, mention_all, mention_mode, sticker_set, self.settings.delay)
+        broadcast.configure(choice, mention_all, mention_mode, sticker_set, self.settings.delay, content)
         broadcast.sessions = list(self.sessions)
 
         await asyncio.gather(*[
@@ -34,7 +34,7 @@ class InstantBroadcastFunc(TelethonFunction):
                 await session.connect()
 
         await asyncio.gather(*[
-            broadcast.broadcast(session, link, broadcast.function, console_report)
+            broadcast.broadcast(session, link, console_report)
             for session in broadcast.sessions
         ])
 

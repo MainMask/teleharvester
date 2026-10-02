@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import choice_kb
-from bot.routers._common import ensure_workers, resolve
+from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Join
@@ -47,11 +47,18 @@ async def got_link(
     manager: JobManager,
     settings: Settings,
 ):
+    link = await require_text(message)
+    if link is None:
+        return
+
     data = await state.get_data()
     await state.clear()
 
+    if "mode" not in data:  # stale flow after a state clear
+        await message.answer("Флоу устарел, начните заново.")
+        return
+
     instance, bot_function = resolve(functions, "join")
-    link = message.text.strip()
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(data["mode"], link, settings.delay, r),

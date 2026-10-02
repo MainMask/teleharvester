@@ -3,7 +3,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class PmBroadcast(StatesGroup):
     peer = State()
-    text = State()
+    message = State()
 
 
 class Invite(StatesGroup):
@@ -52,21 +52,23 @@ class ReportUser(StatesGroup):
 class PmMailing(StatesGroup):
     path = State()
     limit = State()
-    text = State()
+    message = State()
 
 
 class Comments(StatesGroup):
     link = State()
-    text = State()
+    message = State()
 
 
 class Instant(StatesGroup):
     sticker = State()
     link = State()
+    message = State()
 
 
 class ChatBroadcast(StatesGroup):
     sticker = State()
+    message = State()
 
 
 class ReportMessage(StatesGroup):

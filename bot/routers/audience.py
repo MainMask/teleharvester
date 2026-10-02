@@ -26,7 +26,7 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
 @router.message(AddContacts.path)
 async def run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager, settings: Settings):
     await state.clear()
-    path = message.text.strip() or DEFAULT_DB
+    path = (message.text or "").strip() or DEFAULT_DB
 
     instance, bot_function = resolve(functions, "addcontacts")
     await manager.run(

@@ -1,4 +1,29 @@
+from bot.services.capture import capture
 from bot.services.registry import BOT_FUNCTIONS_BY_KEY
+
+SEND_MESSAGE_PROMPT = (
+    "Отправьте сообщение для рассылки — текст, медиа или альбом, "
+    "с любым форматированием и кастомными эмодзи. Оно будет отправлено как есть."
+)
+
+
+async def build_content(message, album):
+    """Capture the broadcast message; report and return None if media can't be fetched
+    (e.g. the Bot API's ~20 MB download cap) or the message has nothing to send
+    (unsupported type like a poll/contact/location), so the flow aborts instead of
+    failing silently on every recipient."""
+    try:
+        content = await capture(message, message.bot, album)
+    except Exception as err:
+        await message.answer(f"Не удалось обработать сообщение для рассылки: {err}")
+        return None
+
+    if not content.text and not content.media:
+        content.cleanup()
+        await message.answer("Это сообщение нельзя разослать (пустое или неподдерживаемый тип).")
+        return None
+
+    return content
 
 
 def resolve(functions: dict, key: str):
@@ -13,3 +38,13 @@ async def ensure_workers(callback, pool) -> bool:
         await callback.message.answer("Нет воркер-аккаунтов. Добавьте сессии в sessions/.")
         return False
     return True
+
+
+async def require_text(message) -> str | None:
+    """Text of a text-only FSM step, stripped; re-prompt and return None if the user
+    sent a non-text message (sticker/photo/…), so the step isn't lost to AttributeError."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Ожидается текст. Попробуйте ещё раз.")
+        return None
+    return text

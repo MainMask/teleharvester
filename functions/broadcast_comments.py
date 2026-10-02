@@ -1,18 +1,18 @@
-import os
-import random
 import asyncio
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt
 from rich.console import Console
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
+from modules import rich_message
+from modules.rich_message import RichContent
 console = Console()
 
 
 class CommentsBroadcastFunc(TelethonFunction):
     """Broadcast to channel comments"""
 
-    async def broadcast(self, session, channel, post_id, media, messages, report):
+    async def broadcast(self, session, channel, post_id, content, report):
         async with self.storage.ainitialize_session(session):
             try:
                 me = await session.get_me()
@@ -25,27 +25,11 @@ class CommentsBroadcastFunc(TelethonFunction):
 
             while count < self.settings.messages_count \
                     or self.settings.messages_count == 0:
-                text = random.choice(messages)
-
                 try:
-                    if not media:
-                        await self.safe_call(lambda: session.send_message(
-                            channel,
-                            text,
-                            comment_to=post_id,
-                            parse_mode="html"
-                        ))
-                    else:
-                        file = random.choice(os.listdir("media"))
-                        path = os.path.join("media", file)
-
-                        await self.safe_call(lambda: session.send_file(
-                            channel,
-                            path,
-                            comment_to=post_id,
-                            caption=text,
-                            parse_mode="html"
-                        ))
+                    await rich_message.send(
+                        session, channel, content, self.safe_call,
+                        report=report, comment_to=post_id,
+                    )
                 except AccountLimited as err:
                     await report(f"[{me.first_name}] limit, stopping. {err}")
                     break
@@ -62,14 +46,13 @@ class CommentsBroadcastFunc(TelethonFunction):
                 finally:
                     await self.delay()
 
-    async def run(self, link, media, messages, delay, report):
+    async def run(self, link, content, delay, report):
         self.delay_range = delay
 
-        channel = "/".join(link.split("/")[:-1])
-        post_id = int(link.split("/")[-1])
+        channel, post_id = self.parse_message_link(link)
 
         await asyncio.gather(*[
-            self.broadcast(session, channel, post_id, media, messages, report)
+            self.broadcast(session, channel, post_id, content, report)
             for session in self.sessions
         ])
 
@@ -83,12 +66,7 @@ class CommentsBroadcastFunc(TelethonFunction):
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        media = Confirm.ask("[bold red]media[/]")
-        from_config = Confirm.ask("[bold red]use messages from config?[/]")
+        text = console.input("[bold red]message: [/]")
 
-        if from_config:
-            messages = self.settings.messages
-        else:
-            messages = [console.input("[bold red]message: [/]")]
-
-        await self.run(link, media, messages, self.parse_delay(delay), console_report)
+        # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
+        await self.run(link, RichContent(text=text), self.parse_delay(delay), console_report)

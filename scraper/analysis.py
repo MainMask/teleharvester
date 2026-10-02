@@ -82,7 +82,7 @@ def normalize_posts(df: pd.DataFrame, dedup_cols=("Group", "Message ID"),
     return df.sort_values(by="Date", ascending=False, ignore_index=True)
 
 
-def combine(inputs: str, output: str, dedup_cols: list[str]) -> None:
+def combine(inputs: str, output: str, dedup_cols: list[str]) -> Path:
     """Concatenate parquet files, drop duplicates, recompute the Comments count."""
     paths = resolve_inputs(inputs)
     frames = []
@@ -102,7 +102,9 @@ def combine(inputs: str, output: str, dedup_cols: list[str]) -> None:
     n_comments = int(combined["Comments"].sum())
     print(f"Rows: {len(combined)} | comments: {n_comments} | total: {len(combined) + n_comments}")
 
-    print(f"Saved: {save_table(combined, output, 'parquet')}")
+    path = save_table(combined, output, 'parquet')
+    print(f"Saved: {path}")
+    return path
 
 
 def _save(df: pd.DataFrame, output: str, fmt: str) -> Path:
@@ -136,7 +138,7 @@ def _comment_pairs(df: pd.DataFrame):
                 yield post, c
 
 
-def explode_comments(input_path: str, output: str, fmt: str = "parquet") -> None:
+def explode_comments(input_path: str, output: str, fmt: str = "parquet") -> Path:
     """Flatten the Comments List JSON into a flat table: one row per comment."""
     df = read_table(input_path)
     _require_columns(df, ["Comments List", "Group", "Message ID"], input_path)
@@ -168,7 +170,9 @@ def explode_comments(input_path: str, output: str, fmt: str = "parquet") -> None
         [r["Comment Author Access Hash"] for r in rows], dtype="Int64")
     for col in ("Comment Author ID", "Comment Message ID", "Comment Views", "Comment Shares"):
         out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")  # keep ints, allow <NA>
-    print(f"Saved: {_save(out, output, fmt)} ({len(rows)} comments)")
+    path = _save(out, output, fmt)
+    print(f"Saved: {path} ({len(rows)} comments)")
+    return path
 
 
 _NON_USER = {"[channel]", "[anonymous]"}
@@ -191,7 +195,7 @@ def _sibling_reactors(input_path: str) -> list[Path]:
 
 
 def participants(input_path: str, output: str, reactors: str | None = None,
-                 fmt: str = "parquet") -> None:
+                 fmt: str = "parquet") -> Path:
     """One row per unique person who commented or reacted: ID, username, access hash,
     name, counts. People with no access hash are skipped.
 
@@ -251,7 +255,9 @@ def participants(input_path: str, output: str, reactors: str | None = None,
     agg["Total"] = agg["Comments"] + agg["Reactions"]
     agg = agg.sort_values("Total", ascending=False, ignore_index=True)
 
-    print(f"Saved: {_save(agg, output, fmt)} ({len(agg)} people)")
+    path = _save(agg, output, fmt)
+    print(f"Saved: {path} ({len(agg)} people)")
+    return path
 
 
 def summary(input_path: str, output_base: str, date_col: str, group_col: str, comments_col: str) -> None:
@@ -294,7 +300,7 @@ def _sample_proportionally(df, text_column, category_column, sample_size):
     return pd.concat(parts)
 
 
-def sample(input_path: str, output: str, text_col: str, category_col: str, sample_size: int, min_length: int) -> None:
+def sample(input_path: str, output: str, text_col: str, category_col: str, sample_size: int, min_length: int) -> Path:
     """Proportional sample per category, prioritising rows that have text."""
     df = read_table(input_path)
     _require_columns(df, [text_col, category_col], input_path)
@@ -305,7 +311,9 @@ def sample(input_path: str, output: str, text_col: str, category_col: str, sampl
     if "Comments List" in df.columns:
         df["Comments List"] = df["Comments List"].apply(_parse_comments_list)
     sampled = _sample_proportionally(df, text_col, category_col, sample_size)
-    print(f"Saved: {save_table(sampled, output, 'excel')} ({len(sampled)} rows)")
+    path = save_table(sampled, output, 'excel')
+    print(f"Saved: {path} ({len(sampled)} rows)")
+    return path
 
 
 def filter_keywords(input_path: str, output: str, content_col: str, keywords: list[str], max_rows_per_file: int) -> None:
@@ -337,7 +345,7 @@ def filter_keywords(input_path: str, output: str, content_col: str, keywords: li
         print(f"Saved: {path}")
 
 
-def links(input_path: str, output: str) -> None:
+def links(input_path: str, output: str) -> Path:
     """Extract, normalise and count t.me links found in Content (snowball sampling)."""
     df = read_table(input_path)
     _require_columns(df, ["Content"], input_path)
@@ -357,4 +365,6 @@ def links(input_path: str, output: str) -> None:
                 normalised.append(f"https://t.me/{key}")
     counts = pd.Series(normalised).value_counts().reset_index()
     counts.columns = ["Telegram Link", "Frequency"]
-    print(f"Saved: {save_table(counts, output, 'excel')} ({len(counts)} unique links)")
+    path = save_table(counts, output, 'excel')
+    print(f"Saved: {path} ({len(counts)} unique links)")
+    return path
