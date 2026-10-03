@@ -1,7 +1,6 @@
 import asyncio
 
 from telethon import functions, types, TelegramClient
-from modules.console import console
 from rich.prompt import Confirm
 
 from functions.base import TelethonFunction

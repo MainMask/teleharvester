@@ -1,4 +1,3 @@
-import random
 import asyncio
 
 from rich.progress import track

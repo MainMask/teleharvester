@@ -4,7 +4,6 @@ import os
 
 from telethon import TelegramClient, functions
 
-from rich.progress import track
 from modules.console import console
 
 from functions.base import TelethonFunction

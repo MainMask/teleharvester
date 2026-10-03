@@ -48,7 +48,9 @@ automation and server/Docker use: `python -m scraper <command>` (see
 [*Scraping & analysis*](#scraping--analysis) below).
 
 These functions can also be driven from Telegram through a control bot instead of the terminal
-menu (see [*Control bot*](#control-bot-telegram) below).
+menu (see [*Control bot*](#control-bot-telegram) below). Rich broadcast content — media, albums,
+custom emoji and text formatting — is supplied through the control bot; the terminal menu sends
+plain text.
 
 ## Requirements
 
@@ -109,7 +111,6 @@ python login.py <file.jsession>   # connect a session and print service messages
 - `assets/targets.txt` — recipients for **Mailing to PM** (one username/phone per line).
 - `assets/contacts.parquet` — users database for **Add users to contacts**
   (columns `user_id`, `access_hash`; optional `first_name`, `last_name`, `phone`).
-- `media/` — media files picked at random for media broadcasts.
 - `assets/photos/` — images for **Change profile photo**.
 - `stats/pm_mailing.json` — mailing stats, created at runtime (git-ignored).
 - `stats/account_limits.json` — per-account daily send counts for **Mailing to PM**'s
@@ -159,8 +160,10 @@ Risky functions are marked ⚠️ and refuse to run with no workers. Only **one 
 (the worker pool is shared); long or looping jobs — and the trigger-based chat listener — show a
 **⏹ Стоп** button, and `/cancel` aborts an in-progress dialog.
 
-Media for broadcasts and photos are taken from the local `media/` and `assets/photos/` folders
-(as in the CLI); the bot does not accept uploads in this version.
+Broadcast content is taken from the message you send the bot — text, media or an album, with
+any formatting and custom emoji; it is captured and re-sent as-is by the workers (Bot API caps
+each download at ~20 MB). Profile photos for **Сменить фото** come from the local
+`assets/photos/` folder.
 
 ## Running under systemd
 

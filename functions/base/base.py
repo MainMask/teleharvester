@@ -139,6 +139,7 @@ class BaseFunction:
         if len(delay) == 1:
             await asyncio.sleep(delay[0])
         else:
+            lo, hi = sorted(delay[:2])  # tolerate a reversed range (e.g. "5-2")
             await asyncio.sleep(
-                random.randint(*delay)
+                random.randint(lo, hi)
             )
