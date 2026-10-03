@@ -1,3 +1,4 @@
+import asyncio
 import locale
 import sys
 
@@ -8,6 +9,7 @@ from modules.config import load_env
 from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
 from modules.storages.sessions_storage import SessionsStorage
+from modules.tdata_import import import_all
 
 
 def main() -> None:
@@ -47,6 +49,14 @@ def main() -> None:
     load_env()
     Settings.ensure_config()
     settings = Settings()
+
+    try:
+        with console.status("Importing tdata workers..."):
+            imported = asyncio.run(import_all())
+        if imported:
+            console.print(f"[bold green]Imported {imported} account(s) from tdata_import/[/]")
+    except Exception as err:
+        console.print(f"[bold yellow]WARNING:[/] tdata import failed: {err}")
 
     initialize = console.input("Initialize sessions? (y/n) ") == "y"
 

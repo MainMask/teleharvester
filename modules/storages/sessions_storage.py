@@ -9,6 +9,7 @@ from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
 from modules.types.json_session import JsonSession
+from modules.types.proxy import ACCOUNTS_PER_PROXY, Proxy
 
 
 class SessionsStorage:
@@ -67,18 +68,7 @@ class SessionsStorage:
 
                     continue
 
-                client = TelegramClient(
-                    session=StringSession(session.account.auth_key),
-                    api_id=session.account.application.api_id,
-                    api_hash=session.account.application.api_hash,
-                    device_model=session.account.application.device_name,
-                    app_version=session.account.application.app_version,
-                    system_version=session.account.application.sdk,
-                    lang_code=session.account.application.system_lang_code,
-                    system_lang_code=session.account.application.system_lang_code,
-                    proxy=session.account.proxy.as_telethon()
-                    if session.account.proxy else None,
-                )
+                client = self.build_jsession_client(session)
 
                 self.full_sessions[session_path] = client
                 self.json_sessions.append(session)
@@ -107,17 +97,73 @@ class SessionsStorage:
                     )
                 )
 
+    @staticmethod
+    def build_jsession_client(session: JsonSession) -> TelegramClient:
+        """Create a Telethon client for a `.jsession` from its stored account/app/proxy."""
+        return TelegramClient(
+            session=StringSession(session.account.auth_key),
+            api_id=session.account.application.api_id,
+            api_hash=session.account.application.api_hash,
+            device_model=session.account.application.device_name,
+            app_version=session.account.application.app_version,
+            system_version=session.account.application.sdk,
+            lang_code=session.account.application.system_lang_code,
+            system_lang_code=session.account.application.system_lang_code,
+            proxy=session.account.proxy.as_telethon()
+            if session.account.proxy else None,
+        )
+
+    def add_jsession(self, path: str) -> JsonSession | None:
+        """Register a freshly written `.jsession` into the live pool (so an account
+        imported at runtime is usable without a restart). Returns the JsonSession, or
+        None if its phone is already loaded."""
+        with open(path) as fileobj:
+            session = JsonSession(dict_settings=json.load(fileobj))
+
+        if self.is_phone_exists(session.account.account.phone_number):
+            return None
+
+        self.full_sessions[path] = self.build_jsession_client(session)
+        self.json_sessions.append(session)
+        self.jsessions_paths[path] = session
+        return session
+
+    def apply_proxies(self, proxies: List[Proxy]) -> dict:
+        """Distribute `proxies` across the `.jsession` accounts (one proxy per
+        ACCOUNTS_PER_PROXY accounts), persisting each to its file and rebuilding its
+        client so the new proxy takes effect immediately.
+
+        Raises ValueError if there are too few proxies for the ratio. `.session`
+        (StringSession) accounts can't store a proxy and are left untouched.
+        """
+        paths = sorted(self.jsessions_paths)
+        required = -(-len(paths) // ACCOUNTS_PER_PROXY)  # ceil division
+
+        if len(proxies) < required:
+            raise ValueError(
+                f"not enough proxies: {len(proxies)} for {len(paths)} accounts "
+                f"({required} needed at {ACCOUNTS_PER_PROXY} accounts per proxy)"
+            )
+
+        for index, path in enumerate(paths):
+            session = self.jsessions_paths[path]
+            session.account.proxy = proxies[index // ACCOUNTS_PER_PROXY]
+            session.account.save(path)
+
+            self.full_sessions[path] = self.build_jsession_client(session)
+
+        return {
+            "accounts": len(paths),
+            "proxies_used": required,
+            "string_sessions_skipped": len(self.full_sessions) - len(paths),
+        }
+
     def _forget_session(self, path: str):
         """Drop a session from every index, so no stale reference survives a removal."""
         self.full_sessions.pop(path, None)
         json_session = self.jsessions_paths.pop(path, None)
         if json_session is not None and json_session in self.json_sessions:
             self.json_sessions.remove(json_session)
-
-    @staticmethod
-    async def _drop_client(session):
-        """Disconnect a forgotten client, or its keepalive/update tasks run on forever."""
-        await session.disconnect()
 
     async def check_session(self, session: TelegramClient, path: str):
         console.log(f"Initializing session {path}")
@@ -135,19 +181,21 @@ class SessionsStorage:
             else:
                 console.log(f"Error with connection to session {path}")
 
-            await self._drop_client(session)  # connect() may have succeeded before the check
+            # disconnect a forgotten client, or its keepalive/update tasks run on forever;
+            # connect() may have succeeded before the check
+            await session.disconnect()
             self._forget_session(path)
             return
 
         except Exception as err:
             console.log(f"Session {path} returned error. {err}. Skipping.")
-            await self._drop_client(session)
+            await session.disconnect()
             self._forget_session(path)
             return
 
         if not authorized:
             console.log(f"Session {path} is inactive. Moving it to sessions/inactive")
-            await self._drop_client(session)
+            await session.disconnect()
             self._forget_session(path)
 
             inactive_dir = os.path.join(os.path.dirname(path), "inactive")

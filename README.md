@@ -113,6 +113,33 @@ python add_session.py   # log in a new account and save it as .jsession (optiona
 python login.py <file.jsession>   # connect a session and print service messages
 ```
 
+### Importing Telegram Desktop `tdata`
+
+Drop each account into `tdata_import/<name>/` as a Telegram Desktop `tdata` folder:
+
+```
+tdata_import/
+  account1/
+    tdata/
+    Пароль 2фа dark.txt   # optional: `<label>: <password>` — the account's 2FA password
+```
+
+On startup `main.py` converts every new folder to `sessions/<phone>.jsession`
+(authorizing over the network, so the account's proxy must be reachable) and marks
+the folder with a `.imported` file so it is not converted again. If `sessions/<phone>.jsession`
+already exists, it is left untouched (its stored 2FA password and proxy are kept). Run it
+manually (from any directory) with:
+
+```bash
+python sessions/import_tdata.py
+```
+
+Proxies are assigned from `assets/proxies.txt` (one per line), shared by up to 3 accounts
+each. If that file exists but has fewer proxies than needed for that ratio, the import
+stops. With no `proxies.txt`, accounts are imported without a proxy. The 2FA
+password is stored in the `.jsession`, which lets **Set two-step verification password**
+change it later even when a password is already set.
+
 ## Assets
 
 - `assets/names.txt` — pool of names for **Change names** (one per line, `First Last`).
@@ -121,6 +148,8 @@ python login.py <file.jsession>   # connect a session and print service messages
 - `assets/contacts.parquet` — users database for **Add users to contacts**
   (columns `user_id`, `access_hash`; optional `first_name`, `last_name`, `phone`).
 - `assets/photos/` — images for **Change profile photo**.
+- `assets/proxies.txt` — proxies for tdata import (one per line, shared by up to 3 accounts
+  each), `scheme://[user:pass@]ip:port` where `scheme` is `socks5`, `socks4` or `http` (git-ignored).
 - `stats/pm_mailing.json` — mailing stats, created at runtime (git-ignored).
 - `stats/account_limits.json` — per-account daily send counts for **Mailing to PM**'s
   `per_account_daily` cap, created at runtime (git-ignored).
@@ -154,8 +183,16 @@ Telegram user IDs in `[bot].admins` (everyone else is ignored).
 Send `/start`, then **📋 Функции** to pick a function by category:
 
 - **📣 Рассылки** — PM mailing (with stats), PM broadcast, comments, instant, trigger-based chat.
+  PM mailing takes its recipients as an uploaded `.txt`, a list pasted into the chat (one per line),
+  or a file path (`.txt`/`.parquet`, `-` = `assets/targets.txt`); the message itself is sent to the bot.
 - **👤 Профиль** — name, username, bio, photo, 2FA.
-- **👥 Аудитория** — invite from chat, add contacts from `.parquet`.
+- **👥 Аккаунты** — total count and a per-account list (name, `@username`, ID, polled live);
+  **📥 Загрузить tdata (ZIP)**: send a ZIP of one Telegram Desktop `tdata` folder, enter its 2FA
+  password in chat, and the account is imported live (proxy auto-picked from the pool, 3 per proxy);
+  and **🌐 Настроить прокси**: send a `.txt` file or paste a
+  proxy list (one per line), distributed across accounts (one proxy per 3 accounts), applied to
+  the live `.jsession` sessions and saved to `assets/proxies.txt`.
+- **🎯 Аудитория** — invite from chat, add contacts from `.parquet`.
 - **⚡ Активность** — join chat, reactions, poll vote.
 - **🛡 Модерация** — report message/post, report user.
 - **🧹 Сервис** — account status (@SpamBot), phone stats, terminate sessions, clear dialogs.
@@ -170,7 +207,9 @@ Send `/start`, then **📋 Функции** to pick a function by category:
 
 Risky functions are marked ⚠️ and refuse to run with no workers. Only **one task runs at a time**
 (the worker pool is shared); long or looping jobs — and the trigger-based chat listener — show a
-**⏹ Стоп** button, and `/cancel` aborts an in-progress dialog.
+**⏹ Стоп** button, and `/cancel` aborts an in-progress dialog. When a task ends (done, stopped
+or error) the bot sends a **summary report** — task name, workers used, success/error counts and
+elapsed time — and returns the main menu. Scrape/verify/analyse send their result files, then the menu.
 
 Broadcast content is taken from the message you send the bot — text, media or an album, with
 any formatting and custom emoji; it is captured and re-sent as-is by the workers (Bot API caps

@@ -8,15 +8,14 @@ from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PollVote, Reactions
+from functions.reactions import ReactionsFunc
 
 router = Router()
-
-REACTIONS = ['👍', '❤️', '🔥', '🥰', '👏', '😁', '🎉', '🤩', '👎', '🤯', '😱', '🤬', '😢', '🤮', '💩', '🙏']
 
 
 def _reactions_kb():
     builder = InlineKeyboardBuilder()
-    for emoji in REACTIONS:
+    for emoji in ReactionsFunc.reactions:
         builder.button(text=emoji, callback_data=ChoiceCB(scope="reaction", value=emoji))
     builder.button(text="🎲 Random", callback_data=ChoiceCB(scope="reaction", value="random"))
     builder.adjust(4)

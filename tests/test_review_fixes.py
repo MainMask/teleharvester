@@ -942,6 +942,45 @@ class TestInvitingMissingInvitees:
         invited = [m for m in msgs if "invited" in m]
         assert invited == ["[A] invited 2 total: 1"]
 
+    def test_delay_after_privacy_error(self):
+        # the invite request was sent even when it errors: the delay must still apply
+        from telethon.errors import UserPrivacyRestrictedError
+        from functions.inviting import InvitingFunc
+
+        users = [ns(id=1, bot=False, deleted=False, is_self=False),
+                 ns(id=2, bot=False, deleted=False, is_self=False)]
+
+        class _S:
+            async def get_me(self):
+                return ns(first_name="A")
+
+            async def get_entity(self, dest):
+                return dest
+
+            async def iter_participants(self, source):
+                for u in users:
+                    yield u
+
+            async def __call__(self, request):
+                raise UserPrivacyRestrictedError(request=None)
+
+        fn = InvitingFunc(_Storage(), ns(delay=[0]))
+        delays = []
+
+        async def count_delay():
+            delays.append(1)
+
+        fn.delay = count_delay
+
+        async def resolve_source(session, link):
+            return "src"
+
+        fn.resolve_source = resolve_source
+        _msgs, report = collect()
+        asyncio.run(fn.invite(_S(), "src", "dest", [1, 2], report))
+
+        assert len(delays) == 2
+
 
 # --- round 4 -----------------------------------------------------------------
 

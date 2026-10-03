@@ -1,6 +1,7 @@
 import asyncio
 
 from bot.keyboards.common import stop_kb
+from bot.keyboards.menu import main_menu
 from bot.services.runner import TelegramReporter
 
 
@@ -47,7 +48,10 @@ class JobManager:
         self._kind = "task"
         self._cancelable = True
 
-        reporter = TelegramReporter(bot, chat_id, header=header, reply_markup=stop_kb())
+        reporter = TelegramReporter(
+            bot, chat_id, header=header, reply_markup=stop_kb(),
+            job_label=header, workers=len(pool.workers), final_markup=main_menu(),
+        )
         try:
             await reporter.start()
         except Exception:

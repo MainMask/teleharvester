@@ -1,5 +1,3 @@
-import dataclasses
-import json
 import random
 from datetime import datetime
 from typing import Any
@@ -32,6 +30,7 @@ class JsonSession:
         device_name: str | Any = None,
         app_version: str | Any = None,
         sdk: str | Any = None,
+        password: str | Any = None,
     ):
         if not generator:
             generator = random.choice([LinuxAPI, TelegramAppAPI])
@@ -75,13 +74,8 @@ class JsonSession:
                     lang_pack=lang_pack,
                     system_lang_code=system_lang_code,
                 ),
-                proxy=proxy
+                proxy=proxy,
+                password=password,
             )
 
-            with open(f"{account.phone}.jsession", "w") as file:
-                json.dump(
-                    dataclasses.asdict(account_settings),
-                    file,
-                    ensure_ascii=True,
-                    indent=4
-                )
+            account_settings.save(f"{account.phone}.jsession")

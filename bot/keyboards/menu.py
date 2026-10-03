@@ -6,7 +6,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.callbacks import CategoryCB, FunctionCB, MenuCB
+from bot.callbacks import CategoryCB, FunctionCB, MenuAction, MenuCB
 from bot.services.registry import RISKY, by_category, categories
 
 
@@ -39,14 +39,15 @@ def functions_kb(category: str) -> InlineKeyboardMarkup:
             callback_data=FunctionCB(key=function.key),
         )
 
-    builder.button(text="⬅️ Категории", callback_data=MenuCB(action="functions"))
+    builder.button(text="⬅️ Категории", callback_data=MenuCB(action=MenuAction.CATEGORIES))
     builder.adjust(1)
     return builder.as_markup()
 
 
-def back_home_kb() -> InlineKeyboardMarkup:
+def accounts_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="⬅️ В меню", callback_data=MenuCB(action="home").pack()),
-        ]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Настроить прокси", callback_data=MenuCB(action=MenuAction.PROXY).pack())],
+            [InlineKeyboardButton(text="📥 Загрузить tdata (ZIP)", callback_data=MenuCB(action=MenuAction.TDATA).pack())],
+        ]
     )

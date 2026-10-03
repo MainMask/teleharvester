@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -18,6 +19,12 @@ MODE_OPTIONS = [("Текст", "0"), ("Медиа", "2"), ("Ответ", "3"), (
 INSTANT_MODES = [("Текст", "0"), ("Медиа", "2"), ("Стикеры", "4")]  # reply needs a trigger
 MMODE_OPTIONS = [("Админы", "admins"), ("Юзеры", "users")]
 DEFAULT_TARGETS = "assets/targets.txt"
+MAX_RECIPIENTS_FILE_SIZE = 5 * 1024 * 1024  # a recipients list is text; cap at 5 MB
+
+
+def _parse_recipients(text: str) -> list[str]:
+    """One recipient per line (@username / phone); blank lines dropped."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 # =========================== PM mailing (with stats) ===========================
@@ -27,14 +34,44 @@ async def mail_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
+    await state.clear()  # an abandoned run's `recipients` would otherwise override a new path
     await state.set_state(PmMailing.path)
-    await callback.message.answer(f"Файл получателей (.parquet/.txt), «-» = {DEFAULT_TARGETS}:")
+    await callback.message.answer(
+        "Получатели: пришлите <b>.txt файлом</b>, вставьте список (по одному @username/номеру "
+        f"на строку), или укажите путь к .parquet/.txt («-» = {DEFAULT_TARGETS}):",
+        parse_mode="HTML",
+    )
 
 
 @router.message(PmMailing.path)
 async def mail_path(message: Message, state: FSMContext):
-    raw = (message.text or "").strip()
-    await state.update_data(path=DEFAULT_TARGETS if raw in ("", "-") else raw)  # Telegram can't send ""
+    if message.document is not None:
+        name = (message.document.file_name or "").lower()
+        if name.endswith(".parquet"):
+            await message.answer("Для .parquet укажите путь к файлу (не загрузкой). Пришлите путь или .txt.")
+            return
+        if (message.document.file_size or 0) > MAX_RECIPIENTS_FILE_SIZE:
+            await message.answer("Файл слишком большой. Пришлите .txt поменьше или укажите путь.")
+            return
+        buffer = await message.bot.download(message.document)
+        recipients = _parse_recipients(buffer.read().decode("utf-8", "replace"))
+        if not recipients:
+            await message.answer("В файле нет получателей. Пришлите список заново.")
+            return
+        await state.update_data(recipients=recipients)
+    else:
+        raw = (message.text or "").strip()
+        if raw in ("", "-"):
+            await state.update_data(path=DEFAULT_TARGETS)  # Telegram can't send ""
+        elif "\n" not in raw and (os.path.exists(raw) or raw.endswith((".txt", ".parquet"))):
+            await state.update_data(path=raw)  # a file path (backward compatible)
+        else:
+            recipients = _parse_recipients(raw)
+            if not recipients:
+                await message.answer("Пустой список. Пришлите получателей.")
+                return
+            await state.update_data(recipients=recipients)
+
     await message.answer("Пропускать уже отправленных?", reply_markup=yes_no_kb("mail_skip"))
 
 
@@ -74,13 +111,16 @@ async def mail_run(
 
     instance, bot_function = resolve(functions, "pmmailing")
 
-    try:
-        # off the event loop: a .parquet recipients DB can be large and load_recipients
-        # is blocking (pq.read_table), which would otherwise stall the bot's polling loop
-        recipients = await asyncio.to_thread(instance.load_recipients, data["path"])
-    except Exception as err:
-        await message.answer(f"Файл не прочитан: {err}")
-        return
+    if "recipients" in data:  # list supplied inline or via an uploaded .txt
+        recipients = list(data["recipients"])
+    else:
+        try:
+            # off the event loop: a .parquet recipients DB can be large and load_recipients
+            # is blocking (pq.read_table), which would otherwise stall the bot's polling loop
+            recipients = await asyncio.to_thread(instance.load_recipients, data["path"])
+        except Exception as err:
+            await message.answer(f"Файл не прочитан: {err}")
+            return
 
     if data.get("skip"):
         # re-check after the await above: a mailing started meanwhile owns instance.stats

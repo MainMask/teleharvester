@@ -130,8 +130,11 @@ config.toml
 # Pyre type checker
 .pyre/
 *.jsession
+*.jsession.tmp
 stats/
 assets/targets.txt
+assets/proxies.txt
+tdata_import/
 assets/databases/
 output/
 data/

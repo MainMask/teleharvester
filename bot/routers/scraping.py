@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
+from bot.keyboards.menu import main_menu
 from bot.routers._common import require_text
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -24,6 +25,11 @@ from scraper.verify import VerifyParams
 router = Router()
 
 DEFAULT_OUT = "assets/databases"
+
+
+async def _menu(message: Message, text: str):
+    """Send a terminal message and return the operator to the main menu."""
+    await message.answer(text, reply_markup=main_menu())
 
 
 def read_preview(df) -> str:
@@ -161,12 +167,13 @@ async def scrape_run(message: Message, state: FSMContext, pool: WorkerPool, mana
         # a str code is a user-input error with its reason; an int one an interrupted run,
         # which exits before any output file is written
         if isinstance(err.code, str) and err.code:
-            await message.answer(f"Скрап остановлен: {err}")
+            await _menu(message, f"Скрап остановлен: {err}")
         else:
-            await message.answer(f"Скрап прерван (сеть / флуд-бан). Продолжить: {TUI_RESUME_HINT}")
+            await _menu(message, f"Скрап прерван (сеть / флуд-бан). Продолжить: {TUI_RESUME_HINT}")
         return
     except Exception as err:
-        await message.answer(f"Ошибка скрапа: {err}")
+        await _menu(message, f"Ошибка скрапа: {err}")
+        return
     finally:
         manager.release()
 
@@ -174,8 +181,9 @@ async def scrape_run(message: Message, state: FSMContext, pool: WorkerPool, mana
     if files:
         await message.answer(f"Готово ✅ Файлов: {len(files)}")
         await _send_files(message.bot, message.chat.id, files)
+        await _menu(message, "Скрап завершён. Вы в главном меню.")
     else:
-        await message.answer("Готово, но новых файлов не найдено.")
+        await _menu(message, "Готово, но новых файлов не найдено.")
 
 
 # =============================== verify ===============================
@@ -277,13 +285,13 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, mana
         else:
             interrupted = True
     except Exception as err:
-        await message.answer(f"Ошибка: {err}")
+        await _menu(message, f"Ошибка: {err}")
         return
     finally:
         manager.release()
 
     if bad_input:
-        await message.answer(f"Неверные параметры: {bad_input}")
+        await _menu(message, f"Неверные параметры: {bad_input}")
         return
 
     # The stale file was removed above, so its presence now means this run wrote it.
@@ -292,10 +300,11 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, mana
     if wrote:
         await message.answer("Готово ✅")
         await _send_files(message.bot, message.chat.id, [output])
+        await _menu(message, "Верификация завершена. Вы в главном меню.")
     elif interrupted:
-        await message.answer("Верификация прервана, повторите.")
+        await _menu(message, "Верификация прервана, повторите.")
     else:
-        await message.answer("Готово ✅ (пропущенных постов не найдено).")
+        await _menu(message, "Готово ✅ (пропущенных постов не найдено).")
 
 
 # =============================== analysis ===============================
@@ -406,24 +415,26 @@ async def analysis_arg(message: Message, state: FSMContext, manager: JobManager)
         if tool == "read":
             df = await asyncio.to_thread(read_table, collected["input"])
             await message.answer(read_preview(df), parse_mode="HTML")
+            await _menu(message, "Готово ✅")
             return
 
         _result, file_path = await asyncio.to_thread(action, collected)
     except (Exception, SystemExit) as err:  # scraper.analysis raises SystemExit on bad input
-        await message.answer(f"Ошибка: {err}")
+        await _menu(message, f"Ошибка: {err}")
         return
     finally:
         manager.release()
 
     if multi_file:
         files = scraping.new_files(out_dir, before)
-        await message.answer("Готово ✅")
         if files:
             await _send_files(message.bot, message.chat.id, files)
+        await _menu(message, "Готово ✅")
         return
 
     if file_path and os.path.exists(file_path):
         await message.answer("Готово ✅")
         await _send_files(message.bot, message.chat.id, [file_path])
+        await _menu(message, "Анализ завершён. Вы в главном меню.")
     else:
-        await message.answer("Готово ✅")
+        await _menu(message, "Готово ✅")

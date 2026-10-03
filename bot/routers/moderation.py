@@ -4,6 +4,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
+from bot.keyboards.menu import main_menu
 from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -255,7 +256,10 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager):
     except Exception:
         pass
 
-    reporter = TelegramReporter(bot, chat_id, header="Репорт…")
+    reporter = TelegramReporter(
+        bot, chat_id, header="Репорт…",
+        job_label="Репорт", workers=len(flow["rest"]) + 1, final_markup=main_menu(),
+    )
     try:
         await reporter.start()
         await reporter("[первый аккаунт] submitted.")

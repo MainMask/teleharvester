@@ -1,8 +1,16 @@
+from enum import Enum
+
 from aiogram.filters.callback_data import CallbackData
 
 
+class MenuAction(str, Enum):
+    CATEGORIES = "categories"  # back to the category list
+    PROXY = "proxy"            # open proxy setup on the accounts screen
+    TDATA = "tdata"            # upload a tdata account on the accounts screen
+
+
 class MenuCB(CallbackData, prefix="menu"):
-    action: str  # "functions" | "accounts" | "home"
+    action: MenuAction
 
 
 class CategoryCB(CallbackData, prefix="cat"):

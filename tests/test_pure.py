@@ -3,7 +3,10 @@
     python -m unittest discover -s tests -p 'test_*.py'
 """
 import dataclasses
+import os
+import tempfile
 import unittest
+from unittest import mock
 
 from functions.base.base import BaseFunction
 from functions.inviting import InvitingFunc
@@ -111,6 +114,7 @@ class AccountSettingsRoundTripTest(unittest.TestCase):
                 "system_lang_code": "en",
             },
             "proxy": proxy,
+            "password": None,
         }
 
     def test_roundtrip_no_proxy(self):
@@ -128,6 +132,41 @@ class AccountSettingsRoundTripTest(unittest.TestCase):
         })
         restored = dataclasses.asdict(AccountSettings.from_dict(data))
         self.assertEqual(restored, data)
+
+    def test_failed_save_keeps_existing_file(self):
+        # the .jsession holds the only copy of the auth key: a write that dies midway
+        # must leave the previous file intact, not a truncated one
+        settings = AccountSettings.from_dict(self._base_dict(None))
+
+        def dump_then_crash(obj, fileobj, **kwargs):
+            fileobj.write("{")
+            raise OSError("disk full")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "123456789.jsession")
+            with open(path, "w") as fileobj:
+                fileobj.write("ORIGINAL")
+
+            with mock.patch("modules.types.account_settings.json.dump", dump_then_crash):
+                with self.assertRaises(OSError):
+                    settings.save(path)
+
+            with open(path) as fileobj:
+                self.assertEqual(fileobj.read(), "ORIGINAL")
+
+    def test_save_keeps_file_mode(self):
+        # a .jsession the operator locked down (it holds the auth key) must stay private
+        settings = AccountSettings.from_dict(self._base_dict(None))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "123456789.jsession")
+            with open(path, "w") as fileobj:
+                fileobj.write("{}")
+            os.chmod(path, 0o600)
+
+            settings.save(path)
+
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
 
 class GeneratorsTest(unittest.TestCase):

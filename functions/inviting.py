@@ -99,10 +99,9 @@ class InvitingFunc(TelethonFunction):
                         break
                     except (UserPrivacyRestrictedError, UserNotMutualContactError,
                             UserChannelsTooMuchError, UserBotError):
-                        continue
+                        pass  # the request was sent: the delay below still applies
                     except Exception as err:
                         await report(f"[{me.first_name}] skip {user.id}: {err}")
-                        continue
                     else:
                         # privacy-restricted users come back in missing_invitees, not as an
                         # error: not invited, but the request was sent, so the delay still applies

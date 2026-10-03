@@ -3,7 +3,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.callbacks import CategoryCB, ChoiceCB, MenuCB
+from bot.callbacks import CategoryCB, ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.menu import categories_kb, functions_kb, main_menu
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -60,7 +60,7 @@ async def show_categories(message: Message, state: FSMContext):
     await message.answer("Категории:", reply_markup=categories_kb())
 
 
-@router.callback_query(MenuCB.filter(F.action == "functions"))
+@router.callback_query(MenuCB.filter(F.action == MenuAction.CATEGORIES))
 async def back_to_categories(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer("Категории:", reply_markup=categories_kb())
@@ -76,11 +76,4 @@ async def show_functions(callback: CallbackQuery, callback_data: CategoryCB, sta
         name = names[callback_data.index]
         await callback.message.answer(name, reply_markup=functions_kb(name))
 
-    await callback.answer()
-
-
-@router.callback_query(MenuCB.filter(F.action == "home"))
-async def go_home(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.answer("Категории:", reply_markup=categories_kb())
     await callback.answer()

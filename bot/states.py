@@ -31,6 +31,15 @@ class SetPassword(StatesGroup):
     password = State()
 
 
+class SetProxy(StatesGroup):
+    input = State()
+
+
+class ImportTdata(StatesGroup):
+    archive = State()
+    password = State()
+
+
 class Reactions(StatesGroup):
     link = State()
 

@@ -29,9 +29,9 @@ BOT_FUNCTIONS = [
     BotFunction("bio", "ChangeBioFunc", "Сменить bio", SAFE, "👤 Профиль"),
     BotFunction("photo", "ChangeProfilePhotoFunc", "Сменить фото", SAFE, "👤 Профиль"),
     BotFunction("2fa", "SetPasswordFunc", "Установить 2FA", SAFE, "👤 Профиль"),
-    # 👥 Аудитория
-    BotFunction("invite", "InvitingFunc", "Инвайтинг из чата", RISKY, "👥 Аудитория"),
-    BotFunction("addcontacts", "AddContactsFunc", "Добавить в контакты (.parquet)", RISKY, "👥 Аудитория"),
+    # 🎯 Аудитория
+    BotFunction("invite", "InvitingFunc", "Инвайтинг из чата", RISKY, "🎯 Аудитория"),
+    BotFunction("addcontacts", "AddContactsFunc", "Добавить в контакты (.parquet)", RISKY, "🎯 Аудитория"),
     # ⚡ Активность
     BotFunction("join", "JoinerFunc", "Вступление в чат", RISKY, "⚡ Активность"),
     BotFunction("reactions", "ReactionsFunc", "Реакции на пост", RISKY, "⚡ Активность"),
