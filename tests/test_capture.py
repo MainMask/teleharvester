@@ -27,7 +27,7 @@ class _Bot:
     def __init__(self, fail=False):
         self.fail = fail
 
-    async def download(self, source, destination=None):
+    async def download(self, source, destination=None, timeout=30):
         if self.fail:
             raise RuntimeError("file is too big")  # mimics the Bot API ~20 MB cap
         with open(destination, "w") as fileobj:

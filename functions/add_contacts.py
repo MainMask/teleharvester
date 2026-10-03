@@ -12,14 +12,27 @@ from modules import parquet_db
 class AddContactsFunc(TelethonFunction):
     """Add users to contacts from a .parquet database"""
 
+    async def _add(self, session, user, row):
+        await self.safe_call(lambda: session(AddContactRequest(
+            id=user,
+            first_name=row.get("first_name") or "contact",
+            last_name=row.get("last_name") or "",
+            phone=row.get("phone") or ""
+        )))
+
     async def add_one(self, session, row):
         try:
-            await self.safe_call(lambda: session(AddContactRequest(
-                id=InputUser(row["user_id"], row["access_hash"]),
-                first_name=row.get("first_name") or "contact",
-                last_name=row.get("last_name") or "",
-                phone=row.get("phone") or ""
-            )))
+            try:
+                await self._add(session, InputUser(row["user_id"], row["access_hash"]), row)
+            except AccountLimited:
+                raise
+            except Exception:
+                # access_hash is per account: on any worker but the one that scraped the
+                # database it is invalid, so fall back to the username when there is one
+                if not row.get("username"):
+                    raise
+                user = await self.safe_call(lambda: session.get_input_entity(row["username"]))
+                await self._add(session, user, row)
         except AccountLimited:
             raise
         except Exception as err:

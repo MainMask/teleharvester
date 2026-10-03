@@ -1,4 +1,4 @@
-"""Load Telegram API credentials from the environment, a .env file, or teleharvester's config.toml."""
+"""Load Telegram API credentials from the environment or a .env file."""
 
 import os
 from dataclasses import dataclass
@@ -14,37 +14,22 @@ class Credentials:
     phone: str | None = None
     password: str | None = None
     session_string: str | None = None
-
-
-def _toml_credentials():
-    """api_id/api_hash from teleharvester's config.toml in the cwd, when no .env is set."""
-    try:
-        from modules.config import load_toml  # lazy: keeps scraper importable standalone
-        s = load_toml("config.toml").get("sessions", {})
-        return s.get("api_id"), s.get("api_hash")
-    except Exception:
-        return None, None
+    proxy: tuple | dict | None = None  # a teleharvester account's own proxy (.jsession)
+    device: dict | None = None  # its device_model / app_version / ... (TelegramClient kwargs)
 
 
 def load_credentials() -> Credentials:
-    """Read TG_* variables. Real environment variables win over the .env file, which in
-    turn wins over teleharvester's config.toml."""
+    """Read TG_* variables. Real environment variables win over the .env file."""
     load_dotenv(find_dotenv(usecwd=True))  # the cwd (or a parent), not the package's install dir
 
     api_id = os.getenv("TG_API_ID")
     api_hash = os.getenv("TG_API_HASH")
 
-    if not api_id or not api_hash:  # fall back to config.toml (teleharvester's own keys)
-        t_id, t_hash = _toml_credentials()
-        api_id = api_id or t_id
-        api_hash = api_hash or t_hash
-
     missing = [name for name, value in (("TG_API_ID", api_id), ("TG_API_HASH", api_hash)) if not value]
     if missing:
         raise SystemExit(
             f"Missing credentials: {', '.join(missing)}. "
-            "Copy .env.example to .env and fill it in (values from https://my.telegram.org/apps), "
-            "or set them in config.toml under [sessions]."
+            "Copy .env.example to .env and fill it in (values from https://my.telegram.org/apps)."
         )
 
     try:

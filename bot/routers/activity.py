@@ -89,7 +89,7 @@ async def poll_link(message: Message, state: FSMContext):
 @router.message(PollVote.option)
 async def poll_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
     raw = (message.text or "").strip()
-    if not raw.isdigit() or int(raw) < 1:
+    if not raw.isdecimal() or int(raw) < 1:
         await message.answer("Введите число ≥ 1:")
         return
 

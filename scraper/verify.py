@@ -137,7 +137,7 @@ async def _verify(creds: Credentials, params: VerifyParams):
     id_min, id_max = min(saved), max(saved)
 
     client = TelegramClient(session_for(creds, params.session), creds.api_id, creds.api_hash,
-                            **CLIENT_KWARGS)
+                            proxy=creds.proxy, **(creds.device or {}), **CLIENT_KWARGS)
     await client.start(**start_kwargs(creds))
 
     flagged = []          # (id, date, reason)

@@ -4,23 +4,35 @@ from rich.prompt import Prompt
 from scraper.config import Credentials
 
 
-def build_credentials(settings, session_string: str) -> Credentials:
-    """scraper Credentials from teleharvester's config.toml + a chosen account.
+# resume hint for scrapes started from teleharvester (menu or bot): the CLI command
+# scrape.run prints otherwise would resume on the .env account
+TUI_RESUME_HINT = ("teleharvester menu -> Scrape channel/group: the same account, channels, name, "
+                   "dates, keyword and output dir, then answer yes to 'resume an interrupted run?'")
 
-    session_string wins over any session file / .env in session_for(), so the
-    scraper runs on the picked teleharvester account without a separate login."""
+
+def build_credentials(client) -> Credentials:
+    """scraper Credentials for a teleharvester account: its key, app, proxy and device.
+
+    The same auth key seen from another IP / app risks AUTH_KEY_DUPLICATED (revoked)."""
+    init = client._init_request
     return Credentials(
-        api_id=settings.api_id,
-        api_hash=settings.api_hash,
-        session_string=session_string,
+        api_id=client.api_id,
+        api_hash=client.api_hash,
+        session_string=client.session.save(),
+        proxy=client._proxy,
+        # the same authorization must keep presenting the account's device, not Telethon's
+        device={
+            "device_model": init.device_model,
+            "system_version": init.system_version,
+            "app_version": init.app_version,
+            "lang_code": init.lang_code,
+            "system_lang_code": init.system_lang_code,
+        },
     )
 
 
-def pick_session_string(storage) -> str | None:
-    """Pick one teleharvester account and return its StringSession string.
-
-    `client.session.save()` serialises the auth key without connecting, so no
-    extra connection is opened here (the scraper builds its own client)."""
+def pick_session(storage):
+    """Pick one teleharvester account; return its client (None if none / bad input)."""
     sessions = storage.sessions
 
     if not sessions:
@@ -43,4 +55,4 @@ def pick_session_string(storage) -> str | None:
         console.print("[bold red]Invalid account number.[/]")
         return None
 
-    return sessions[choice].session.save()
+    return sessions[choice]

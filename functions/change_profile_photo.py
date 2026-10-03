@@ -32,7 +32,11 @@ class ChangeProfilePhotoFunc(TelethonFunction):
 
     async def run(self, report):
         path = os.path.join(os.getcwd(), "assets", "photos")
-        photos = os.listdir(path) if os.path.isdir(path) else []
+        # regular, non-hidden files only: macOS drops a .DS_Store into any opened folder
+        photos = [
+            f for f in os.listdir(path)
+            if not f.startswith(".") and os.path.isfile(os.path.join(path, f))
+        ] if os.path.isdir(path) else []
 
         if not photos:
             await report(f"No photos in {path}")

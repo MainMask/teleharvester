@@ -30,17 +30,20 @@ class JoinerFunc(TelethonFunction):
         if mode == "1":
             try:
                 if not "joinchat" in link:
-                    await self.safe_call(lambda: session(JoinChannelRequest(link)))
+                    updates = await self.safe_call(lambda: session(JoinChannelRequest(link)))
                 else:
                     invite = link.split("/")[-1]
-                    await self.safe_call(lambda: session(ImportChatInviteRequest(invite)))
+                    updates = await self.safe_call(lambda: session(ImportChatInviteRequest(invite)))
             except AccountLimited as error:
                 await emit(f"[-] [acc {index + 1}] limit: {error}")
                 return False
             except Exception as error:
                 await emit(f"[-] [acc {index + 1}] {error}")
             else:
-                return True
+                # the joined chat for the follow-up broadcast (a joinchat link is no peer);
+                # the result wraps the Updates on this layer, UpdatesTooLong has no chats
+                chats = getattr(getattr(updates, "updates", updates), "chats", None)
+                return chats[0] if chats else link
 
         elif mode == "2":
             try:
@@ -64,7 +67,7 @@ class JoinerFunc(TelethonFunction):
             except Exception as error:
                 await emit(f"[-] [acc {index + 1}] {error}")
             else:
-                return True
+                return chat  # the linked chat, not the channel `link` points to
 
     async def run(self, mode, link, delay, report):
         """Simplified join for the bot: join `mode` into `link` on every worker."""
@@ -82,21 +85,23 @@ class JoinerFunc(TelethonFunction):
 
         await report(f"[+] {joined}/{len(self.sessions)} accounts joined")
 
-    async def solve_captcha(self, session: TelegramClient):
+    def solve_captcha(self, session: TelegramClient):
+        # just a handler on the already-connected client: run_until_disconnected() here
+        # would disconnect the session on cancel (its finally calls disconnect())
         session.add_event_handler(
             self.on_message,
             events.NewMessage
         )
 
-        await session.run_until_disconnected()
-
     async def on_message(self, msg: types.Message):
-        if msg.mentioned:
-            if msg.reply_markup:
-                captcha = msg.reply_markup.rows[0] \
-                    .buttons[0].data.decode("utf-8")
-
-                await msg.click(data=captcha)
+        if not msg.mentioned:
+            return
+        # MessageButton.data: callback bytes, None for URL / reply / other buttons
+        # (hides this layer's KeyboardButton(type=InlineButtonTypeCallback) layout)
+        buttons = await msg.get_buttons()
+        data = buttons[0][0].data if buttons and buttons[0] else None
+        if data:
+            await msg.click(data=data)  # raw bytes: the data need not be UTF-8
 
     async def execute(self):
         self.ask_accounts_count()
@@ -136,96 +141,98 @@ class JoinerFunc(TelethonFunction):
             function_index = None
 
         joined = 0
-        captcha_tasks = []
+        captcha_sessions = []
+        targets = []  # per session: the chat it joined (or the link) for the broadcast
 
-        if speed == "normal":
-            delay = self.ask_int("[bold red]delay[/]", default=0, min_value=0)
-            captcha = Confirm.ask("[bold red]captcha[/]")
+        # finally: Ctrl-C or an error must not leave the captcha handler clicking buttons
+        # (initialize=True clients stay alive for the next menu functions)
+        try:
+            if speed == "normal":
+                delay = self.ask_int("[bold red]delay[/]", default=0, min_value=0)
+                captcha = Confirm.ask("[bold red]captcha[/]")
 
-            start = perf_counter()
-
-            if function_index != 1:
-                for index, session in track(
-                    enumerate(self.sessions),
-                    "[yellow]Joining[/]",
-                    total=len(self.sessions)
-                ):
-                    await session.start()
-
-                    if captcha:
-                        captcha_tasks.append(
-                            asyncio.create_task(self.solve_captcha(session))
-                        )
-
-                    is_joined = await self.join(session, link, index, mode)
-
-                    if is_joined:
-                        joined += 1
-
-                    await asyncio.sleep(delay)
-
-            elif function_index == 1:
-                for index, session in enumerate(self.sessions):
-                    await session.start()
-
-                    if captcha:
-                        captcha_tasks.append(
-                            asyncio.create_task(self.solve_captcha(session))
-                        )
-
-                    is_joined = await self.join(session, link, index, mode)
-
-                    console.print("[bold green]Account joined[/]")
-
-                    if is_joined:
-                        joined += 1
-                    
-                    console.print("[bold white]Starting broadcast[/]")
-
-                    await broadcast_func.broadcast(session, link, console_report)
-                    await asyncio.sleep(delay)
-
-        if speed == "fast":
-            if not self.storage.initialize:
-                for session in track(
-                    self.sessions,
-                    "[yellow]Initializing sessions[/]",
-                    total=len(self.sessions)
-                ):
-                    await session.connect()
-
-            with console.status("Joining"):
                 start = perf_counter()
 
-                results = await asyncio.gather(*[
-                    self.join(session, link, index, mode)
-                    for index, session in enumerate(self.sessions)
+                if function_index != 1:
+                    for index, session in track(
+                        enumerate(self.sessions),
+                        "[yellow]Joining[/]",
+                        total=len(self.sessions)
+                    ):
+                        await session.start()
+
+                        if captcha:
+                            self.solve_captcha(session)
+                            captcha_sessions.append(session)
+
+                        is_joined = await self.join(session, link, index, mode)
+                        targets.append(is_joined or link)
+
+                        if is_joined:
+                            joined += 1
+
+                        await asyncio.sleep(delay)
+
+                elif function_index == 1:
+                    for index, session in enumerate(self.sessions):
+                        await session.start()
+
+                        if captcha:
+                            self.solve_captcha(session)
+                            captcha_sessions.append(session)
+
+                        is_joined = await self.join(session, link, index, mode)
+
+                        console.print("[bold green]Account joined[/]")
+
+                        if is_joined:
+                            joined += 1
+                    
+                        console.print("[bold white]Starting broadcast[/]")
+
+                        await broadcast_func.broadcast(session, is_joined or link, console_report)
+                        await asyncio.sleep(delay)
+
+            if speed == "fast":
+                if not self.storage.initialize:
+                    for session in track(
+                        self.sessions,
+                        "[yellow]Initializing sessions[/]",
+                        total=len(self.sessions)
+                    ):
+                        await session.connect()
+
+                with console.status("Joining"):
+                    start = perf_counter()
+
+                    results = await asyncio.gather(*[
+                        self.join(session, link, index, mode)
+                        for index, session in enumerate(self.sessions)
+                    ])
+
+                for result in results:
+                    if result:
+                        joined += 1
+
+                targets = [result or link for result in results]
+
+                if broadcast and function_index == 1:
+                    for session, target in zip(self.sessions, targets):
+                        await broadcast_func.broadcast(session, target, console_report)
+
+
+            joined_time = round(perf_counter() - start, 2)
+            console.print(f"[+] {joined} accounts joined in [yellow]{joined_time}[/]s")
+
+            if broadcast and function_index != 1:
+                await asyncio.gather(*[
+                    broadcast_func.broadcast(session, target, console_report)
+                    for session, target in zip(self.sessions, targets)
                 ])
+        finally:
+            for session in captcha_sessions:
+                session.remove_event_handler(self.on_message, events.NewMessage)
 
-            for result in results:
-                if result:
-                    joined += 1
-
-            if broadcast and function_index == 1:
+            if not self.storage.initialize:
                 for session in self.sessions:
-                    await broadcast_func.broadcast(session, link, console_report)
-
-
-        joined_time = round(perf_counter() - start, 2)
-        console.print(f"[+] {joined} accounts joined in [yellow]{joined_time}[/]s")
-
-        if broadcast and function_index != 1:
-            await asyncio.gather(*[
-                broadcast_func.broadcast(session, link, console_report)
-                for session in self.sessions
-            ])
-
-        for task in captcha_tasks:
-            task.cancel()
-
-        if captcha_tasks:
-            await asyncio.gather(*captcha_tasks, return_exceptions=True)
-
-        if not self.storage.initialize:
-            for session in self.sessions:
-                await session.disconnect()
+                    await session.disconnect()

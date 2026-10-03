@@ -1349,3 +1349,66 @@ def test_failed_channel_gets_its_own_snapshot(monkeypatch, tmp_path):
     assert set(b["Group"]) == {"@b"}
     posts = pd.read_parquet(path)
     assert ["@a", "30"] in posts[["Group", "Message ID"]].values.tolist()
+
+
+# --- service messages / resume hint / account credentials -------------------------
+
+def _service_msg(mid, date):
+    from telethon.tl.types import MessageActionPinMessage, MessageService
+    return MessageService(id=mid, peer_id=PeerChannel(1), action=MessageActionPinMessage(), date=date)
+
+
+def test_service_message_not_saved(monkeypatch, tmp_path):
+    from scraper.datafiles import read_table
+
+    class WithService(FakeClient):
+        def _main_gen(self, offset_id):
+            async def gen():
+                yield _service_msg(25, datetime(2024, 6, 5, 12, tzinfo=timezone.utc))
+                for m in _main_messages():
+                    if not (offset_id and m.id >= offset_id):
+                        yield m
+            return gen()
+
+    monkeypatch.setattr(scrape, "TelegramClient", WithService)
+    path = scrape.run(Credentials(1, "h"), _params(tmp_path, with_participants=False))
+
+    ids = set(read_table(path)["Message ID"].astype(int))
+    assert 25 not in ids and {30, 20} <= ids
+
+
+def _interrupt_after_service(monkeypatch):
+    class Interrupted(FakeClient):
+        def _main_gen(self, offset_id):
+            async def gen():
+                yield _main_messages()[1]  # a real post (id 30): a checkpoint needs data
+                yield _service_msg(25, datetime(2024, 6, 5, tzinfo=timezone.utc))
+                raise KeyboardInterrupt
+            return gen()
+
+    monkeypatch.setattr(scrape, "TelegramClient", Interrupted)
+
+
+def test_checkpoint_cursor_moves_past_service_message(monkeypatch, tmp_path):
+    _interrupt_after_service(monkeypatch)
+    with pytest.raises(SystemExit):
+        scrape.run(Credentials(1, "h"), _params(tmp_path))
+    meta = json.loads((_ckpt(tmp_path) / "resume.json").read_text())
+    assert meta["last_id"] == 25
+
+
+def test_resume_hint_replaces_cli_command(monkeypatch, tmp_path, capsys):
+    _interrupt_after_service(monkeypatch)
+    params = _params(tmp_path)
+    params.resume_hint = "teleharvester menu -> resume"
+    with pytest.raises(SystemExit):
+        scrape.run(Credentials(1, "h"), params)
+    out = capsys.readouterr().out
+    assert "teleharvester menu -> resume" in out and "scraper scrape" not in out
+
+
+def test_account_proxy_and_device_reach_the_client(fake_client, tmp_path):
+    creds = Credentials(1, "h", proxy=("socks5", "1.2.3.4", 1080), device={"device_model": "Redmi"})
+    scrape.run(creds, _params(tmp_path, with_participants=False))
+    assert FakeClient.init_kwargs["proxy"] == ("socks5", "1.2.3.4", 1080)
+    assert FakeClient.init_kwargs["device_model"] == "Redmi"

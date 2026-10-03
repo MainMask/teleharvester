@@ -24,7 +24,11 @@ class SpamBlockFunc(TelethonFunction):
                     await conv.send_message("/start")
                     response = await conv.get_response()
             except YouBlockedUserError:
-                await session(UnblockRequest("spambot"))
+                try:
+                    await session(UnblockRequest("spambot"))
+                except Exception as err:
+                    await report(f"[!] can't unblock @SpamBot: {err}")
+                    return
                 return await self.check(session, report)
 
             except Exception as err:
@@ -87,6 +91,7 @@ class SpamBlockFunc(TelethonFunction):
                     session_path,
                     os.path.join(path, session_name)
                 )
+                self.storage._forget_session(session_path)  # no stale path for a later move
 
     async def run(self, report, move_restricted: bool = False) -> Dict[str, List[TelegramClient]]:
         blocks = await self.scan(report)

@@ -1,29 +1,24 @@
-import re
 from pathlib import Path
 
 from modules.console import console
 from rich.prompt import Confirm, Prompt
 
 from functions.base import TelethonFunction
-from modules.scraper_creds import build_credentials, pick_session_string
+from modules.scraper_creds import TUI_RESUME_HINT, build_credentials, pick_session
 
-from scraper.scrape import ScrapeParams, parse_date, run as scrape_run
+from scraper.scrape import ScrapeParams, check_date_range, parse_channels, parse_date, run as scrape_run
 from scraper.verify import VerifyParams, run as verify_run
-
-
-def _channels(raw: str) -> list[str]:
-    return [c.strip() for c in re.split(r"[,\s]+", raw) if c.strip()]
 
 
 class ScrapeFunc(TelethonFunction):
     """Scrape channel/group"""
 
     def execute(self):
-        session_string = pick_session_string(self.storage)
-        if session_string is None:
+        account = pick_session(self.storage)
+        if account is None:
             return
 
-        channels = _channels(Prompt.ask("[bold red]channels (comma-separated)[/]"))
+        channels = parse_channels(Prompt.ask("[bold red]channels (comma-separated)[/]"))
         if not channels:
             console.print("[bold red]No channels given.[/]")
             return
@@ -54,18 +49,22 @@ class ScrapeFunc(TelethonFunction):
                 with_reactors=with_reactors,
                 with_participants=with_participants,
                 resume=resume,
+                resume_hint=TUI_RESUME_HINT,
             )
-            scrape_run(build_credentials(self.settings, session_string), params)
+            check_date_range(params.date_min, params.date_max, date_min, date_max)
+            scrape_run(build_credentials(account), params)
         except SystemExit as err:
-            console.print(f"[bold red]Scrape stopped:[/] {err}")
+            # an int code (1) means the run already printed why it stopped + the resume hint
+            if isinstance(err.code, str):
+                console.print(f"[bold red]Scrape stopped:[/] {err}")
 
 
 class VerifyFunc(TelethonFunction):
     """Verify scrape against live channel"""
 
     def execute(self):
-        session_string = pick_session_string(self.storage)
-        if session_string is None:
+        account = pick_session(self.storage)
+        if account is None:
             return
 
         input_path = Prompt.ask("[bold red]scraped posts file[/]")
@@ -84,6 +83,9 @@ class VerifyFunc(TelethonFunction):
                 output=output,
                 comment_sample=comment_sample,
             )
-            verify_run(build_credentials(self.settings, session_string), params)
+            check_date_range(params.date_min, params.date_max, date_min, date_max)
+            verify_run(build_credentials(account), params)
         except SystemExit as err:
-            console.print(f"[bold red]Verify stopped:[/] {err}")
+            # an int code (1) means verify already printed its RESULT / interruption above
+            if isinstance(err.code, str):
+                console.print(f"[bold red]Verify stopped:[/] {err}")

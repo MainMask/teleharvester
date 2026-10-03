@@ -1,5 +1,6 @@
 import asyncio
 
+from telethon import types
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest, InviteToChannelRequest
 from telethon.errors import (
@@ -47,7 +48,7 @@ class InvitingFunc(TelethonFunction):
 
             try:
                 res = await session(JoinChannelRequest(ref))
-                return res.chats[0]
+                return res.updates.chats[0]  # ChatInviteJoinResultOk wraps the Updates
             except UserAlreadyParticipantError:
                 return await session.get_entity(ref)
 
@@ -55,7 +56,7 @@ class InvitingFunc(TelethonFunction):
 
         try:
             res = await session(ImportChatInviteRequest(hash_))
-            return res.chats[0]
+            return res.updates.chats[0]  # ChatInviteJoinResultOk wraps the Updates
         except UserAlreadyParticipantError:
             info = await session(CheckChatInviteRequest(hash_))
             return info.chat
@@ -73,6 +74,10 @@ class InvitingFunc(TelethonFunction):
                 await report(f"[!] can't prepare account: {err}")
                 return
 
+            if isinstance(dest, types.Chat):  # a basic group: InviteToChannel needs a channel/supergroup
+                await report(f"[{me.first_name}] destination is not a supergroup/channel")
+                return
+
             added = 0
             wanted = set(target_ids)
 
@@ -82,7 +87,7 @@ class InvitingFunc(TelethonFunction):
                         continue
 
                     try:
-                        await self.safe_call(lambda: session(InviteToChannelRequest(
+                        result = await self.safe_call(lambda: session(InviteToChannelRequest(
                             channel=dest,
                             users=[user]
                         )))
@@ -99,8 +104,11 @@ class InvitingFunc(TelethonFunction):
                         await report(f"[{me.first_name}] skip {user.id}: {err}")
                         continue
                     else:
-                        added += 1
-                        await report(f"[{me.first_name}] invited {user.id} total: {added}")
+                        # privacy-restricted users come back in missing_invitees, not as an
+                        # error: not invited, but the request was sent, so the delay still applies
+                        if not getattr(result, "missing_invitees", None):
+                            added += 1
+                            await report(f"[{me.first_name}] invited {user.id} total: {added}")
 
                     await self.delay()
             except Exception as err:

@@ -4,6 +4,7 @@ import sys
 from modules.console import console
 
 from modules import updater
+from modules.config import load_env
 from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
 from modules.storages.sessions_storage import SessionsStorage
@@ -43,6 +44,7 @@ def main() -> None:
     if sys.platform == "win32":
         console.print("[yellow]Warning: you using Windows. Some features may not work properly\n")
 
+    load_env()
     Settings.ensure_config()
     settings = Settings()
 
@@ -83,7 +85,7 @@ def main() -> None:
                 choice = console.input(
                     "[bold white]>> [/]"
                 )
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             console.print("[bold white]Bye![/]")
             break
 

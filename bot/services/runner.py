@@ -1,6 +1,8 @@
 import asyncio
 import time
 
+from aiogram.exceptions import TelegramRetryAfter
+
 
 class TelegramReporter:
     """A progress reporter that edits one Telegram message as a job reports lines.
@@ -22,6 +24,7 @@ class TelegramReporter:
         self.message_id = None
         self._last = 0.0
         self._lock = asyncio.Lock()
+        self._pending = None  # delayed flush for lines that arrived inside min_interval
 
     async def start(self):
         message = await self.bot.send_message(self.chat_id, self.header, reply_markup=self.reply_markup)
@@ -32,20 +35,46 @@ class TelegramReporter:
             self.lines.append(text)
             self.lines = self.lines[-self.max_lines:]
 
-            if time.monotonic() - self._last >= self.min_interval:
+            wait = self.min_interval - (time.monotonic() - self._last)
+            if wait <= 0:
                 await self._flush()
+            elif self._pending is None:
+                # else a burst's tail stays hidden until the next report (hours, for a listener)
+                self._pending = asyncio.create_task(self._flush_later(wait))
 
-    async def _flush(self):
+    async def _flush_later(self, wait):
+        await asyncio.sleep(wait)
+        async with self._lock:
+            self._pending = None
+            await self._flush()
+
+    async def _flush(self, final=False, attempts=3):
         self._last = time.monotonic()
+        header = self.header[:1000]  # a huge error text must leave room for the body
         body = "\n".join(self.lines) or "…"
+        # keep the newest lines within 4096 UTF-16 units (an emoji is 2); errors="ignore"
+        # drops a surrogate pair cut in half
+        budget = 4096 - len(header.encode("utf-16-le")) // 2 - 2
+        body = body.encode("utf-16-le")[-budget * 2:].decode("utf-16-le", errors="ignore")
 
         try:
             await self.bot.edit_message_text(
-                f"{self.header}\n\n{body}",
+                f"{header}\n\n{body}",
                 chat_id=self.chat_id,
                 message_id=self.message_id,
                 reply_markup=self.reply_markup,
             )
+        except TelegramRetryAfter as err:
+            # final: the result and the Stop-button removal must not be lost; a long wait
+            # isn't waited out, as it would hold the bot's single job slot meanwhile
+            if final:
+                if attempts > 1 and err.retry_after <= 60:
+                    await asyncio.sleep(err.retry_after)
+                    await self._flush(final=True, attempts=attempts - 1)
+            else:  # no progress edits until the wait is over: each one would prolong it
+                self._last = time.monotonic() + err.retry_after
+                if self._pending is None:  # ...but show the held-back lines once it is
+                    self._pending = asyncio.create_task(self._flush_later(err.retry_after))
         except Exception:
             pass  # ignore "message is not modified" and transient edit errors
 
@@ -53,4 +82,7 @@ class TelegramReporter:
         async with self._lock:
             self.header = summary
             self.reply_markup = None  # drop the Stop button once the job is over
-            await self._flush()
+            if self._pending is not None:
+                self._pending.cancel()
+                self._pending = None
+            await self._flush(final=True)

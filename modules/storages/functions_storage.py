@@ -24,8 +24,9 @@ class FunctionsStorage:
         # next telethon function (which would then rebuild clients on a foreign loop)
         try:
             self.loop = asyncio.get_running_loop()
-        except RuntimeError:  # no running loop (CLI path): make one for run_until_complete
-            self.loop = asyncio.new_event_loop()
+        except RuntimeError:  # no running loop (CLI path)
+            # reuse the sessions' loop: Telethon refuses calls from another one
+            self.loop = sessions_storage.loop or asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
 
         self.functions: List[Union[Callable, Awaitable]] = []
@@ -72,4 +73,16 @@ class FunctionsStorage:
         if inspect.isawaitable(function):
             # restore our loop in case a scraper function's asyncio.run() cleared it
             asyncio.set_event_loop(self.loop)
-            self.loop.run_until_complete(function)
+            task = self.loop.create_task(function)
+            try:
+                self.loop.run_until_complete(task)
+            except KeyboardInterrupt:
+                # Ctrl-C leaves the task pending on our shared loop, where it would resume
+                # inside the next menu function (e.g. trigger listeners keep broadcasting)
+                task.cancel()
+                self.loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+                if self.storage.initialize:  # cancelled run_until_disconnected() disconnects
+                    self.loop.run_until_complete(asyncio.gather(*[
+                        s.connect() for s in self.storage.sessions if not s.is_connected()
+                    ], return_exceptions=True))
+                raise

@@ -8,18 +8,9 @@ import subprocess
 from git.exc import GitCommandError
 from git import Repo
 
-REPO_URL = "https://github.com/MainMask/teleharvester"
-
-
-def _init_repo() -> Repo:
-    """Initialise a local repo tracking teleharvester's master, for update checks."""
-    repo = Repo.init(os.getcwd())
-    origin = repo.create_remote("origin", REPO_URL)
-    origin.fetch()
-    repo.create_head("master", origin.refs.master)
-    repo.heads.master.set_tracking_branch(origin.refs.master)
-    repo.heads.master.checkout(True)
-    return repo
+# Never git-init + force-checkout a non-git install dir: that silently replaces the
+# local code (e.g. an rsync/tarball deploy) with GitHub's master.
+NOT_A_CHECKOUT = "Not a git checkout — update check skipped."
 
 
 def get_current_commit() -> typing.Union[bool, str]:
@@ -38,11 +29,8 @@ def check_update() -> dict:
     try:
         repo = git.Repo(os.getcwd())
     except git.exc.GitError:
-        try:
-            repo = _init_repo()
-        except Exception as err:
-            print(f"Warning: could not initialize repo for updates: {err}")
-            return {"has_update": False}
+        print(NOT_A_CHECKOUT)
+        return {"has_update": False}
 
     try:
         fetch_infos = git.Remote(repo, "origin").fetch()
@@ -68,7 +56,8 @@ def check_update() -> dict:
 
     current_commit = get_current_commit()
 
-    if current_commit == upcoming_commit.hexsha:
+    # origin/master already contained in HEAD (e.g. local commits ahead): nothing to pull
+    if current_commit == upcoming_commit.hexsha or repo.is_ancestor(upcoming_commit, repo.head.commit):
         return {"has_update": False}
 
     return {
@@ -80,22 +69,23 @@ def check_update() -> dict:
 
 
 def update_requirements(console):
+    args = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "-r",
+        os.path.join(
+            os.getcwd(),
+            "requirements.txt",
+        ),
+    ]
+
+    if sys.prefix == sys.base_prefix:  # pip refuses --user inside a venv
+        args.append("--user")
+
     with console.status("Installing new requirements..."):
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "-r",
-                os.path.join(
-                    os.getcwd(),
-                    "requirements.txt",
-                ),
-                "--user",
-            ],
-            check=True,
-        )
+        subprocess.run(args, check=True)
 
     console.print("[bold green]New requirements installed successfully.")
 
@@ -117,21 +107,24 @@ def update(console):
     try:
         with console.status("Updating..."):
             repo = Repo(os.getcwd())
+            old_commit = repo.head.commit
             origin = repo.remote("origin")
-            r = origin.pull()
+            origin.pull()
         
         console.print("[bold green]Updated successfully!")
 
-        new_commit = repo.head.commit
-
-        for info in r:
-            if not info.old_commit:
-                continue
-
-            for d in new_commit.diff(info.old_commit):
-                if d.b_path == "requirements.txt":
-                    update_requirements(console)
+        # diff the HEAD move itself: check_update() already fetched, so pull()'s own
+        # FetchInfo reports origin as up to date and carries no old_commit
+        if any(d.b_path == "requirements.txt" for d in old_commit.diff(repo.head.commit)):
+            update_requirements(console)
         
         restart_app()
     except git.exc.InvalidGitRepositoryError:
-        repo = _init_repo()
+        console.print(NOT_A_CHECKOUT)
+    except GitCommandError as err:  # local changes / diverged branch: keep running the current code
+        console.print(f"[bold red]Update failed:[/] {err}")
+    except subprocess.CalledProcessError as err:  # no restart: the new code would miss its deps
+        console.print(
+            f"[bold red]Requirements install failed:[/] {err}. "
+            "Run `pip install -r requirements.txt`, then restart."
+        )

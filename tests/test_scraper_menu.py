@@ -3,8 +3,6 @@ prompts and capture the scraper calls, without network or Telegram."""
 
 from pathlib import Path
 
-import pytest
-
 from functions import scraper, scraper_analysis
 from scraper import analysis
 
@@ -12,6 +10,18 @@ from scraper import analysis
 class FakeSettings:
     api_id = 42
     api_hash = "h"
+
+
+class _FakeSession:
+    def save(self):
+        return "SESSION"
+
+
+# a teleharvester account's client: the scraper reuses its key, app id and proxy
+_INIT = type("FakeInit", (), {"device_model": "Pixel", "system_version": "SDK 33",
+                              "app_version": "10.0", "lang_code": "en", "system_lang_code": "en"})()
+_ACCOUNT = type("FakeAccount", (), {"api_id": 42, "api_hash": "h", "session": _FakeSession(),
+                                    "_proxy": ("socks5", "1.2.3.4", 1080), "_init_request": _INIT})()
 
 
 class FakeStorage:
@@ -30,7 +40,7 @@ def _answers(monkeypatch, module, texts, bools=()):
 
 def test_scrape_func_builds_params_from_prompts(monkeypatch):
     captured = {}
-    monkeypatch.setattr(scraper, "pick_session_string", lambda storage: "SESSION")
+    monkeypatch.setattr(scraper, "pick_session", lambda storage: _ACCOUNT)
     monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(creds=creds, params=params))
 
     _answers(
@@ -49,11 +59,13 @@ def test_scrape_func_builds_params_from_prompts(monkeypatch):
     assert p.date_min.strftime("%d.%m.%Y") == "01.01.2024"
     assert (p.date_max.hour, p.date_max.minute, p.date_max.second) == (23, 59, 59)  # end_of_day
     assert captured["creds"].api_id == 42 and captured["creds"].session_string == "SESSION"
+    assert captured["creds"].proxy == ("socks5", "1.2.3.4", 1080)  # the account's own proxy
+    assert captured["creds"].device["device_model"] == "Pixel"     # ...and its device
 
 
 def test_scrape_func_stops_on_empty_channels(monkeypatch):
     called = []
-    monkeypatch.setattr(scraper, "pick_session_string", lambda storage: "SESSION")
+    monkeypatch.setattr(scraper, "pick_session", lambda storage: _ACCOUNT)
     monkeypatch.setattr(scraper, "scrape_run", lambda *a: called.append(a))
     _answers(monkeypatch, scraper, texts=["   ,  "])  # only the channels prompt is reached
 
@@ -63,7 +75,7 @@ def test_scrape_func_stops_on_empty_channels(monkeypatch):
 
 def test_verify_func_builds_params_from_prompts(monkeypatch):
     captured = {}
-    monkeypatch.setattr(scraper, "pick_session_string", lambda storage: "SESSION")
+    monkeypatch.setattr(scraper, "pick_session", lambda storage: _ACCOUNT)
     monkeypatch.setattr(scraper, "verify_run", lambda creds, params: captured.update(params=params))
 
     _answers(
@@ -100,24 +112,18 @@ def test_analysis_participants_blank_reactors_is_none(monkeypatch):
     assert captured["reactors"] is None
 
 
-def test_pick_session_string_returns_chosen_account(monkeypatch):
+def test_pick_session_returns_chosen_account(monkeypatch):
     from modules import scraper_creds
 
-    class FakeSession:
-        def save(self):
-            return "KEY"
-
-    class FakeClient:
-        session = FakeSession()
-
-    storage = FakeStorage([FakeClient()])
+    client = object()
+    storage = FakeStorage([client])
     storage.get_session_path = lambda client: "sessions/acc.jsession"
     monkeypatch.setattr(scraper_creds.Prompt, "ask", lambda *a, **k: "1")
 
-    assert scraper_creds.pick_session_string(storage) == "KEY"
+    assert scraper_creds.pick_session(storage) is client
 
 
-def test_pick_session_string_none_on_empty_storage():
+def test_pick_session_none_on_empty_storage():
     from modules import scraper_creds
 
-    assert scraper_creds.pick_session_string(FakeStorage([])) is None
+    assert scraper_creds.pick_session(FakeStorage([])) is None

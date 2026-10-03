@@ -55,8 +55,18 @@ def test_scrape_argv_numeric_id():
 
     argv = _scrape_argv(_prompt(["-1001629147115", "2025-01-01", "2025-01-02", "t",
                                  "", "", "", "", "", "", "", "", ""]))
-    assert argv[:3] == ["scrape", "--channels", "-1001629147115"]
+    assert argv[:2] == ["scrape", "--channels=-1001629147115"]
     _valid(argv)  # argparse must accept the negative-number value
+
+
+def test_scrape_argv_several_numeric_ids():
+    from scraper.menu import _scrape_argv
+
+    argv = _scrape_argv(_prompt(["-1001629147115,-1001234567890", "2025-01-01", "2025-01-02", "t",
+                                 "-30%", "", "", "", "", "", "", "", ""]))
+    # "--channels -100…,-100…" / "--keyword -30%" would be rejected as unknown options
+    args = build_parser().parse_args(argv)
+    assert args.channels == "-1001629147115,-1001234567890" and args.keyword == "-30%"
 
 
 def test_scrape_argv_channels_file(tmp_path):

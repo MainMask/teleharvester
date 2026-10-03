@@ -109,7 +109,7 @@ async def rm_link(message: Message, state: FSMContext):
 @router.message(ReportMessage.ids)
 async def rm_ids(message: Message, state: FSMContext):
     parts = [p.strip() for p in (message.text or "").split(",") if p.strip()]
-    if not parts or not all(p.isdigit() for p in parts):
+    if not parts or not all(p.isdecimal() for p in parts):
         await message.answer("Введите числовые id через запятую:")
         return
     await state.update_data(ids=[int(p) for p in parts])
@@ -142,25 +142,42 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
         return
 
     first = workers[0]
+    flow = {
+        "session": first,
+        "peer": data["link"],
+        "ids": data["ids"],
+        "comment": comment,
+        "selections": [],
+        "rest": workers[1:],
+        "busy": False,  # the entry's empty options list already rejects taps until step()
+    }
+    # registered before the first await, so a /cancel or timeout meanwhile (_abort)
+    # can disconnect the session; `entry` tells whether this flow still owns the slot
+    entry = (instance, flow, [])
+    _FLOWS[chat_id] = entry
 
     try:
         await first.connect()
-        flow = {
-            "session": first,
-            "peer": data["link"],
-            "ids": data["ids"],
-            "comment": comment,
-            "selections": [],
-            "rest": workers[1:],
-        }
+        if _FLOWS.get(chat_id) is not entry:  # cancelled during connect: send no report
+            try:
+                await first.disconnect()
+            except Exception:
+                pass
+            return
         status, options = await instance.step(flow, b"")
     except Exception as err:
+        if _FLOWS.get(chat_id) is not entry:  # aborted meanwhile: the slot is no longer ours
+            return
+        _FLOWS.pop(chat_id, None)
+        manager.release()  # before any await: a /cancel meanwhile must not free a foreign slot
         try:
             await first.disconnect()
         except Exception:
             pass
-        manager.release()
         await message.answer(f"Ошибка: {err}")
+        return
+
+    if _FLOWS.get(chat_id) is not entry:
         return
 
     if status == "choose":
@@ -179,24 +196,41 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
         return
 
     instance, flow, options = entry
-    await callback.answer()
-
     idx = int(callback_data.value)
+    # concurrent updates: a double tap (or a stale keyboard) must not run a second step
+    # on the same client while one is in flight
+    if flow["busy"] or not 0 <= idx < len(options):
+        await callback.answer()
+        return
+    flow["busy"] = True
+    try:
+        await callback.answer()
+    except Exception:  # e.g. "query is too old": harmless, and must not leave busy stuck
+        pass
+    if _FLOWS.get(chat_id) is not entry:  # aborted during answer(): the client is no longer ours
+        return
+
     flow["selections"].append(idx)
 
     try:
         status, options = await instance.step(flow, options[idx].option)
     except Exception as err:
+        if _FLOWS.get(chat_id) is not entry:  # aborted meanwhile: the slot is no longer ours
+            return
         _FLOWS.pop(chat_id, None)
+        manager.release()  # before any await: a /cancel meanwhile must not free a foreign slot
         try:
             await flow["session"].disconnect()
         except Exception:
             pass
-        manager.release()
         await callback.message.answer(f"Ошибка: {err}")
         return
 
+    if _FLOWS.get(chat_id) is not entry:
+        return
+
     if status == "choose":
+        flow["busy"] = False
         _FLOWS[chat_id] = (instance, flow, options)
         await callback.message.answer("Выберите вариант:", reply_markup=_options_kb(options))
     else:
@@ -221,13 +255,21 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager):
     except Exception:
         pass
 
+    reporter = TelegramReporter(bot, chat_id, header="Репорт…")
     try:
-        reporter = TelegramReporter(bot, chat_id, header="Репорт…")
         await reporter.start()
         await reporter("[первый аккаунт] submitted.")
         await instance.replay_rest(
             flow["rest"], flow["peer"], flow["ids"], flow["comment"], flow["selections"], reporter
         )
         await reporter.finish("Репорт отправлен ✅")
+    except Exception as err:
+        try:
+            if reporter.message_id is not None:  # close the status message itself, like JobManager
+                await reporter.finish(f"⚠️ Ошибка: {err}")
+            else:
+                await bot.send_message(chat_id, f"⚠️ Ошибка: {err}")
+        except Exception:
+            pass
     finally:
         manager.release()

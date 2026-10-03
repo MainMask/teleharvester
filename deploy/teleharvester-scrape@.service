@@ -2,6 +2,10 @@
 Description=teleharvester scrape job "%i"
 After=network-online.target
 Wants=network-online.target
+# A run only exits on a flood ban it can't wait out (> 6 h, or 12 in a row); restarting
+# into it keeps prolonging it, so give up after 5 failures within 2 h.
+StartLimitIntervalSec=2h
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -17,8 +21,9 @@ ExecStart=/opt/teleharvester/.venv/bin/python -m scraper scrape $SCRAPE_ARGS --r
 
 # A crash/restart continues from the last checkpoint because of --resume (it prints
 # "not found; starting a fresh run" harmlessly on the very first start).
+# The pause spaces out restarts after a crash or ban (see StartLimit* above).
 Restart=on-failure
-RestartSec=15
+RestartSec=300
 # SIGTERM (systemctl stop / restart) is turned into a clean checkpoint by the scraper
 # itself (scraper/scrape.py); allow time to flush the final shard + resume.json.
 TimeoutStopSec=60

@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 from telethon import TelegramClient, utils
 from telethon.errors import ChannelPrivateError, FloodWaitError, ServerError, TimedOutError
 from telethon.tl.functions.messages import GetMessageReactionsListRequest
-from telethon.tl.types import InputPeerChannel, PeerChannel, PeerUser, User
+from telethon.tl.types import InputPeerChannel, MessageService, PeerChannel, PeerUser, User
 
 from scraper.config import Credentials, session_for, start_kwargs
 from scraper.datafiles import clean_xml_text, format_duration, save_table
@@ -207,6 +207,9 @@ class ScrapeParams:
     with_participants: bool = True
     resume: bool = False
     channels_file: str = ""  # original --channels-file, if any (only for the resume-command hint)
+    # printed instead of the CLI resume command when the run comes from teleharvester's menu
+    # or bot: that command would resume on the .env account, not the one that started it
+    resume_hint: str | None = None
 
 
 def channel_slug(channel: str) -> str:
@@ -227,6 +230,11 @@ def channel_slug(channel: str) -> str:
     s = s.split("?")[0].split("#")[0]
     s = s.strip("/").split("/")[0]
     return s.lstrip("@")
+
+
+def parse_channels(raw: str) -> list[str]:
+    """Split a comma/whitespace-separated channel list, dropping blanks."""
+    return [c.strip() for c in re.split(r"[,\s]+", raw) if c.strip()]
 
 
 class _ChannelRef(NamedTuple):
@@ -279,6 +287,12 @@ async def _reconnect(client) -> None:
             await client.connect()  # Telethon won't recover a hard _disconnect on its own
     except Exception as ce:
         print(f"  ! reconnect failed: {ce}")
+
+
+def check_date_range(date_min: datetime, date_max: datetime, raw_min: str, raw_max: str) -> None:
+    """SystemExit on a reversed range: it would scrape / verify nothing, silently."""
+    if date_min > date_max:
+        raise SystemExit(f"--date-min {raw_min} is after --date-max {raw_max}.")
 
 
 def parse_date(value: str, *, end_of_day: bool = False) -> datetime:
@@ -433,6 +447,8 @@ async def _collect_comments(
     disc_peer = PeerChannel(disc_id) if disc_id else None
     try:
         async for c in client.iter_messages(ref.arg, reply_to=message.id):
+            if isinstance(c, MessageService):  # e.g. a pin in the thread: not a comment
+                continue
             comments.append(
                 {
                     "Type": "comment",
@@ -597,7 +613,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
         print(SEP)
 
     client = TelegramClient(session_for(creds, params.session), creds.api_id, creds.api_hash,
-                            **CLIENT_KWARGS)
+                            proxy=creds.proxy, **(creds.device or {}), **CLIENT_KWARGS)
     await client.start(**start_kwargs(creds))
 
     i, last_id = resume_channel_index, resume_last_id  # for the Ctrl-C handler below
@@ -675,6 +691,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
                                 done_channel = True
                                 break
                             if message.date > params.date_max:
+                                continue
+                            if isinstance(message, MessageService):  # pin, photo change, joins: not a post
+                                last_id = message.id  # still progress: retries resume below it
                                 continue
 
                             row, row_reactors = await _collect_post(client, ref, message, params)
@@ -787,7 +806,8 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> pd.DataFrame:
         # asyncio.run() turns a SIGINT into task cancellation, i.e. a
         # CancelledError raised at the current await - not KeyboardInterrupt - so
         # both must be caught here for Ctrl-C to checkpoint. (SIGTERM, e.g.
-        # `systemctl stop` / `docker stop`, is not converted and kills the run outright.)
+        # `systemctl stop` / `docker stop`, is turned into the same cancellation by the
+        # handler installed above.)
         print()
         if not channel_closed:
             _write_checkpoint(i, last_id)
@@ -825,13 +845,14 @@ def _resume_command(params: ScrapeParams) -> str:
     exact stored bounds — including a `--date-max` that isn't end-of-day.
     """
     src = (["--channels-file", params.channels_file] if params.channels_file
-           else ["--channels", ",".join(params.channels)])
+           # "--flag=value": a value like "-100…,-100…" would otherwise be taken for an option
+           else [f"--channels={','.join(params.channels)}"])
     parts = ["scraper", "scrape", *src,
              "--date-min", params.date_min.strftime("%Y-%m-%dT%H:%M:%S"),
              "--date-max", params.date_max.strftime("%Y-%m-%dT%H:%M:%S"),
              "--name", params.name]
     if params.keyword:
-        parts += ["--keyword", params.keyword]
+        parts += [f"--keyword={params.keyword}"]
     if params.max_messages != ScrapeParams.__dataclass_fields__["max_messages"].default:
         parts += ["--max-messages", str(params.max_messages)]
     if params.timeout:
@@ -865,8 +886,8 @@ def run(creds: Credentials, params: ScrapeParams) -> Path:
         print(SEP)
         print(f"Run stopped: {type(exc).__name__}{detail}")
         if rj.exists():
-            print(f"\nContinue from the last checkpoint ({rj}) with:\n\n"
-                  f"    {_resume_command(params)}\n")
+            hint = params.resume_hint or _resume_command(params)
+            print(f"\nContinue from the last checkpoint ({rj}) with:\n\n    {hint}\n")
         raise SystemExit(1)
     span = ""
     if not df.empty:

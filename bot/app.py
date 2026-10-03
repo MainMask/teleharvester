@@ -1,5 +1,6 @@
 from aiogram import Bot, Dispatcher
 
+from modules.config import load_env
 from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
 from modules.storages.sessions_storage import SessionsStorage
@@ -29,6 +30,7 @@ from bot.routers import (
 
 
 async def run_bot():
+    load_env()
     config = BotConfig()
     config.validate()
 

@@ -27,15 +27,7 @@ class InstantBroadcastFunc(TelethonFunction):
         broadcast = Broadcast(self.storage, self.settings)
         broadcast.ask()
 
-        if not self.storage.initialize:
-            for session in broadcast.sessions:
-                await session.connect()
-
         await asyncio.gather(*[
-            broadcast.broadcast(session, link, console_report)
+            self._one(broadcast, session, link, console_report)
             for session in broadcast.sessions
         ])
-
-        if not self.storage.initialize:
-            for session in broadcast.sessions:
-                await session.disconnect()

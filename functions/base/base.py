@@ -7,6 +7,8 @@ from telethon import types
 from telethon.errors import (
     FloodWaitError as RateLimitError,
     PeerFloodError as PeerLimitError,
+    SlowModeWaitError,
+    UserBannedInChannelError,
     UserDeactivatedBanError as AccountDeactivatedError,
     UserRestrictedError as AccountRestrictedError,
 )
@@ -62,14 +64,17 @@ class BaseFunction:
 
         Public: t.me/<name>/<id> -> ("<name>", id).
         Private: t.me/c/<channel_id>/<id> -> (PeerChannel(channel_id), id).
+        Topic links (.../<topic>/<id>) and a ?single / ?comment= query are accepted.
         """
-        parts = link.rstrip("/").split("/")
+        parts = link.split("?")[0].rstrip("/").split("/")
         message_id = int(parts[-1])
 
-        if len(parts) >= 3 and parts[-3] == "c":
-            return types.PeerChannel(int(parts[-2])), message_id
+        if "c" in parts[:-2]:
+            return types.PeerChannel(int(parts[parts.index("c") + 1])), message_id
 
-        return parts[-2], message_id
+        # the peer is the segment right after the host (a topic id may follow it)
+        host = next((i for i, p in enumerate(parts) if p.endswith(("t.me", "telegram.me"))), None)
+        return (parts[host + 1] if host is not None else parts[-2]), message_id
 
     async def safe_call(self, make_awaitable):
         """Run make_awaitable() (a no-arg callable returning a coroutine), waiting out
@@ -79,14 +84,16 @@ class BaseFunction:
         while True:
             try:
                 return await make_awaitable()
-            except RateLimitError as err:
+            except (RateLimitError, SlowModeWaitError) as err:
                 if err.seconds <= self.rate_wait_limit and retries < self.max_rate_retries:
                     retries += 1
                     await asyncio.sleep(err.seconds + 1)
                     continue
 
                 raise AccountLimited(f"rate limit {err.seconds}s")
-            except (PeerLimitError, AccountDeactivatedError, AccountRestrictedError) as err:
+            # UserBannedInChannel: the account is spam-restricted from all groups/channels
+            except (PeerLimitError, AccountDeactivatedError, AccountRestrictedError,
+                    UserBannedInChannelError) as err:
                 raise AccountLimited(str(err))
 
     async def run_with_rotation(self, items, action):

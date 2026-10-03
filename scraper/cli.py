@@ -2,7 +2,6 @@
 
 import argparse
 import logging
-import re
 from pathlib import Path
 
 from scraper import __version__
@@ -23,6 +22,8 @@ def _non_negative_int(value: str) -> int:
 
 
 def _read_channels(args) -> list[str]:
+    from scraper.scrape import parse_channels
+
     if args.channels_file:
         try:
             raw = Path(args.channels_file).read_text(encoding="utf-8")
@@ -30,18 +31,17 @@ def _read_channels(args) -> list[str]:
             raise SystemExit(f"--channels-file: {exc}")
     else:
         raw = args.channels
-    channels = [c.strip() for c in re.split(r"[,\s]+", raw) if c.strip()]
+    channels = parse_channels(raw)
     if not channels:
         raise SystemExit("No channels given (use --channels or --channels-file).")
     return channels
 
 
 def _date_range(args) -> tuple:
-    from scraper.scrape import parse_date
+    from scraper.scrape import check_date_range, parse_date
 
     date_min, date_max = parse_date(args.date_min), parse_date(args.date_max, end_of_day=True)
-    if date_min > date_max:
-        raise SystemExit(f"--date-min {args.date_min} is after --date-max {args.date_max}.")
+    check_date_range(date_min, date_max, args.date_min, args.date_max)
     return date_min, date_max
 
 
@@ -257,7 +257,8 @@ def build_parser() -> argparse.ArgumentParser:
     lk.set_defaults(func=cmd_links)
 
     vf = sub.add_parser("verify",
-                        help="probe the live channel for posts the scrape missed")
+                        help="probe the live channel for posts the scrape missed "
+                             "(not for --keyword scrapes: every non-matching post would show as missed)")
     vf.add_argument("--input", required=True,
                     help="scraped posts parquet/xlsx (file, directory, or glob)")
     vf.add_argument("--channel", required=True,

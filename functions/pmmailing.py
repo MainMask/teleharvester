@@ -147,7 +147,7 @@ class PmMailingFunc(TelethonFunction):
 
         if self._active_accounts:  # not the first account to send
             pause = self.settings.account_pause
-            seconds = pause[0] if len(pause) == 1 else random.randint(*pause)
+            seconds = pause[0] if len(pause) == 1 else random.randint(*sorted(pause[:2]))
 
             await self._report(f"switching to {name}, pause {seconds}s")
             await asyncio.sleep(seconds)

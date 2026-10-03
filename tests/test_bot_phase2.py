@@ -642,7 +642,7 @@ class TestBadDateHandled:
         client = TelegramClient(StringSession(), 1, "x")
         m = _Msg()
         manager = JobManager()
-        asyncio.run(scraping.scrape_run(m, _State(), ns(workers=[client]), manager, ns()))
+        asyncio.run(scraping.scrape_run(m, _State(), ns(workers=[client]), manager))
 
         assert any("Неверные параметры" in r for r in m.replies)
         assert manager.active is False  # slot never taken on a parse failure
@@ -683,7 +683,7 @@ class TestVerifyBadInputReported:
         svc.do_verify = _boom
         try:
             asyncio.run(scraping.verify_run(
-                m, _State(), ns(workers=[client]), manager, ns(api_id=1, api_hash="x"),
+                m, _State(), ns(workers=[client]), manager,
             ))
         finally:
             svc.do_verify = original
@@ -693,12 +693,84 @@ class TestVerifyBadInputReported:
         assert manager.active is False  # slot released on the error path
 
 
+# --- 2fa: the operator's password message is deleted from the chat ---
+
+class TestTwoFaDeletesPassword:
+    def test_password_message_deleted_and_job_started(self):
+        from bot.routers import profile
+
+        class _State:
+            async def clear(self):
+                return None
+
+        class _Msg:
+            text = "s3cret"
+            chat = ns(id=1)
+            bot = _Bot()
+
+            def __init__(self):
+                self.deleted = False
+
+            async def delete(self):
+                self.deleted = True
+
+        class _Manager:
+            started = False
+
+            async def run(self, *args, **kwargs):
+                _Manager.started = True
+                return True
+
+        m = _Msg()
+        asyncio.run(profile.twofa_run(m, _State(), ns(), {"SetPasswordFunc": object()}, _Manager()))
+
+        assert m.deleted is True
+        assert _Manager.started is True
+
+
+# --- analysis: a bad input (SystemExit from scraper.analysis) is reported, not fatal ---
+
+class TestAnalysisBadInputReported:
+    def test_systemexit_is_reported_and_frees_slot(self, tmp_path):
+        from bot.routers import scraping
+
+        missing = str(tmp_path / "nope_*.parquet")  # combine -> resolve_inputs: "No files match"
+
+        class _State:
+            async def get_data(self):
+                return {"tool": "combine", "idx": 1, "collected": {"input": missing}}
+
+            async def update_data(self, **kwargs):
+                return None
+
+            async def clear(self):
+                return None
+
+        class _Msg:
+            text = str(tmp_path / "out.parquet")
+            chat = ns(id=1)
+            bot = _Bot()
+
+            def __init__(self):
+                self.replies = []
+
+            async def answer(self, text, **kwargs):
+                self.replies.append(text)
+
+        m = _Msg()
+        manager = JobManager()
+        asyncio.run(scraping.analysis_arg(m, _State(), manager))  # must not raise SystemExit
+
+        assert any("Ошибка" in r and "No files match" in r for r in m.replies)
+        assert manager.active is False  # slot released on the error path
+
+
 # --- scraper helpers ---
 
 class TestScraping:
     def test_parse_channels(self):
-        from bot.services import scraping
-        assert scraping.parse_channels("a, b  c") == ["a", "b", "c"]
+        from scraper.scrape import parse_channels
+        assert parse_channels("a, b  c") == ["a", "b", "c"]
 
     def test_read_preview_escapes_html(self):
         import pandas as pd
@@ -720,12 +792,11 @@ class TestScraping:
         out = read_preview(df)
         assert "…" in out and len(out) < 4096
 
-    def test_session_string_none_without_workers(self):
+    def test_worker_session_none_without_workers(self):
         from bot.services import scraping
-        assert scraping.worker_session_string(ns(workers=[])) is None
+        assert scraping.worker_session(ns(workers=[])) is None
 
-    def test_session_string_from_worker(self):
+    def test_worker_session_from_worker(self):
         from bot.services import scraping
         client = TelegramClient(StringSession(), 1, "x")
-        s = scraping.worker_session_string(ns(workers=[client]))
-        assert s is not None and isinstance(s, str)  # real sessions serialise a non-empty key
+        assert scraping.worker_session(ns(workers=[client])) is client

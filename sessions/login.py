@@ -39,7 +39,7 @@ with client:
 
 @client.on(events.NewMessage)
 async def handler(msg):
-    if getattr(msg.from_id, "user_id", None) == 777000:
+    if msg.sender_id == 777000:  # incoming private messages have no from_id (layer 119+)
         print(msg.text)
 
 client.start()

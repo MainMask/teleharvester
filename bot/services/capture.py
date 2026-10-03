@@ -23,37 +23,42 @@ def clear_orphan_temp() -> None:
 
 
 def _source_and_flags(message):
-    """Return (downloadable, filename, force_document, voice, video_note) or None."""
+    """Return (downloadable, filename, force_document, voice, video_note, animated) or None."""
     if message.photo:
-        return message.photo[-1], "photo.jpg", False, False, False
+        return message.photo[-1], "photo.jpg", False, False, False, False
     if message.video:
-        return message.video, message.video.file_name or "video.mp4", False, False, False
+        return message.video, message.video.file_name or "video.mp4", False, False, False, False
     if message.animation:
-        return message.animation, message.animation.file_name or "animation.mp4", False, False, False
+        return message.animation, message.animation.file_name or "animation.mp4", False, False, False, True
     if message.voice:
-        return message.voice, "voice.ogg", False, True, False
+        return message.voice, "voice.ogg", False, True, False, False
     if message.video_note:
-        return message.video_note, "video_note.mp4", False, False, True
+        return message.video_note, "video_note.mp4", False, False, True, False
     if message.audio:
-        return message.audio, message.audio.file_name or "audio.mp3", False, False, False
+        return message.audio, message.audio.file_name or "audio.mp3", False, False, False, False
     if message.sticker:
-        ext = ".tgs" if message.sticker.is_animated else ".webp"
-        return message.sticker, f"sticker{ext}", False, False, False
+        if message.sticker.is_video:  # WEBM data: a .webp name would upload it as an image
+            ext = ".webm"
+        else:
+            ext = ".tgs" if message.sticker.is_animated else ".webp"
+        return message.sticker, f"sticker{ext}", False, False, False, False
     if message.document:
-        return message.document, message.document.file_name or "document", True, False, False
+        return message.document, message.document.file_name or "document", True, False, False, False
     return None
 
 
 async def _download(bot, directory, index, found) -> MediaItem:
-    source, filename, force_document, voice, video_note = found
+    source, filename, force_document, voice, video_note, animated = found
     path = os.path.join(directory, f"{index}_{filename}")
-    await bot.download(source, destination=path)
+    # aiogram's default 30 s is a total timeout: a 20 MB video on a slow link would fail
+    await bot.download(source, destination=path, timeout=300)
 
     return MediaItem(
         path=path,
         force_document=force_document,
         voice_note=voice,
         video_note=video_note,
+        animated=animated,
     )
 
 

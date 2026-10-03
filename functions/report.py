@@ -1,9 +1,9 @@
-from rich.progress import track
 from modules.console import console
 from rich.prompt import Prompt
 
 from telethon import types, functions
 from functions.base import TelethonFunction
+from functions.base.base import console_report
 
 
 class ReportFunc(TelethonFunction):
@@ -141,15 +141,4 @@ class ReportFunc(TelethonFunction):
 
             console.print(f"[{self.safe(me.first_name)}] [bold green]submitted.[/]")
 
-        for session in track(rest, "[yellow]Submitting...[/]", total=len(rest)):
-            async with self.storage.ainitialize_session(session):
-                me = await session.get_me()
-                try:
-                    await self.replay(session, link, posts, comment, selections)
-                except Exception as err:
-                    console.print(
-                        "[{name}] [bold red]error.[/] {error}"
-                        .format(name=self.safe(me.first_name), error=self.safe(err))
-                    )
-                else:
-                    console.print(f"[{self.safe(me.first_name)}] [bold green]submitted.[/]")
+        await self.replay_rest(rest, link, posts, comment, selections, console_report)

@@ -23,12 +23,6 @@ class JsonSession:
         elif dict_settings is not None:
             self.account: AccountSettings = AccountSettings.from_dict(dict_settings)
 
-    def save(self, filename):
-        with open(filename, "w") as file:
-            json.dump(
-                dataclasses.asdict(self.account), file, indent=4, ensure_ascii=False
-            )
-
     @staticmethod
     async def create_application_session(
         generator: Application | Any = None,
@@ -91,52 +85,3 @@ class JsonSession:
                     ensure_ascii=True,
                     indent=4
                 )
-
-    @staticmethod
-    async def build_session_from_telegram_client(
-        client: TelegramClient,
-        generator: Application | Any = None,
-        api_hash: str | Any = None,
-        api_id: str | Any = None,
-        device_name: str | Any = None,
-        app_version: str | Any = None,
-        sdk: str | Any = None,
-        lang_pack: str | Any = None,
-        system_lang_code: str | Any = None,
-        proxy: Proxy | Any = None
-    ) -> "JsonSession":
-        account = await client.get_me()
-
-        if not generator:
-            generator = random.choice([LinuxAPI, TelegramAppAPI])
-
-        api_hash = api_hash or generator.api_hash
-        api_id = api_id or generator.api_id
-        app_version = app_version or generator.app_version()
-        device_name = device_name or generator.device()
-        sdk = sdk or generator.sdk()
-        lang_pack = generator.lang_pack
-        system_lang_code = system_lang_code or generator.system_lang_code()
-
-        return JsonSession(
-            account_settings=AccountSettings(
-                auth_key=client.session.save(),
-                account=Account(
-                    first_name=account.first_name,
-                    last_name=account.last_name,
-                    user_id=account.id,
-                    added_at=datetime.now().timestamp(),
-                    phone_number=account.phone,
-                ),
-                application=Application(
-                    api_id=api_id,
-                    api_hash=api_hash,
-                    device_name=device_name,
-                    app_version=app_version,
-                    sdk=sdk,
-                    lang_pack=lang_pack,
-                    system_lang_code=system_lang_code,
-                ),
-                proxy=proxy
-            )
-        )

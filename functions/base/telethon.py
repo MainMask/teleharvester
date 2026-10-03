@@ -21,13 +21,13 @@ class TelethonFunction(BaseFunction):
 
         Returns the resolved users list (empty if Telegram found no account).
         """
-        result = await session(functions.contacts.ImportContactsRequest(
+        result = await self.safe_call(lambda: session(functions.contacts.ImportContactsRequest(
             contacts=[types.InputPhoneContact(
                 client_id=random.randrange(-2**63, 2**63),
                 phone=phone,
                 first_name='contact',
                 last_name=''
             )]
-        ))
+        )))
 
         return result.users

@@ -40,6 +40,7 @@ class CommentsBroadcastFunc(TelethonFunction):
                     if errors >= 5:
                         break
                 else:
+                    errors = 0
                     count += 1
                     await report(f"[{me.first_name}] sent. COUNT: {count}")
 

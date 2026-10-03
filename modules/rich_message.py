@@ -58,6 +58,7 @@ class MediaItem:
     force_document: bool = False
     voice_note: bool = False
     video_note: bool = False
+    animated: bool = False  # a GIF: an .mp4 without this attribute arrives as a plain video
 
 
 @dataclass
@@ -92,9 +93,11 @@ async def _send_once(session, peer, content, entities, safe_call, **kwargs):
             peer, item.path,
             caption=content.text,
             formatting_entities=entities,
+            parse_mode=None,  # with no entities send_file would parse the caption as markdown
             force_document=item.force_document,
             voice_note=item.voice_note,
             video_note=item.video_note,
+            attributes=[types.DocumentAttributeAnimated()] if item.animated else None,
             **kwargs,
         ))
     else:
@@ -104,9 +107,29 @@ async def _send_once(session, peer, content, entities, safe_call, **kwargs):
             peer, paths,
             caption=content.text,
             formatting_entities=entities,
+            parse_mode=None,  # with no entities send_file would parse the caption as markdown
             force_document=all_docs,
             **kwargs,
         ))
+
+
+async def _resolve_mentions(session, entities) -> list:
+    """MessageEntityMentionName -> InputMessageEntityMentionName.
+
+    Telethon converts mentions only while parsing text itself; with formatting_entities
+    the output-only type would reach the server as-is. An unresolvable user's mention is
+    dropped (its text stays), as Telethon's own _replace_with_mention does.
+    """
+    result = []
+    for entity in entities:
+        if isinstance(entity, types.MessageEntityMentionName):
+            try:
+                user = await session.get_input_entity(entity.user_id)
+            except (ValueError, TypeError):
+                continue
+            entity = types.InputMessageEntityMentionName(entity.offset, entity.length, user)
+        result.append(entity)
+    return result
 
 
 async def send(session, peer, content, safe_call, report=None, **kwargs):
@@ -116,7 +139,7 @@ async def send(session, peer, content, safe_call, report=None, **kwargs):
     content carries custom emoji (sending those needs Telegram Premium), retry once with
     them stripped so the rest of the formatting still goes out.
     """
-    entities = content.entities
+    entities = await _resolve_mentions(session, content.entities)
     try:
         await _send_once(session, peer, content, entities, safe_call, **kwargs)
     except AccountLimited:

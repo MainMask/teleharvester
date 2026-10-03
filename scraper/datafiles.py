@@ -74,7 +74,14 @@ def save_table(df: pd.DataFrame, path: str | Path, fmt: str | None = None) -> Pa
                           if isinstance(df[c].dtype, pd.DatetimeTZDtype)})
         # openpyxl refuses control characters (e.g. in comment text or names)
         df = df.map(lambda v: _INVALID_XML_CHARS.sub("", v) if isinstance(v, str) else v)
-        df.to_excel(path, index=False, engine="openpyxl")
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+            # openpyxl stores any string starting with "=" as a formula (a post like
+            # "=== NEWS ===" would open as #NAME?): keep such cells as plain text
+            for row in writer.sheets["Sheet1"].iter_rows():  # header too: a "=promo" keyword column
+                for cell in row:
+                    if cell.data_type in ("f", "e"):  # "e": a text that is exactly "#N/A", "#REF!", …
+                        cell.data_type = "s"
     elif ext == "parquet":
         df.to_parquet(path, index=False)
     else:
@@ -91,10 +98,13 @@ def read_table(path: str | Path) -> pd.DataFrame:
         # hashes are stored as text (see save_table); read them as str, or pandas
         # parses the digits into float64 and rounds them
         hash_cols = [c for c in pd.read_excel(path, nrows=0).columns if _is_hash_column(c)]
-        return _hashes_to_int64(pd.read_excel(path, dtype={c: str for c in hash_cols}), hash_cols)
+        # only empty cells are missing: "NA", "None", "nan"... are real text (a name "Nan")
+        return _hashes_to_int64(pd.read_excel(path, dtype={c: str for c in hash_cols},
+                                              keep_default_na=False, na_values=[""]), hash_cols)
     if suffix == ".csv":
         hash_cols = [c for c in pd.read_csv(path, nrows=0).columns if _is_hash_column(c)]
-        return _hashes_to_int64(pd.read_csv(path, dtype={c: str for c in hash_cols}), hash_cols)
+        return _hashes_to_int64(pd.read_csv(path, dtype={c: str for c in hash_cols},
+                                            keep_default_na=False, na_values=[""]), hash_cols)
     raise ValueError(f"Unsupported file type: {path.name}")
 
 

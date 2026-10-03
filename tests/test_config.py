@@ -68,6 +68,16 @@ def test_load_credentials_reads_dotenv_from_cwd(monkeypatch, tmp_path):
     assert load_credentials().api_id == 42  # not the .env next to the package
 
 
+def test_load_credentials_ignores_config_toml(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.delenv("TG_API_ID", raising=False)
+    monkeypatch.delenv("TG_API_HASH", raising=False)
+    (tmp_path / "config.toml").write_text('[sessions]\napi_id = 42\napi_hash = "abc"\n')
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit, match="TG_API_ID"):
+        load_credentials()
+
+
 def test_start_kwargs_leaves_unset_phone_and_password_to_telethon():
     import asyncio
 

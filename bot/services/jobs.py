@@ -24,6 +24,7 @@ class JobManager:
         self._on_abort = None
         self._cancelable = True
         self._timeout_task = None
+        self._cancel_requested = False
 
     @property
     def active(self) -> bool:
@@ -56,19 +57,33 @@ class JobManager:
             self._clear()
             return False
 
+        if self._cancel_requested:  # stopped while the status message was being posted
+            self._clear()
+            try:
+                await reporter.finish("⏹ Остановлено")
+            except Exception:
+                pass
+            return False
+
         self._stop_sessions = list(stop_sessions) if stop_sessions is not None else list(pool.workers)
-        self._task = asyncio.create_task(
+        task = asyncio.create_task(
             self._wrap(pool, instance, bot_function, factory, reporter, done)
         )
+        self._task = task
+        # backstop: a cancel before _wrap starts, or during its finally, skips its _clear()
+        task.add_done_callback(lambda t: self._clear() if self._task is t else None)
         return True
 
     async def _wrap(self, pool, instance, bot_function, factory, reporter, done):
         try:
-            await pool.run(instance, bot_function, lambda f: factory(f, reporter), reporter)
-            await reporter.finish(done)
+            ran = await pool.run(instance, bot_function, lambda f: factory(f, reporter), reporter)
+            # done: a Stop during finish() must not relabel the job as stopped
+            self._cancelable = False
+            await reporter.finish("⚠️ Не выполнено" if ran is False else done)
         except asyncio.CancelledError:
             await reporter.finish("⏹ Остановлено")
         except Exception as err:  # noqa: BLE001 - surface any job failure to the operator
+            self._cancelable = False  # as on success: a Stop must not swallow the error text
             await reporter.finish(f"⚠️ Ошибка: {err}")
         finally:
             for session in self._stop_sessions:
@@ -143,7 +158,12 @@ class JobManager:
             return False
 
         if self._kind == "task":
-            if self._task is not None:
+            if not self._cancelable:  # already finishing (see _wrap)
+                return False
+            if self._task is None:  # still posting the status message: run() aborts the start
+                self._cancel_requested = True
+            elif not self._task.cancelling():
+                # a second cancel would interrupt _wrap's cleanup and skip its _clear()
                 self._task.cancel()  # _wrap's finally clears the slot
             return True
 
@@ -171,3 +191,4 @@ class JobManager:
         self._on_abort = None
         self._cancelable = True
         self._timeout_task = None
+        self._cancel_requested = False

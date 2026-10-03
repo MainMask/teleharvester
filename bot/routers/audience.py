@@ -20,13 +20,14 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     if not await ensure_workers(callback, pool):
         return
     await state.set_state(AddContacts.path)
-    await callback.message.answer(f"Путь к .parquet (пусто = {DEFAULT_DB}):")
+    await callback.message.answer(f"Путь к .parquet («-» = {DEFAULT_DB}):")
 
 
 @router.message(AddContacts.path)
 async def run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager, settings: Settings):
     await state.clear()
-    path = (message.text or "").strip() or DEFAULT_DB
+    raw = (message.text or "").strip()
+    path = DEFAULT_DB if raw in ("", "-") else raw  # Telegram can't send an empty message
 
     instance, bot_function = resolve(functions, "addcontacts")
     await manager.run(

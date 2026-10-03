@@ -31,8 +31,20 @@ async def start(message: Message, state: FSMContext, pool: WorkerPool):
 
 @router.message(Command("cancel"))
 async def cancel(message: Message, state: FSMContext, manager: JobManager):
-    await state.clear()
-    await manager.stop()  # abort the active job if one is open (a task or an interactive flow)
+    if await state.get_state() is not None:
+        # backing out of a form must not stop a job that may belong to another admin
+        await state.clear()
+        note = f"\nЗадача «{manager.label}» продолжает работу — /cancel ещё раз, чтобы остановить." \
+            if manager.active else ""
+        await message.answer("Отменено." + note, reply_markup=main_menu())
+        return
+
+    stopped = await manager.stop()  # abort the active job if one is open (a task or an interactive flow)
+    if not stopped and manager.active:  # scrape/verify/analysis or a report already replaying
+        await message.answer(
+            f"Задача «{manager.label}» не прерывается, дождитесь завершения.", reply_markup=main_menu()
+        )
+        return
     await message.answer("Отменено.", reply_markup=main_menu())
 
 

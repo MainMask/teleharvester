@@ -14,11 +14,17 @@ class PmBroadcastFunc(TelethonFunction):
         async with self.storage.ainitialize_session(session):
             try:
                 me = await session.get_me()
-            except Exception:
+            except Exception as err:
+                await report(f"get_me failed: {err}")
                 return
 
             if by_phone_number:
-                users = await self.import_phone_contact(session, peer)
+                try:
+                    users = await self.import_phone_contact(session, peer)
+                except Exception as err:
+                    # one account's failure must not abort the gather for the others
+                    await report(f"[{me.first_name}] couldn't resolve phone {peer}: {err}")
+                    return
 
                 if not users:
                     await report(f"[{me.first_name}] couldn't resolve phone {peer}")

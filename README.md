@@ -69,25 +69,34 @@ pip install -r requirements.txt
 
 ## Configuration
 
+Settings are split in two git-ignored files:
+
+- **`.env` — secrets**: `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN` (and the scraper's optional
+  `TG_PHONE`, `TG_PASSWORD`, `TG_SESSION_STRING`). See [`.env.example`](.env.example). Real
+  environment variables override the file. It holds secrets — keep it private
+  (`chmod 600 .env`, readable only by the user that runs the bot/scraper).
+- **`config.toml` — behaviour**: `[broadcast]`, `[limits]` and `[bot] admins`. See
+  [`config.toml.example`](config.toml.example).
+
 On the first run the app creates `config.toml` and asks for:
 
-- **API ID** and **API hash** — get them at <https://my.telegram.org> → *API development tools*.
+- **API ID** and **API hash** (only if they are not in `.env` yet; they are saved to `.env`) —
+  get them at <https://my.telegram.org> → *API development tools*.
 - **Broadcast messages**, **delay** (e.g. `1-3`) and a **trigger** phrase used by the
   trigger-based broadcast functions.
+
+Older configs with a `[sessions]` section or `[bot] token` are rejected at startup with a
+message to move those values into `.env`.
 
 The optional `[limits]` section throttles the **Mailing to PM** function: `per_account_daily`
 caps how many messages each account sends per day (rotating to the next account when reached),
 and `account_pause` (`[min, max]` seconds) is the pause taken when switching accounts. If the
 section is missing, defaults (`30` and `[30, 60]`) apply.
 
-The optional `[bot]` section configures the Telegram control bot (see
-[*Control bot*](#control-bot-telegram)): `token` (from [@BotFather](https://t.me/BotFather))
-and `admins` (a list of Telegram user IDs allowed to control it). The first-run setup does not
-create it — add it yourself (copy from [`config.toml.example`](config.toml.example)), or set the
-`BOT_TOKEN` and `BOT_ADMINS` environment variables instead (they override the file).
-
-See [`config.toml.example`](config.toml.example) for the full structure. `config.toml` holds
-your credentials and is git-ignored.
+The Telegram control bot (see [*Control bot*](#control-bot-telegram)) needs `BOT_TOKEN` in
+`.env` (from [@BotFather](https://t.me/BotFather)) and `admins` in the `[bot]` section of
+`config.toml` (a list of Telegram user IDs allowed to control it). The first-run setup does not
+create either — add them yourself. The `BOT_ADMINS` environment variable overrides `admins`.
 
 ## Adding accounts
 
@@ -123,7 +132,8 @@ python main.py
 ```
 
 Choose whether to initialize sessions, then pick a function by its number. On startup
-the tool checks for updates via git and can pull them automatically.
+the tool checks for updates via git and can pull them automatically (only when run from a git
+checkout; otherwise the check is skipped).
 
 ## Control bot (Telegram)
 
@@ -132,7 +142,7 @@ As an alternative to the terminal menu, teleharvester can be driven from Telegra
 unchanged; the bot is a separate entry point.
 
 ```bash
-# config.toml → [bot] token = "..." and admins = [<your_user_id>]
+# .env → BOT_TOKEN=...   config.toml → [bot] admins = [<your_user_id>]
 python -m bot
 ```
 
@@ -151,8 +161,10 @@ Send `/start`, then **📋 Функции** to pick a function by category:
 - **🧹 Сервис** — account status (@SpamBot), phone stats, terminate sessions, clear dialogs.
 - **🔎 Скрапинг** — scrape, verify, analyse (runs on one worker's session; results come back as files).
   Bot-launched scrapes run in a background thread that **cannot be stopped from the bot**, hold the single
-  job slot for their whole duration, and are **not resumable** — a bot restart (e.g. `systemctl restart`)
-  ends the run and the next launch starts it fresh. Use the bot for short, interactive scrapes; run
+  job slot for their whole duration, and **cannot be resumed from the bot** — a bot restart (e.g.
+  `systemctl restart`) ends the run; continue it from the terminal menu (*Scrape channel/group* with the same
+  worker account, channels, name, dates, keyword and output dir, answering yes to resume). Prompts with a
+  default take `-` for it. Use the bot for short, interactive scrapes; run
   **long or multi-day scrapes through the `deploy/teleharvester-scrape@.service` template** (below), which
   passes `--resume` and checkpoints on SIGTERM.
 
@@ -212,14 +224,14 @@ analysing the result, stored as **Apache Parquet** (`.parquet`) or **Excel** (`.
 Two ways to run it:
 
 - **From the menu** — pick *Scrape channel/group*, *Verify scrape against live channel*,
-  or *Analyze scraped data*. These reuse your `config.toml` API credentials and one of
-  your existing `sessions/` accounts (you pick which at run time) — no separate login.
+  or *Analyze scraped data*. These run on one of your existing `sessions/` accounts (you
+  pick which at run time) with that account's own API credentials, proxy and device — no
+  separate login.
   Scrapes default to `assets/databases/`, so a `_participants` file flows straight into
   *Add users to contacts from a .parquet database*.
 - **From the command line** — `python -m scraper <command>` (or the `scraper`
   console script after `pip install -e .`). This path is for automation, long resumable
-  runs and Docker; it reads credentials from `.env` (`TG_API_ID`, `TG_API_HASH`), falling
-  back to `config.toml` (`[sessions]`) when no `.env` is set, and uses its own
+  runs and Docker; it reads credentials from `.env` (`TG_API_ID`, `TG_API_HASH`) and uses its own
   `scraper.session` (run `python -m scraper login` once, or set `TG_SESSION_STRING`).
 
 | Command   | What it does |
@@ -279,6 +291,7 @@ python -m scraper verify --input output/Test_posts_02.01.2024-30.01.2024.parquet
 
 `scrape` walks the channel with `iter_messages`; `verify` cross-checks with
 `get_messages(ids=…)` and lists any real message inside the date window the scrape missed.
+It assumes a full scrape: for a `--keyword` scrape every non-matching post is reported as missed.
 
 ### Analyse
 

@@ -18,15 +18,19 @@ class SessionsStorage:
         self.jsessions_paths: Dict[str, JsonSession] = {}
 
         self.initialize = initialize
+        self.loop = None  # the loop clients were connected on (initialize=True only)
 
         for file in os.listdir(directory):
             if file.endswith(".session"):
                 session_path = os.path.join(directory, file)
 
-                with open(session_path) as fileobj:
-                    auth_key = fileobj.read().strip()
+                try:
+                    with open(session_path) as fileobj:
+                        auth_key = fileobj.read().strip()
+                except UnicodeDecodeError:  # a binary (SQLite) Telethon session, not a string one
+                    continue
 
-                if len(auth_key) != 353:
+                if len(auth_key) not in (353, 369):  # IPv4 / IPv6 DC address
                     continue
 
                 client = TelegramClient(
@@ -43,10 +47,14 @@ class SessionsStorage:
             elif file.endswith(".jsession"):
                 session_path = os.path.join(directory, file)
 
-                with open(session_path) as fileobj:
-                    session_settings = json.load(fileobj)
+                try:
+                    with open(session_path) as fileobj:
+                        session_settings = json.load(fileobj)
 
-                session = JsonSession(dict_settings=session_settings)
+                    session = JsonSession(dict_settings=session_settings)
+                except Exception as err:  # one broken file must not stop the CLI / bot start
+                    console.print(f"[bold yellow]WARNING:[/] skipped broken session file {session_path}: {err}")
+                    continue
 
                 if old_session := self.is_phone_exists(
                     session.account.account.phone_number
@@ -88,6 +96,7 @@ class SessionsStorage:
                 except RuntimeError:  # no running loop (CLI path): make one for run_until_complete
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
+                self.loop = loop
 
                 loop.run_until_complete(
                     asyncio.gather(
@@ -105,11 +114,17 @@ class SessionsStorage:
         if json_session is not None and json_session in self.json_sessions:
             self.json_sessions.remove(json_session)
 
+    @staticmethod
+    async def _drop_client(session):
+        """Disconnect a forgotten client, or its keepalive/update tasks run on forever."""
+        await session.disconnect()
+
     async def check_session(self, session: TelegramClient, path: str):
         console.log(f"Initializing session {path}")
 
         try:
             await session.connect()
+            authorized = await session.is_user_authorized()
         except ConnectionError:
             json_session = self.jsessions_paths.get(path)
 
@@ -120,16 +135,19 @@ class SessionsStorage:
             else:
                 console.log(f"Error with connection to session {path}")
 
+            await self._drop_client(session)  # connect() may have succeeded before the check
             self._forget_session(path)
             return
 
         except Exception as err:
             console.log(f"Session {path} returned error. {err}. Skipping.")
+            await self._drop_client(session)
             self._forget_session(path)
             return
 
-        if not await session.is_user_authorized():
+        if not authorized:
             console.log(f"Session {path} is inactive. Moving it to sessions/inactive")
+            await self._drop_client(session)
             self._forget_session(path)
 
             inactive_dir = os.path.join(os.path.dirname(path), "inactive")

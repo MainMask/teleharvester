@@ -29,18 +29,21 @@ class Prompt:
         print(f"{msg}:")
         for i, opt in enumerate(options, 1):
             print(f"  {i}) {opt}{'  (default)' if opt == default else ''}")
-        raw = self._input("Choose: ").strip()
-        if not raw:
-            return default
-        if raw.isdigit() and 1 <= int(raw) <= len(options):
-            return options[int(raw) - 1]
-        return raw if raw in options else default
+        while True:  # a typo must not silently become the default
+            raw = self._input("Choose: ").strip()
+            if not raw:
+                return default
+            if raw.isdigit() and 1 <= int(raw) <= len(options):
+                return options[int(raw) - 1]
+            if raw in options:
+                return raw
+            print("  ! unknown option")
 
 
 def _opt(argv: list[str], flag: str, value: str, default: str) -> None:
     """Append `flag value` only when it differs from the CLI default."""
-    if value and value != default:
-        argv += [flag, value]
+    if value and value != default:  # "flag=value": "-100…,-100…" would be taken for an option
+        argv += [f"{flag}={value}"] if value.startswith("-") else [flag, value]
 
 
 _DATA_EXT = (".parquet", ".xlsx", ".csv")
@@ -75,7 +78,10 @@ def _scrape_argv(p: Prompt) -> list[str]:
     argv = ["scrape"]
     channels = p.text("Channels: @name / numeric id (-100...), comma-separated, or path to a .txt file",
                       required=True)
-    argv += ["--channels-file", channels] if Path(channels).is_file() else ["--channels", channels]
+    if Path(channels).is_file():
+        argv += ["--channels-file", channels]
+    else:
+        _opt(argv, "--channels", channels, "")
     argv += ["--date-min", p.text("Date from (DD.MM.YYYY)", required=True)]
     argv += ["--date-max", p.text("Date to (DD.MM.YYYY)", required=True)]
     argv += ["--name", p.text("Output file base name", required=True)]

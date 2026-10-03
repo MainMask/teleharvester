@@ -3,6 +3,11 @@ import random
 from rich.prompt import Prompt, Confirm
 from modules.console import console
 from telethon import events, types
+from telethon.errors import (
+    ChannelPrivateError,
+    ChatAdminRequiredError,
+    ChatWriteForbiddenError,
+)
 from telethon.extensions import html
 from telethon.tl.functions.messages import GetStickerSetRequest
 from telethon.tl.types import InputStickerSetShortName
@@ -14,6 +19,23 @@ from modules.rich_message import RichContent
 
 # Invisible mention carrier: each hidden mention is these two chars linked to a user.
 _MENTION_CHARS = "⁬⁯"
+
+# A basic group ignores the admins filter (Telethon returns every member), so the
+# participant type decides who is an admin, in groups and supergroups alike.
+_ADMIN_PARTICIPANTS = (
+    types.ChatParticipantAdmin,
+    types.ChatParticipantCreator,
+    types.ChannelParticipantAdmin,
+    types.ChannelParticipantCreator,
+)
+
+# Errors meaning the chat won't accept this account's messages (vs. content/transient ones).
+# Not UserBannedInChannelError: that is an account-wide spam restriction (AccountLimited).
+_CHAT_ERRORS = (
+    ChatWriteForbiddenError,
+    ChannelPrivateError,
+    ChatAdminRequiredError,
+)
 
 
 def _utf16_len(text: str) -> int:
@@ -73,7 +95,8 @@ class Broadcast(TelethonFunction):
         if self.choice == 4 and getattr(self, "sticker_set", None):  # stickers first
             stickers = await session(
                 GetStickerSetRequest(
-                    stickerset=InputStickerSetShortName(short_name=self.sticker_set)
+                    stickerset=InputStickerSetShortName(short_name=self.sticker_set),
+                    hash=0,
                 )
             )
             await self.safe_call(lambda: session.send_file(peer, random.choice(stickers.documents)))
@@ -111,7 +134,10 @@ class Broadcast(TelethonFunction):
                     peer,
                     filter=types.ChannelParticipantsAdmins
                 )
-                admin_ids = [user.id for user in admins]
+                admin_ids = [
+                    user.id for user in admins
+                    if isinstance(getattr(user, "participant", None), _ADMIN_PARTICIPANTS)
+                ]
 
                 if self.mention_mode == "users":
                     users_ids = [
@@ -140,20 +166,27 @@ class Broadcast(TelethonFunction):
             except AccountLimited as err:
                 await report(f"[{me.first_name}] limit, stopping. {err}")
                 break
+            except _CHAT_ERRORS as err:
+                # the chat itself refuses this account: leave it, retrying is pointless
+                await report(f"[{me.first_name}] can't write to chat, leaving. {err}")
+
+                try:
+                    await session.delete_dialog(peer)
+                except Exception as err:
+                    await report(f"ERROR while leaving from chat: {err}")
+
+                break
             except Exception as err:
                 await report(f"[{me.first_name}] not sent. {err}")
 
                 errors += 1
 
                 if errors >= 3:
-                    try:
-                        await session.delete_dialog(peer)
-                    except Exception as err:
-                        await report(f"ERROR while leaving from chat: {err}")
-
+                    await report(f"[{me.first_name}] 3 errors in a row, stopping.")
                     break
 
             else:
+                errors = 0
                 count += 1
                 await report(f"[{me.first_name}] sent. COUNT: {count}")
 

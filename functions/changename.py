@@ -70,8 +70,8 @@ class ChangeNameFunc(TelethonFunction):
 
         if from_file == "y":
             try:
-                with open("assets/names.txt") as file:
-                    names = file.read().strip().splitlines()
+                with open("assets/names.txt", encoding="utf-8") as file:
+                    names = [line for line in file.read().splitlines() if line.strip()]
             except FileNotFoundError:
                 console.print("[bold red]File assets/names.txt not found!")
                 return

@@ -143,6 +143,12 @@ class TestBotConfig:
         with pytest.raises(SystemExit):
             cfg.validate()
 
+    def test_token_in_toml_is_rejected(self, tmp_path):
+        path = tmp_path / "config.toml"
+        path.write_text('[bot]\ntoken = "123:abc"\nadmins = [1]\n')
+        with pytest.raises(SystemExit, match="BOT_TOKEN"):
+            BotConfig(path=str(path))
+
 
 # --- decoupled function cores: run() routes output through the reporter -----
 

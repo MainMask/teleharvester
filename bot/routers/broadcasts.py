@@ -28,12 +28,13 @@ async def mail_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
     if not await ensure_workers(callback, pool):
         return
     await state.set_state(PmMailing.path)
-    await callback.message.answer(f"Файл получателей (.parquet/.txt), пусто = {DEFAULT_TARGETS}:")
+    await callback.message.answer(f"Файл получателей (.parquet/.txt), «-» = {DEFAULT_TARGETS}:")
 
 
 @router.message(PmMailing.path)
 async def mail_path(message: Message, state: FSMContext):
-    await state.update_data(path=(message.text or "").strip() or DEFAULT_TARGETS)
+    raw = (message.text or "").strip()
+    await state.update_data(path=DEFAULT_TARGETS if raw in ("", "-") else raw)  # Telegram can't send ""
     await message.answer("Пропускать уже отправленных?", reply_markup=yes_no_kb("mail_skip"))
 
 
@@ -41,14 +42,18 @@ async def mail_path(message: Message, state: FSMContext):
 async def mail_skip(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
     await state.update_data(skip=callback_data.value == "yes")
     await state.set_state(PmMailing.limit)
-    await callback.message.answer("Сколько получателей (пусто = все):")
+    await callback.message.answer("Сколько получателей («-» = все):")
     await callback.answer()
 
 
 @router.message(PmMailing.limit)
 async def mail_limit(message: Message, state: FSMContext):
     raw = (message.text or "").strip()
-    await state.update_data(limit=int(raw) if raw.isdigit() and int(raw) > 0 else None)
+    # only an explicit "-" means "everyone": a typo must not turn into a mass mailing
+    if raw != "-" and not (raw.isdecimal() and int(raw) > 0):
+        await message.answer("Введите положительное число («-» = все):")
+        return
+    await state.update_data(limit=None if raw == "-" else int(raw))
     await state.set_state(PmMailing.message)
     await message.answer(SEND_MESSAGE_PROMPT)
 
@@ -78,7 +83,16 @@ async def mail_run(
         return
 
     if data.get("skip"):
-        instance.load_stats()
+        # re-check after the await above: a mailing started meanwhile owns instance.stats
+        # (its run() loaded it), and reloading here would drop its unsaved records
+        if manager.active:
+            await message.answer(f"⛔ Занят: {manager.label}. Остановите текущую задачу.")
+            return
+        try:
+            instance.load_stats()
+        except Exception as err:
+            await message.answer(f"Статистика не прочитана: {err}")
+            return
         recipients = instance.filter_unsent(recipients)
 
     if data.get("limit"):

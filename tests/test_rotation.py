@@ -13,6 +13,7 @@ from unittest.mock import patch
 from telethon.errors import (
     FloodWaitError,
     PeerFloodError,
+    SlowModeWaitError,
     UserDeactivatedBanError,
     UserRestrictedError,
 )
@@ -95,6 +96,39 @@ class TestSafeCall:
             assert False, "expected AccountLimited"
         except AccountLimited:
             pass
+
+    def test_short_slow_mode_is_waited_out(self):
+        calls = []
+
+        async def make():
+            calls.append(1)
+            if len(calls) == 1:
+                raise SlowModeWaitError(request=None, capture=5)
+            return "ok"
+
+        fn = _fn(["a"])
+        with patch("functions.base.base.asyncio.sleep", new=_noop_sleep()):
+            assert asyncio.run(fn.safe_call(make)) == "ok"
+
+        assert len(calls) == 2
+
+    def test_long_slow_mode_raises_account_limited(self):
+        self._assert_limited(SlowModeWaitError(request=None, capture=10_000))
+
+    def test_import_phone_contact_waits_out_flood(self):
+        calls = []
+
+        async def session(request):
+            calls.append(1)
+            if len(calls) == 1:
+                raise FloodWaitError(request=None, capture=5)
+            return types.SimpleNamespace(users=["u"])
+
+        fn = _fn([session])
+        with patch("functions.base.base.asyncio.sleep", new=_noop_sleep()):
+            assert asyncio.run(fn.import_phone_contact(session, "+100")) == ["u"]
+
+        assert len(calls) == 2
 
 
 class TestRunWithRotation:

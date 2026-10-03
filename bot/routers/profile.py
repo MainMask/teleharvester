@@ -121,6 +121,10 @@ async def twofa_run(message: Message, state: FSMContext, pool: WorkerPool, funct
         await message.answer("Ожидается текст. Попробуйте ещё раз.")
         return
     password = message.text
+    try:
+        await message.delete()  # don't leave the password in the chat history
+    except Exception:
+        pass
     await state.clear()
     instance, bot_function = resolve(functions, "2fa")
     await manager.run(

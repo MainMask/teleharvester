@@ -15,6 +15,8 @@ class ReactionsFunc(TelethonFunction):
     async def set_reaction(self, session, peer, message_id, report, reaction=None):
         if not reaction:
             reaction = random.choice(self.reactions)
+        # Telegram's reaction emoticons carry no variation selector: "❤️" is REACTION_INVALID
+        reaction = reaction.replace("\ufe0f", "")
 
         async with self.storage.ainitialize_session(session):
             try:

@@ -40,8 +40,8 @@ class WorkerPool:
         func_instance.sessions = workers
         return workers
 
-    async def run(self, func_instance, bot_function: BotFunction, coro_factory, report):
-        """Delegate a job to the workers.
+    async def run(self, func_instance, bot_function: BotFunction, coro_factory, report) -> bool:
+        """Delegate a job to the workers; False if it was not run at all.
 
         coro_factory(func_instance) returns the awaitable to run (the function's run()).
         """
@@ -49,7 +49,8 @@ class WorkerPool:
             await report(
                 "⚠️ Нет воркер-аккаунтов. Рискованные задачи выполняются только через добавленные аккаунты."
             )
-            return
+            return False
 
         self.delegate(func_instance)
         await coro_factory(func_instance)
+        return True

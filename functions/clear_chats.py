@@ -14,13 +14,17 @@ class ClearDialogsFunc(TelethonFunction):
         async with self.storage.ainitialize_session(session):
             async for dialog in session.iter_dialogs():
                 try:
-                    if not isinstance(dialog.entity, types.Channel):
-                        await session(functions.messages.DeleteHistoryRequest(
-                            peer=dialog.entity,
-                            max_id=0,
-                            just_clear=True,
-                            revoke=True
-                        ))
+                    if not isinstance(dialog.entity, (types.Channel, types.ChannelForbidden)):
+                        # Telegram deletes in chunks: offset > 0 means more history is left
+                        offset = 1
+                        while offset > 0:
+                            result = await session(functions.messages.DeleteHistoryRequest(
+                                peer=dialog.entity,
+                                max_id=0,
+                                just_clear=True,
+                                revoke=True
+                            ))
+                            offset = result.offset
                     else:
                         # pass the (freshly iterated) Channel entity, not the marked id,
                         # so the InputChannel is built directly instead of via a cache lookup

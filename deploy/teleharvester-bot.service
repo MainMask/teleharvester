@@ -10,9 +10,8 @@ User=teleharvester
 WorkingDirectory=/opt/teleharvester
 ExecStart=/opt/teleharvester/.venv/bin/python -m bot
 # ---------------------------------------------------------------------------
-# token/admins come from config.toml [bot]; to override via env instead, drop
-# BOT_TOKEN / BOT_ADMINS into this file:
-#EnvironmentFile=/opt/teleharvester/.env
+# Secrets (BOT_TOKEN, TG_API_ID, TG_API_HASH) are read from /opt/teleharvester/.env
+# (the WorkingDirectory); admins come from config.toml [bot].
 
 # survive crashes and transient failures over a multi-day run
 Restart=on-failure
