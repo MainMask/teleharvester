@@ -114,7 +114,7 @@ def test_mail_run_uses_inline_recipients(monkeypatch):
         active = False
         label = ""
 
-        async def run(self, bot, chat_id, pool, instance, bot_function, job, header, done):
+        async def run(self, bot, chat_id, pool, instance, bot_function, job, header, done, **kw):
             await job(instance, ns())  # execute the job factory
             return True
 
@@ -134,6 +134,40 @@ def test_mail_run_uses_inline_recipients(monkeypatch):
     asyncio.run(broadcasts.mail_run(msg, state, None, ns(), {}, _Manager(), ns(delay=[0])))
 
     assert captured["recipients"] == ["@a", "@b"]
+
+
+def test_mail_run_drops_the_stats_ledger_after_the_job(monkeypatch):
+    # the ledger of everyone ever messaged is reloaded by every run: the singleton
+    # instance must not hold it in memory between mailings
+    instance = ns(stats=None)
+
+    async def run(recipients, content, delay, reporter):
+        instance.stats = {"1": {"count": 1}}
+
+    instance.run = run
+
+    class _Manager:
+        active = False
+        label = ""
+
+        async def run(self, bot, chat_id, pool, inst, bot_function, job, header, done, **kw):
+            await job(inst, ns())
+            return True
+
+    class _Content:
+        text = "hi"
+        media = None
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(broadcasts, "resolve", lambda functions, key: (instance, ns(risk="risky")))
+    monkeypatch.setattr(broadcasts, "build_content", lambda message, album: _fake_content(_Content()))
+
+    state = _State({"recipients": ["@a"], "skip": False, "limit": None})
+    asyncio.run(broadcasts.mail_run(_Msg(), state, None, ns(), {}, _Manager(), ns(delay=[0])))
+
+    assert instance.stats == {}
 
 
 async def _fake_content(obj):

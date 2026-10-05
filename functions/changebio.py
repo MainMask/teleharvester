@@ -1,4 +1,3 @@
-import asyncio
 from telethon.tl.functions.account import UpdateProfileRequest
 from modules.console import console
 from functions.base import TelethonFunction
@@ -9,27 +8,13 @@ class ChangeBioFunc(TelethonFunction):
     """Change bio"""
 
     async def change_bio(self, session, bio: str, report):
-        async with self.storage.ainitialize_session(session):
-            try:
-                me = await session.get_me()
-            except Exception as err:
-                await report(f"get_me failed: {err}")
-                return
-
-            try:
-                await session(
-                    UpdateProfileRequest(about=bio)
-                )
-            except Exception as err:
-                await report(f"[{me.first_name}] not changed: {err}")
-            else:
-                await report(f"[{me.first_name}] bio changed")
+        await self.request_each(session, report, UpdateProfileRequest(about=bio), "bio changed", "not changed")
 
     async def run(self, bio: str, report):
-        await asyncio.gather(*[
-            self.change_bio(session, bio, report)
-            for session in self.sessions
-        ])
+        await self.gather_in_order(
+            lambda session, report: self.change_bio(session, bio, report),
+            report,
+        )
 
     async def execute(self):
         self.ask_accounts_count()

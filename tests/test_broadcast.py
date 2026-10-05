@@ -31,8 +31,9 @@ class _Session:
         self.left.append(peer)
 
 
-def _run_broadcast(outcomes, messages_count):
-    """Run Broadcast.broadcast where each _send yields the next outcome (None = sent)."""
+def _run_broadcast(outcomes, messages_count, delays=None):
+    """Run Broadcast.broadcast where each _send yields the next outcome (None = sent);
+    delays, if given, gets one entry per delay slept."""
     session = _Session()
     settings = types.SimpleNamespace(delay=[0], messages_count=messages_count, messages=["hi"])
     fn = Broadcast(_storage([session]), settings)
@@ -48,7 +49,8 @@ def _run_broadcast(outcomes, messages_count):
             raise err
 
     async def _no_delay():
-        return None
+        if delays is not None:
+            delays.append(1)
 
     fn._send = _send
     fn.delay = _no_delay
@@ -82,6 +84,43 @@ class TestBroadcastErrors:
 
         assert len(sends) == 1
         assert session.left == ["chat"]
+
+
+class TestDelayBetweenSendsOnly:
+    def test_no_delay_after_the_last_message(self):
+        delays = []
+        _, sends, _ = _run_broadcast([None, None], 2, delays)
+
+        assert len(sends) == 2 and len(delays) == 1  # between the two sends, not after
+
+    def test_errors_still_wait_in_an_unlimited_campaign(self):
+        delays = []
+        _run_broadcast([ValueError("bad")] * 3, 0, delays)
+
+        assert len(delays) == 2  # no tight error loop; the third error stops it
+
+    def test_comments_no_delay_after_the_last_message(self, monkeypatch):
+        from functions import broadcast_comments
+        from functions.broadcast_comments import CommentsBroadcastFunc
+
+        sends, delays = [], []
+
+        async def send(*args, **kwargs):
+            sends.append(1)
+
+        async def delay():
+            delays.append(1)
+
+        monkeypatch.setattr(broadcast_comments.rich_message, "send", send)
+        fn = CommentsBroadcastFunc(_storage([_Session()]), types.SimpleNamespace(delay=[0], messages_count=2))
+        fn.delay = delay
+
+        async def report(text):
+            pass
+
+        asyncio.run(fn.broadcast(_Session(), "chan", 5, RichContent(text="hi"), report))
+
+        assert len(sends) == 2 and len(delays) == 1
 
 
 class TestPmBroadcastPhone:

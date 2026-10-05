@@ -9,4 +9,5 @@ class Account:
     user_id: int
     added_at: datetime
     phone_number: str
+    username: str | None = None
 

@@ -63,6 +63,15 @@ class TestFilterUnsent:
         ]
         assert fn.filter_unsent(recipients) == ["bob", {"username": "carol", "user_id": 9}]
 
+    def test_drops_a_base_row_recorded_under_its_username_by_older_stats(self):
+        fn = _fn()
+        fn.stats = {"alice": {"count": 1}}  # written when a base row's key was its username
+        recipients = [
+            {"user_id": 1, "access_hash": 5, "username": "alice"},  # already sent
+            {"user_id": 2, "access_hash": 6, "username": ""},       # new
+        ]
+        assert fn.filter_unsent(recipients) == [{"user_id": 2, "access_hash": 6, "username": ""}]
+
 
 class TestResolvePeer:
     def test_dict_becomes_input_peer_user(self):

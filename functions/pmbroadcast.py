@@ -1,4 +1,3 @@
-import asyncio
 from modules.console import console
 
 from functions.base import TelethonFunction
@@ -42,10 +41,10 @@ class PmBroadcastFunc(TelethonFunction):
                 await report(f"[{me.first_name}] sent.")
 
     async def run(self, peer, content, by_phone_number, report):
-        await asyncio.gather(*[
-            self.broadcast(session, peer, content, by_phone_number, report)
-            for session in self.sessions
-        ])
+        await self.gather_in_order(
+            lambda session, report: self.broadcast(session, peer, content, by_phone_number, report),
+            report,
+        )
 
     async def execute(self):
         self.ask_accounts_count()

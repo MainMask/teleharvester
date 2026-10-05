@@ -5,6 +5,7 @@ import contextlib
 import types
 
 from bot.routers import accounts
+from modules.storages.sessions_storage import SessionsStorage
 
 
 def ns(**kw):
@@ -41,11 +42,20 @@ class _Storage:
     def get_session_path(self, client):
         return getattr(client, "path", None)
 
+    def remember_username(self, client, username):
+        pass
+
+    def remember_name(self, client, first_name, last_name):
+        pass
+
+    fetch_me = SessionsStorage.fetch_me
+
 
 class _Pool:
     def __init__(self, workers, storage):
         self._workers = workers
         self.storage = storage
+        self.scraping = None
 
     @property
     def workers(self):
@@ -81,9 +91,29 @@ def test_lists_each_account(tmp_path):
 
     joined = "\n".join(msg.replies)
     assert "всего: <b>2</b>" in joined
-    assert "1. Meggan Page — @meg — ID 111" in joined
-    assert "2. Ivan — — — ID 222" in joined
+    assert "<b>1. Meggan Page</b>\n👤 @meg · 🆔 <code>111</code>" in joined
+    assert "<b>2. Ivan</b>\n👤 — · 🆔 <code>222</code>" in joined
+    assert "🆔 <code>111</code>\n\n<b>2." in joined  # blank line between cards
     assert manager.released is True
+
+
+def test_sorted_by_username(tmp_path):
+    def client(username, uid):
+        return _Client(ns(first_name="Acc", last_name=None, id=uid, username=username))
+
+    workers = [client("Curator2", 2), _Client(fail=True), client(None, 99), client("Curator10", 10),
+               client("Curator1", 1), client("Curator4", 4)]
+    pool = _Pool(workers, _Storage())
+    msg = _Msg()
+
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+
+    joined = "\n".join(msg.replies)
+    order = ["@Curator1 ", "@Curator2 ", "@Curator4 ", "@Curator10 ", "👤 — ", "не удалось опросить"]
+    positions = [joined.index(marker) for marker in order]
+    assert positions == sorted(positions)
+    assert "<b>1. Acc</b>\n👤 @Curator1 " in joined
+    assert "<b>6.</b> ⚠️ не удалось опросить" in joined
 
 
 def test_busy_shows_only_count(tmp_path):
@@ -96,7 +126,7 @@ def test_busy_shows_only_count(tmp_path):
     joined = "\n".join(msg.replies)
     assert "всего: <b>1</b>" in joined
     assert "Идёт задача" in joined
-    assert "ID 1" not in joined  # no per-account details while busy
+    assert "🆔" not in joined  # no per-account details while busy
 
 
 def test_failed_worker_falls_back_to_stored(tmp_path):
@@ -115,6 +145,34 @@ def test_failed_worker_falls_back_to_stored(tmp_path):
     assert "+79990001122" in joined
     assert "не удалось опросить" in joined
     assert manager.released is True
+
+
+def test_scraping_worker_is_not_polled(tmp_path):
+    # its auth key is in use by the scrape's own client: a second connection (another
+    # proxy IP) risks AUTH_KEY_DUPLICATED
+    polled = []
+
+    class _Tracked(_Client):
+        async def get_me(self):
+            polled.append(self.path)
+            return await super().get_me()
+
+    free = _Tracked(ns(first_name="Free", last_name=None, id=1, username="free"))
+    free.path = "sessions/free.jsession"
+    busy = _Tracked(ns(first_name="Busy", last_name=None, id=2, username="busy"))
+    busy.path = "sessions/busy.jsession"
+    stored = ns(account=ns(account=ns(first_name="Busy", last_name=None,
+                                       phone_number="79990002233", user_id=2)))
+    pool = _Pool([free, busy], _Storage({"sessions/busy.jsession": stored}))
+    pool.scraping = ns(path="sessions/busy.jsession")
+    msg = _Msg()
+
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+
+    joined = "\n".join(msg.replies)
+    assert polled == ["sessions/free.jsession"]
+    assert "занят скрапом" in joined and "+79990002233" in joined
+    assert "не удалось опросить" not in joined
 
 
 def test_empty_pool(tmp_path):
@@ -154,3 +212,19 @@ def test_slow_connect_is_timed_out(monkeypatch, tmp_path):
 
     assert "не удалось опросить" in "\n".join(msg.replies)
     assert manager.released is True
+
+
+
+def test_polled_workers_are_busy_meanwhile(tmp_path):
+    seen = []
+
+    class _Seen(_Client):
+        async def get_me(self):
+            seen.append(list(pool.in_job))  # a scrape asking pool.busy() now must be refused
+            return await super().get_me()
+
+    workers = [_Seen(ns(first_name="A", last_name=None, id=1, username="a"))]
+    pool = _Pool(workers, _Storage())
+    pool.in_job = []
+    asyncio.run(accounts.accounts(_Msg(), pool, _Manager(free=True)))
+    assert seen == [workers] and pool.in_job == []

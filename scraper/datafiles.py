@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 _EXT_FOR_FORMAT = {"xlsx": "xlsx", "excel": "xlsx", "parquet": "parquet", "csv": "csv"}
 
@@ -31,6 +32,7 @@ def format_duration(seconds: float) -> str:
 
 
 _EXCEL_CELL_LIMIT = 32_767
+_EXCEL_MAX_ROWS = 1_048_575  # a sheet's 1 048 576 rows, less the header
 
 
 def _warn_if_excel_would_truncate(df: pd.DataFrame) -> None:
@@ -89,11 +91,16 @@ def save_table(df: pd.DataFrame, path: str | Path, fmt: str | None = None) -> Pa
     return path
 
 
-def read_table(path: str | Path) -> pd.DataFrame:
+def read_table(path: str | Path, columns: list[str] | None = None) -> pd.DataFrame:
+    """columns: read only these (those the file has) from a parquet file — a big posts
+    file's text needn't be loaded to count people; xlsx/csv are read whole."""
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix == ".parquet":
-        return pd.read_parquet(path)
+        if columns is not None:
+            present = set(pq.read_schema(path).names)
+            columns = [c for c in columns if c in present]
+        return pd.read_parquet(path, columns=columns)
     if suffix == ".xlsx":
         # hashes are stored as text (see save_table); read them as str, or pandas
         # parses the digits into float64 and rounds them

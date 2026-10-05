@@ -10,7 +10,6 @@ from scraper.analysis import (
     _TME_BASE_RE, _TME_RE, _count_comments, _sibling_reactors, combine,
     explode_comments, filter_keywords, links, participants, sample,
 )
-from scraper.cli import build_parser
 from scraper.datafiles import clean_xml_text, format_duration, read_table, save_table
 from scraper.scrape import _channel_ref, _progress_bar, channel_slug, parse_date
 
@@ -234,6 +233,23 @@ def test_csv_keeps_access_hash_exact(tmp_path):
     assert pd.isna(back["Access Hash"][1])
 
 
+def test_explode_comments_too_many_for_excel_goes_to_parquet(tmp_path, monkeypatch, capsys):
+    from scraper import analysis
+
+    monkeypatch.setattr(analysis, "_EXCEL_MAX_ROWS", 1)  # the fixture has 2 comments
+    path = explode_comments(str(_posts_with_comments(tmp_path)), str(tmp_path / "comments"), "excel")
+    assert path.suffix == ".parquet" and len(read_table(path)) == 2
+    assert "exceed Excel" in capsys.readouterr().out
+
+
+def test_explode_comments_too_many_for_an_xlsx_path_goes_to_parquet(tmp_path, monkeypatch):
+    from scraper import analysis
+
+    monkeypatch.setattr(analysis, "_EXCEL_MAX_ROWS", 1)
+    path = explode_comments(str(_posts_with_comments(tmp_path)), str(tmp_path / "comments.xlsx"))
+    assert path == tmp_path / "comments.parquet" and len(read_table(path)) == 2
+
+
 def test_explode_comments_errors_when_empty(tmp_path):
     pd.DataFrame({"Group": ["@c1"], "Message ID": [10], "Comments List": ["[]"]}).to_parquet(
         tmp_path / "posts.parquet"
@@ -260,7 +276,7 @@ def test_participants_merges_commenters_and_reactors(tmp_path):
     # anonymous comment (ID None), channel (negative ID) and user 12 (no access hash) dropped
     assert set(p.index) == {5, 9}
     assert list(read_table(out).columns) == ["ID", "Username", "Access Hash", "Name",
-                                             "Comments", "Reactions", "Total"]
+                                             "Comments", "Reactions", "Messages", "Total"]
     assert p.loc[5, "Access Hash"] == -8712345678901234567  # exact int64, from the comment
     assert p.loc[9, "Access Hash"] == 42
     assert (p.loc[5, "Comments"], p.loc[5, "Reactions"], p.loc[5, "Total"]) == (1, 2, 3)
@@ -288,6 +304,22 @@ def test_participants_errors_when_nobody(tmp_path):
         participants(str(tmp_path / "posts.parquet"), str(tmp_path / "out.parquet"))
 
 
+def test_participants_leaves_out_the_scraping_account(tmp_path):
+    src = _posts_with_comments(tmp_path, "x_posts.parquet")
+    pd.DataFrame({"Reactor ID": [9], "Reactor Username": ["ann"],
+                  "Reactor Access Hash": pd.array([42], dtype="Int64")}).to_parquet(tmp_path / "x_reactors.parquet")
+    out = participants(str(src), str(tmp_path / "people"), owner_id=5)  # the owner commented itself
+    p = read_table(out)
+    assert list(p["ID"]) == [9] and list(p["Owner ID"]) == [5]
+
+
+def test_participants_writes_no_empty_base(tmp_path):
+    # the only commenter is the scraping account: nobody is left to mail
+    with pytest.raises(SystemExit, match="access hash"):
+        participants(str(_posts_with_comments(tmp_path)), str(tmp_path / "people"), owner_id=5)
+    assert not list(tmp_path.glob("people*"))
+
+
 def test_combine_custom_dedup_cols_without_message_id(tmp_path):
     pd.DataFrame(
         {"Url": ["a", "b", "a"], "Date": ["2024-01-01", "2024-01-02", "2024-01-01"],
@@ -296,13 +328,6 @@ def test_combine_custom_dedup_cols_without_message_id(tmp_path):
     out = tmp_path / "out.parquet"
     combine(str(tmp_path / "*.parquet"), str(out), ["Url"])
     assert len(read_table(out)) == 2
-
-
-def test_scrape_rejects_negative_timeout():
-    argv = ["scrape", "--channels", "@x", "--date-min", "2024-01-01",
-            "--date-max", "2024-01-02", "--name", "t", "--timeout", "-1"]
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(argv)
 
 
 def test_tme_link_extraction_and_normalisation():
@@ -462,24 +487,6 @@ def test_sample_keeps_rows_with_empty_category(tmp_path):
     assert sorted(read_table(tmp_path / "s.xlsx")["id"]) == list(range(6))
 
 
-def test_cli_missing_channels_file_is_a_clean_error(tmp_path):
-    from scraper.cli import main
-
-    with pytest.raises(SystemExit) as exc:
-        main(["scrape", "--channels-file", str(tmp_path / "nope.txt"), "--date-min", "01.01.2024",
-              "--date-max", "02.01.2024", "--name", "x"])
-    assert isinstance(exc.value.code, str) and "--channels-file" in exc.value.code
-
-
-@pytest.mark.parametrize("cmd, flag", [("filter", "--max-rows-per-file"), ("sample", "--sample-size")])
-def test_cli_rejects_non_positive_sizes(cmd, flag):
-    argv = [cmd, "--input", "x", "--output", "y", flag, "0"]
-    if cmd == "filter":
-        argv += ["--keywords", "k"]
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(argv)
-
-
 @pytest.mark.parametrize("value, expected", [
     ("2024-01-31T05", datetime(2024, 1, 31, 5, tzinfo=timezone.utc)),     # explicit hour, no colon
     ("20240131T0500", datetime(2024, 1, 31, 5, tzinfo=timezone.utc)),     # basic ISO time
@@ -516,29 +523,47 @@ def test_links_and_filter_handle_empty_content_after_xlsx(tmp_path):
     assert len(pd.read_excel(tmp_path / "f_unique.xlsx")) == 1
 
 
-@pytest.fixture
-def _no_telegram(monkeypatch):
-    import scraper.config, scraper.scrape, scraper.verify
-
-    def _must_not_run(*a, **k):
-        raise AssertionError("reached Telegram despite bad dates")
-    monkeypatch.setattr(scraper.config, "load_credentials", lambda: None)
-    monkeypatch.setattr(scraper.scrape, "run", _must_not_run)
-    monkeypatch.setattr(scraper.verify, "run", _must_not_run)
-
-
-@pytest.mark.parametrize("cmd", [["scrape", "--channels", "@a", "--name", "x"],
-                                 ["verify", "--input", "p.parquet", "--channel", "@a"]])
-def test_cli_rejects_date_min_after_date_max(_no_telegram, cmd):
-    from scraper.cli import main
+def test_check_date_range_rejects_a_reversed_range():
+    from scraper.scrape import check_date_range
 
     with pytest.raises(SystemExit, match="is after"):
-        main([*cmd, "--date-min", "02.01.2024", "--date-max", "01.01.2024"])
+        check_date_range(parse_date("02.01.2024"), parse_date("01.01.2024", end_of_day=True),
+                         "02.01.2024", "01.01.2024")
 
 
-def test_date_range_allows_a_single_day():
-    import argparse
-    from scraper.cli import _date_range
+def test_check_date_range_allows_a_single_day():
+    from scraper.scrape import check_date_range
 
-    lo, hi = _date_range(argparse.Namespace(date_min="01.01.2024", date_max="01.01.2024"))
+    lo, hi = parse_date("01.01.2024"), parse_date("01.01.2024", end_of_day=True)
+    check_date_range(lo, hi, "01.01.2024", "01.01.2024")
     assert (lo.hour, hi.hour) == (0, 23)
+
+
+def test_participants_reads_no_post_text_and_counts_per_person(tmp_path, monkeypatch):
+    import json
+
+    from scraper import analysis
+
+    src = tmp_path / "x_posts.parquet"
+    comment = {"Type": "comment", "Comment Author ID": 7, "Comment Author Username": "bob",
+               "Comment Author Access Hash": 2**60 + 7, "Comment Author Name": "Bob"}
+    pd.DataFrame({"Group": ["@g", "@g"], "Message ID": ["1", "2"], "Content": ["long text"] * 2,
+                  "Comments List": [json.dumps([comment, comment]), json.dumps([comment])],
+                  "Author ID": [7, -100], "Author Username": ["", "[channel]"],
+                  "Author Access Hash": pd.array([2**60 + 7, None], dtype="Int64"),
+                  "Author Name": ["Bob", "Chan"]}).to_parquet(src)
+    read = []
+    real = analysis.pq.ParquetFile.iter_batches
+
+    def spy(self, batch_size=65536, columns=None, **kw):
+        read.append((batch_size, columns))
+        return real(self, batch_size=batch_size, columns=columns, **kw)
+
+    monkeypatch.setattr(analysis.pq.ParquetFile, "iter_batches", spy)
+
+    p = read_table(participants(str(src), str(tmp_path / "people.parquet"), reactors="")).set_index("ID")
+    [(batch_size, columns)] = read
+    assert "Content" not in columns and batch_size == 10_000  # in batches, never the text
+    assert (p.loc[7, "Comments"], p.loc[7, "Messages"], p.loc[7, "Total"]) == (3, 1, 4)
+    assert p.loc[7, "Access Hash"] == 2**60 + 7 and p.loc[7, "Username"] == "bob"
+    assert list(p.index) == [7]  # the channel's own post is no one

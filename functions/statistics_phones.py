@@ -50,6 +50,10 @@ class PhoneNumbersStatsFunc(TelethonFunction):
             self.get_phone_number(session)
             for session in self.sessions
         ])
+        # a worker on hold (busy scraping) isn't asked: the number stored in its .jsession counts it
+        for session in self.on_hold:
+            js = self.storage.jsessions_paths.get(self.storage.get_session_path(session))
+            phones.append(str(js.account.account.phone_number).lstrip("+") if js is not None else None)
 
         rows = self.tally(phones)
 

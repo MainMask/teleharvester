@@ -27,9 +27,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
-[project.scripts]
-scraper = "scraper.cli:main"
-
 [tool.setuptools.packages.find]
 include = ["bot*", "functions*", "modules*", "scraper*"]
 exclude = ["tests*"]

@@ -5,48 +5,56 @@ from rich.prompt import Prompt
 
 from functions.base import TelethonFunction
 
+from modules import scraped_files
+from modules.scraped_files import output_path
 from scraper import analysis
 from scraper.datafiles import read_table, save_table
 
 
+def _posts_file() -> str:
+    """A scraped posts file: a number from assets/databases or a typed path."""
+    return TelethonFunction.ask_file("[bold red]input posts file[/]", scraped_files.posts_bases())
+
+
 def _combine():
-    inp = Prompt.ask("[bold red]input (file / dir / glob of *.parquet)[/]")
-    out = Prompt.ask("[bold red]output[/]")
+    inp = Prompt.ask("[bold red]input (file / dir / glob of *.parquet)[/]", default=scraped_files.BASES_DIR)
+    out = Prompt.ask("[bold red]output[/]", default=str(Path(scraped_files.BASES_DIR) / "Combined_posts"))
     dedup = Prompt.ask("[bold red]dedup columns[/]", default="Group,Message ID")
     analysis.combine(inp, out, [c.strip() for c in dedup.split(",")])
 
 
 def _comments():
-    inp = Prompt.ask("[bold red]input posts file[/]")
-    out = Prompt.ask("[bold red]output[/]")
+    inp = _posts_file()
+    out = Prompt.ask("[bold red]output[/]", default=output_path(inp, "comments"))
     fmt = Prompt.ask("[bold red]format[/]", choices=["parquet", "excel"], default="parquet")
     analysis.explode_comments(inp, out, fmt)
 
 
 def _participants():
-    inp = Prompt.ask("[bold red]input posts file[/]")
-    out = Prompt.ask("[bold red]output[/]")
+    inp = _posts_file()
+    # the scrape's own name: the rebuilt base (Owner ID kept) replaces it for the mailing
+    out = Prompt.ask("[bold red]output[/]", default=output_path(inp, "participants"))
     reactors = Prompt.ask("[bold red]reactors file (blank = auto)[/]", default="")
-    fmt = Prompt.ask("[bold red]format[/]", choices=["parquet", "excel"], default="parquet")
-    analysis.participants(inp, out, reactors or None, fmt)
+    # parquet only: an excel base can't be picked for the mailing
+    analysis.participants(inp, out, reactors or None, "parquet")
 
 
 def _summary():
-    inp = Prompt.ask("[bold red]input[/]")
-    base = Prompt.ask("[bold red]output base (prefix)[/]")
+    inp = _posts_file()
+    base = Prompt.ask("[bold red]output base (prefix)[/]", default=output_path(inp, "summary"))
     analysis.summary(inp, base, "Date", "Group", "Comments")
 
 
 def _sample():
-    inp = Prompt.ask("[bold red]input[/]")
-    out = Prompt.ask("[bold red]output[/]")
+    inp = _posts_file()
+    out = Prompt.ask("[bold red]output[/]", default=output_path(inp, "sample"))
     size = TelethonFunction.ask_int("[bold red]sample size[/]", default=10000, min_value=1)
     analysis.sample(inp, out, "Content", "Group", size, 20)
 
 
 def _filter():
-    inp = Prompt.ask("[bold red]input[/]")
-    out = Prompt.ask("[bold red]output base[/]")
+    inp = _posts_file()
+    out = Prompt.ask("[bold red]output base[/]", default=output_path(inp, "keywords"))
     keywords = Prompt.ask("[bold red]keywords (comma-separated)[/]")
     analysis.filter_keywords(
         inp, out, "Content",
@@ -55,13 +63,13 @@ def _filter():
 
 
 def _links():
-    inp = Prompt.ask("[bold red]input[/]")
-    out = Prompt.ask("[bold red]output[/]")
+    inp = _posts_file()
+    out = Prompt.ask("[bold red]output[/]", default=output_path(inp, "links"))
     analysis.links(inp, out)
 
 
 def _read():
-    inp = Prompt.ask("[bold red]input[/]")
+    inp = TelethonFunction.ask_file("[bold red]input[/]", scraped_files.data_files())
     head = TelethonFunction.ask_int("[bold red]rows to show[/]", default=10, min_value=1)
     df = read_table(inp)
     console.print(df.head(head).to_string())
@@ -73,15 +81,17 @@ def _read():
         console.print(f"[bold green]Converted:[/] {out}")
 
 
+# the bot's order and words (bot/routers/scraping.py ANALYSIS), plus the participants rebuild
 _TOOLS = [
-    ("combine — merge parquet files, drop duplicates", _combine),
-    ("comments — flatten Comments List (one row per comment)", _comments),
-    ("participants — unique ID + username + access hash + name", _participants),
-    ("summary — per-group monthly tables", _summary),
-    ("sample — proportional per-category sample to xlsx", _sample),
-    ("filter — keep rows matching keywords", _filter),
-    ("links — extract and count t.me links", _links),
-    ("read — print the head of a data file, optionally convert", _read),
+    ("🔗 Ссылки на другие каналы — найдёт в постах ссылки на Telegram-каналы и посчитает, "
+     "сколько раз упоминался каждый", _links),
+    ("🔎 Поиск постов по словам — оставит только посты, где есть хотя бы одно из ваших слов", _filter),
+    ("👀 Посмотреть файл — первые строки любого файла, можно сконвертировать в xlsx/csv", _read),
+    ("🧩 Объединить файлы постов — склеит несколько файлов постов в один и уберёт повторы", _combine),
+    ("💬 Комментарии одной таблицей — одна строка на комментарий", _comments),
+    ("📊 Активность по месяцам — сколько постов и комментариев было в каждом канале", _summary),
+    ("🎲 Случайная выборка постов — пропорционально по каналам, для ручного просмотра", _sample),
+    ("👥 Пересобрать базу участников — из файла постов; Owner ID сохраняется", _participants),
 ]
 
 
@@ -92,7 +102,7 @@ class ScraperAnalysisFunc(TelethonFunction):
         for index, (label, _) in enumerate(_TOOLS):
             console.print(f"[bold white][{index + 1}] {label}[/]")
 
-        choice = Prompt.ask("[bold magenta]tool[/]")
+        choice = Prompt.ask("[bold magenta]инструмент[/]")
         if not choice.isdigit():
             return
 

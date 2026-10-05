@@ -3,6 +3,9 @@ import locale
 import sys
 
 from modules.console import console
+from rich.markup import escape
+
+from bot.services.registry import RISK_NOTE, RISKY, cli_menu
 
 from modules import updater
 from modules.config import load_env
@@ -10,6 +13,33 @@ from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
 from modules.storages.sessions_storage import SessionsStorage
 from modules.tdata_import import import_all
+
+
+def menu_entries(functions) -> list:
+    """[(section, instance, title, hint, risky)] in the bot's order and words; a function
+    the registry doesn't know goes to «Прочее» under its docstring."""
+    by_class = {type(instance).__name__: (instance, doc) for instance, doc in functions}
+    entries = []
+    for section, items in cli_menu():
+        for item in items:
+            if item.classname in by_class:
+                instance, _ = by_class.pop(item.classname)
+                entries.append((section, instance, item.title, item.hint, item.risk == RISKY))
+    for instance, doc in by_class.values():
+        entries.append(("Прочее", instance, doc or type(instance).__name__, "", False))
+    return entries
+
+
+def print_menu(entries) -> None:
+    section = None
+    for number, (entry_section, _, title, hint, risky) in enumerate(entries, 1):
+        if entry_section != section:
+            section = entry_section
+            console.print(f"\n[bold magenta]{escape(section)}[/]")
+        marker = "⚠️ " if risky else ""
+        line = f"  \\[{number}] {marker}[bold white]{escape(title)}[/]"
+        console.print(line + (f" — {escape(hint)}" if hint else ""))
+    console.print(f"\n[italic]{escape(RISK_NOTE)}[/]")
 
 
 def main() -> None:
@@ -75,13 +105,8 @@ def main() -> None:
 
     console.print("[bold white]accounts count> %d[/]" % len(sessions_storage))
 
-    for index, module in enumerate(functions_storage.functions):
-        instance, doc = module
-
-        console.print(
-            "[bold white][{index}] {doc}[/]"
-            .format(index=index + 1, doc=doc)
-        )
+    entries = menu_entries(functions_storage.functions)
+    print_menu(entries)
 
     while True:
         console.print()
@@ -102,12 +127,12 @@ def main() -> None:
         else:
             choice = int(choice) - 1
 
-        if choice < 0 or choice >= len(functions_storage.functions):
+        if choice < 0 or choice >= len(entries):
             console.print("[bold red]unknown option[/]")
             continue
 
         try:
-            functions_storage.execute(choice)
+            functions_storage.run_instance(entries[choice][1])
         except KeyboardInterrupt:
             pass
         except Exception as err:

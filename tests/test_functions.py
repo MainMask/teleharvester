@@ -1,12 +1,14 @@
 """Offline tests for the functions/ base layer (no network / telethon calls)."""
 
 import asyncio
+import contextlib
 import types
 from unittest.mock import patch
 
 from functions.base.base import BaseFunction
 from functions.base.telethon import TelethonFunction
 from functions.changeusername import ChangeUsernameFunc
+from telethon.tl.functions.account import CheckUsernameRequest
 
 
 def _fn(sessions, delay=(2, 5)):
@@ -103,3 +105,212 @@ class TestChangeUsernameFileMode:
         reports, changed = self._run(["s1", "s2"], ["a", "b"])
         assert not any("пропущены" in m for m in reports)
         assert changed == ["a", "b"]
+
+
+class TestChangeUsernameBaseMode:
+    class _Session:
+        def __init__(self, taken, error=None):
+            self.taken, self.error, self.set_to = taken, error, None
+
+        async def get_me(self):
+            return types.SimpleNamespace(first_name="Acc")
+
+        async def __call__(self, request):
+            if self.error:
+                raise self.error
+            if isinstance(request, CheckUsernameRequest):
+                return request.username not in self.taken
+            self.set_to = request.username  # UpdateUsernameRequest
+
+    def _run(self, sessions, base):
+        @contextlib.asynccontextmanager
+        async def ainitialize_session(session):
+            yield
+
+        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session,
+                                        remember_username=lambda session, username: None)
+        fn = ChangeUsernameFunc(storage, types.SimpleNamespace(delay=[1]))
+        reports = []
+
+        async def report(msg):
+            reports.append(msg)
+
+        asyncio.run(fn.run(report, base=base))
+        return reports
+
+    def test_free_base_is_used_as_is(self):
+        s = self._Session(taken=set())
+        self._run([s], "CitadelCurator")
+        assert s.set_to == "CitadelCurator"
+
+    def test_taken_base_gets_numbers(self):
+        s = self._Session(taken={"CitadelCurator", "CitadelCurator1"})
+        self._run([s], "CitadelCurator")
+        assert s.set_to == "CitadelCurator2"
+
+    def test_accounts_get_distinct_names(self):
+        taken = {"CitadelCurator"}
+        sessions = [self._Session(taken) for _ in range(3)]
+        self._run(sessions, "CitadelCurator")
+        assert sorted(s.set_to for s in sessions) == ["CitadelCurator1", "CitadelCurator2", "CitadelCurator3"]
+
+    def test_leading_at_is_stripped(self):
+        s = self._Session(taken=set())
+        self._run([s], " @CitadelCurator ")
+        assert s.set_to == "CitadelCurator"
+
+    def test_base_on_sale_at_fragment_is_skipped(self):
+        from telethon.errors import UsernamePurchaseAvailableError
+
+        class OnSale(self._Session):
+            async def __call__(self, request):
+                if isinstance(request, CheckUsernameRequest) and request.username == "CitadelCurator":
+                    raise UsernamePurchaseAvailableError(request)
+                return await super().__call__(request)
+
+        s = OnSale(taken=set())
+        self._run([s], "CitadelCurator")
+        assert s.set_to == "CitadelCurator1"
+
+    def test_invalid_candidate_is_skipped(self):
+        from telethon.errors import UsernameInvalidError
+
+        class TooShort(self._Session):
+            async def __call__(self, request):
+                if isinstance(request, CheckUsernameRequest) and request.username == "abcd":
+                    raise UsernameInvalidError(request)  # under 5 characters; abcd1 is fine
+                return await super().__call__(request)
+
+        s = TooShort(taken=set())
+        self._run([s], "abcd")
+        assert s.set_to == "abcd1"
+
+    def test_check_error_is_reported(self):
+        s = self._Session(taken=set(), error=RuntimeError("USERNAME_INVALID"))
+        reports = self._run([s], "bad name")
+        assert any("USERNAME_INVALID" in m for m in reports)
+        assert not any("couldn't find" in m for m in reports)
+        assert s.set_to is None
+
+
+class TestClearPersonalChannel:
+    class _Session:
+        def __init__(self, error=None):
+            self.error, self.requests = error, []
+
+        async def get_me(self):
+            return types.SimpleNamespace(first_name="Acc")
+
+        async def __call__(self, request):
+            if self.error:
+                raise self.error
+            self.requests.append(request)
+
+    def _run(self, sessions):
+        @contextlib.asynccontextmanager
+        async def ainitialize_session(session):
+            yield
+
+        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
+        from functions.clear_personal_channel import ClearPersonalChannelFunc
+        fn = ClearPersonalChannelFunc(storage, types.SimpleNamespace(delay=[1]))
+        reports = []
+
+        async def report(msg):
+            reports.append(msg)
+
+        asyncio.run(fn.run(report))
+        return reports
+
+    def test_clears_every_account(self):
+        from telethon.tl.functions.account import UpdatePersonalChannelRequest
+        sessions = [self._Session(), self._Session()]
+        reports = self._run(sessions)
+
+        assert all(isinstance(s.requests[0], UpdatePersonalChannelRequest) for s in sessions)
+        assert sum("cleared" in m for m in reports) == 2
+
+    def test_error_is_reported(self):
+        reports = self._run([self._Session(error=RuntimeError("boom"))])
+        assert any("not cleared: boom" in m for m in reports)
+
+
+class TestPollVote:
+    class _Session:
+        def __init__(self, error=None):
+            self.error, self.requests = error, []
+
+        async def get_me(self):
+            return types.SimpleNamespace(first_name="Acc")
+
+        async def get_messages(self, channel, ids):
+            answer = types.SimpleNamespace(option=b"0")
+            return types.SimpleNamespace(poll=types.SimpleNamespace(poll=types.SimpleNamespace(answers=[answer])))
+
+        async def __call__(self, request):
+            if self.error:
+                raise self.error
+            self.requests.append(request)
+
+    def _run(self, sessions):
+        @contextlib.asynccontextmanager
+        async def ainitialize_session(session):
+            yield
+
+        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
+        from functions.poll_vote import PollVoteFunc
+        fn = PollVoteFunc(storage, types.SimpleNamespace(delay=[1]))
+        reports = []
+
+        async def report(msg):
+            reports.append(msg)
+
+        asyncio.run(fn.run("https://t.me/chan/5", 0, report))
+        return reports
+
+    def test_success_is_reported(self):
+        reports = self._run([self._Session(), self._Session()])
+        assert sum(m == "[Acc] voted" for m in reports) == 2
+        assert "Done: 2/2 accounts" in reports
+
+    def test_error_is_reported(self):
+        reports = self._run([self._Session(error=RuntimeError("boom"))])
+        assert "[Acc] not voted: boom" in reports
+        assert "Done: 0/1 accounts" in reports
+
+
+class TestHideLastSeen:
+    _Session = TestClearPersonalChannel._Session
+
+    def _run(self, sessions):
+        @contextlib.asynccontextmanager
+        async def ainitialize_session(session):
+            yield
+
+        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
+        from functions.hide_last_seen import HideLastSeenFunc
+        fn = HideLastSeenFunc(storage, types.SimpleNamespace(delay=[1]))
+        reports = []
+
+        async def report(msg):
+            reports.append(msg)
+
+        asyncio.run(fn.run(report))
+        return reports
+
+    def test_hides_on_every_account(self):
+        from telethon.tl.functions.account import SetPrivacyRequest
+        from telethon.tl.types import InputPrivacyKeyStatusTimestamp, InputPrivacyValueDisallowAll
+        sessions = [self._Session(), self._Session()]
+        reports = self._run(sessions)
+
+        for s in sessions:
+            request = s.requests[0]
+            assert isinstance(request, SetPrivacyRequest)
+            assert isinstance(request.key, InputPrivacyKeyStatusTimestamp)
+            assert [type(rule) for rule in request.rules] == [InputPrivacyValueDisallowAll]
+        assert sum("last seen hidden" in m for m in reports) == 2
+
+    def test_error_is_reported(self):
+        reports = self._run([self._Session(error=RuntimeError("boom"))])
+        assert any("not hidden: boom" in m for m in reports)

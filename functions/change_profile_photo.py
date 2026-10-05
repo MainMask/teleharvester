@@ -1,4 +1,3 @@
-import asyncio
 import random
 import os
 
@@ -30,7 +29,14 @@ class ChangeProfilePhotoFunc(TelethonFunction):
             else:
                 await report(f"[{me.first_name}] Photo uploaded successfully ({photo_path})")
 
-    async def run(self, report):
+    async def run(self, report, photo_path=None):
+        if photo_path is not None:  # one photo for every account (sent through the bot)
+            await self.gather_in_order(
+                lambda session, report: self.set_profile_photo(session, photo_path, report),
+                report,
+            )
+            return
+
         path = os.path.join(os.getcwd(), "assets", "photos")
         # regular, non-hidden files only: macOS drops a .DS_Store into any opened folder
         photos = [
@@ -42,18 +48,22 @@ class ChangeProfilePhotoFunc(TelethonFunction):
             await report(f"No photos in {path}")
             return
 
-        await asyncio.gather(*[
-            self.set_profile_photo(session, os.path.join(path, random.choice(photos)), report)
-            for session in self.sessions
-        ])
+        await self.gather_in_order(
+            lambda session, report: self.set_profile_photo(session, os.path.join(path, random.choice(photos)), report),
+            report,
+        )
 
     async def execute(self):
         self.ask_accounts_count()
 
-        path = os.path.join(os.getcwd(), "assets", "photos")
-        console.input(
-            f"\n[bold white]will be used photos from folder {path}"
-            "\nPress [Enter] to continue[/]"
-        )
+        folder = os.path.join(os.getcwd(), "assets", "photos")
+        while True:
+            photo = console.input(
+                "\n[bold white]path to one photo for every account"
+                f"\n(blank = a random photo per account from {folder})> [/]"
+            ).strip().strip("'\"")  # a path dragged into the terminal comes quoted
+            if not photo or os.path.isfile(photo):
+                break
+            console.print(f"[bold red]File not found: {photo}[/]")
 
-        await self.run(console_report)
+        await self.run(console_report, photo_path=photo or None)

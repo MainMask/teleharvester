@@ -7,7 +7,6 @@ from typing import List, Callable, Awaitable, Union
 
 from .sessions_storage import SessionsStorage
 from ..settings import Settings
-from ..console import console
 
 class FunctionsStorage:
     def __init__(
@@ -61,13 +60,7 @@ class FunctionsStorage:
                     classobj.__doc__
                 ))
 
-    def execute(self, index: int):
-        try:
-            function_instance = self.functions[index][0]
-        except IndexError:
-            console.print(f"[bold red]no function at index {index}[/]")
-            return
-
+    def run_instance(self, function_instance):
         function = function_instance.execute()
 
         if inspect.isawaitable(function):

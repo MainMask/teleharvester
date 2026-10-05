@@ -17,6 +17,10 @@ class WorkerPool:
 
     def __init__(self, sessions_storage):
         self.storage = sessions_storage
+        # the ScrapeAccount of the worker the scraper runs on (bot/routers/scraping.py):
+        # new jobs run without it, so one account never scrapes and mails at once
+        self.scraping = None
+        self.in_job: list = []  # the workers of the job run() is running: no scrape starts on them
 
     @property
     def workers(self) -> list:
@@ -33,11 +37,20 @@ class WorkerPool:
                     "risky actions are delegated to worker accounts only, never the host"
                 )
 
+    def busy(self, path: str) -> bool:
+        """The worker (session path) is in the job run() is running."""
+        return any(self.storage.get_session_path(worker) == path for worker in self.in_job)
+
     def delegate(self, func_instance) -> list:
-        """Point a function at the workers (never the host); returns the worker list."""
-        workers = self.workers
+        """Point a function at the workers (never the host) but the one the scraper runs
+        on, which is put on hold; returns the worker list."""
+        workers, on_hold = self.workers, []
+        if self.scraping is not None:
+            on_hold = [w for w in workers if self.storage.get_session_path(w) == self.scraping.path]
+            workers = [w for w in workers if w not in on_hold]
         self._assert_workers(workers)
         func_instance.sessions = workers
+        func_instance.on_hold = on_hold  # a mailing keeps its people for it (see split_queues)
         return workers
 
     async def run(self, func_instance, bot_function: BotFunction, coro_factory, report) -> bool:
@@ -45,12 +58,21 @@ class WorkerPool:
 
         coro_factory(func_instance) returns the awaitable to run (the function's run()).
         """
-        if bot_function.risk == RISKY and not self.workers:
+        workers = self.delegate(func_instance)
+        scraping = self.scraping if len(workers) < self.count() else None  # the worker left out
+
+        if bot_function.risk == RISKY and not workers:
             await report(
+                "⚠️ Единственный воркер занят скрапом — дождитесь его окончания." if scraping else
                 "⚠️ Нет воркер-аккаунтов. Рискованные задачи выполняются только через добавленные аккаунты."
             )
             return False
 
-        self.delegate(func_instance)
-        await coro_factory(func_instance)
+        self.in_job = workers  # before any await: a scrape must not start on them meanwhile
+        try:
+            if scraping is not None:
+                await report(f"ℹ️ Воркер {scraping.label} занят скрапом — задача идёт без него.")
+            await coro_factory(func_instance)
+        finally:
+            self.in_job = []
         return True

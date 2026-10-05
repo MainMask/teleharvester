@@ -4,10 +4,12 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
+from bot.keyboards.common import progress_kb
 from bot.keyboards.menu import main_menu
 from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
 from bot.states import ReportMessage, ReportUser
 
@@ -78,8 +80,15 @@ async def ru_run(message: Message, state: FSMContext, pool: WorkerPool, function
 
 # ====================== report (message/post) ======================
 
-async def _abort(chat_id: int):
+def _free(manager: JobManager, pool: WorkerPool):
+    """The report flow is over: its slot and its workers are free (a scrape may start on them)."""
+    pool.in_job = []
+    manager.release()
+
+
+async def _abort(chat_id: int, pool: WorkerPool):
     """on_abort for the manager: disconnect the held worker and drop the flow."""
+    pool.in_job = []  # the manager already freed the slot
     entry = _FLOWS.pop(chat_id, None)
     if entry is not None:
         try:
@@ -129,16 +138,17 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
 
     chat_id = message.chat.id
 
-    if not manager.acquire("Репорт", on_abort=lambda: _abort(chat_id), timeout=600):
+    if not manager.acquire("Репорт", on_abort=lambda: _abort(chat_id, pool), timeout=600):
         await message.answer(f"⛔ Занят: {manager.label}. Остановите текущую задачу.")
         return
 
     comment = "" if message.text.strip() == "-" else message.text
     instance, _ = resolve(functions, "report")
     workers = pool.delegate(instance)
+    pool.in_job = workers  # the flow drives them until _free / _abort: no scrape starts on them
 
     if not workers:  # guard: never index into an empty pool with the slot held
-        manager.release()
+        _free(manager, pool)
         await message.answer("Нет воркеров.")
         return
 
@@ -170,7 +180,7 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
         if _FLOWS.get(chat_id) is not entry:  # aborted meanwhile: the slot is no longer ours
             return
         _FLOWS.pop(chat_id, None)
-        manager.release()  # before any await: a /cancel meanwhile must not free a foreign slot
+        _free(manager, pool)  # before any await: a /cancel meanwhile must not free a foreign slot
         try:
             await first.disconnect()
         except Exception:
@@ -185,11 +195,11 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
         _FLOWS[chat_id] = (instance, flow, options)
         await message.answer("Выберите вариант:", reply_markup=_options_kb(options))
     else:
-        await _finish(instance, flow, message.bot, chat_id, manager)
+        await _finish(instance, flow, message.bot, chat_id, manager, pool)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "report_opt"))
-async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: JobManager):
+async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: JobManager, pool: WorkerPool):
     chat_id = callback.message.chat.id
     entry = _FLOWS.get(chat_id)
     if entry is None:
@@ -219,7 +229,7 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
         if _FLOWS.get(chat_id) is not entry:  # aborted meanwhile: the slot is no longer ours
             return
         _FLOWS.pop(chat_id, None)
-        manager.release()  # before any await: a /cancel meanwhile must not free a foreign slot
+        _free(manager, pool)  # before any await: a /cancel meanwhile must not free a foreign slot
         try:
             await flow["session"].disconnect()
         except Exception:
@@ -236,7 +246,7 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
         await callback.message.answer("Выберите вариант:", reply_markup=_options_kb(options))
     else:
         _FLOWS.pop(chat_id, None)
-        await _finish(instance, flow, callback.bot, chat_id, manager)
+        await _finish(instance, flow, callback.bot, chat_id, manager, pool)
 
 
 def _options_kb(options):
@@ -247,7 +257,7 @@ def _options_kb(options):
     return builder.as_markup()
 
 
-async def _finish(instance, flow, bot, chat_id, manager: JobManager):
+async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: WorkerPool):
     _FLOWS.pop(chat_id, None)
     manager.disarm_timeout()  # work starts now; don't let the inactivity timeout free the slot mid-replay
     manager.lock()            # ...nor a /cancel: replay_rest is driving the workers until release()
@@ -256,8 +266,14 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager):
     except Exception:
         pass
 
+    manager.progress = Progress()
+    manager.progress.start(len(flow["rest"]) + 1)
+    manager.progress.step()  # the first account already submitted while choosing
+    instance.progress = manager.progress
+
+    # no Stop: the slot is locked; finish() drops the Progress button with the markup
     reporter = TelegramReporter(
-        bot, chat_id, header="Репорт…",
+        bot, chat_id, header="Репорт…", reply_markup=progress_kb(),
         job_label="Репорт", workers=len(flow["rest"]) + 1, final_markup=main_menu(),
     )
     try:
@@ -276,4 +292,5 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager):
         except Exception:
             pass
     finally:
-        manager.release()
+        instance.progress = None  # the instance is reused by later runs
+        _free(manager, pool)

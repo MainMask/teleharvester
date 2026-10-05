@@ -37,6 +37,7 @@ class _FakeMe:
     last_name = "A"
     id = 123
     phone = "79990001122"
+    username = "denis"
 
 
 class _FakeInit:
@@ -58,6 +59,12 @@ class _FakeClient:
     _init_request = _FakeInit()
     session = _FakeSession()
 
+    def __init__(self):
+        self.requests = []
+
+    async def __call__(self, request):
+        self.requests.append(request)
+
     async def connect(self):
         pass
 
@@ -72,12 +79,16 @@ class _FakeClient:
 
 
 class _FakeTDesktop:
+    mainAccount = type("Account", (), {"UserId": _FakeMe.id})  # read offline by opentele
+    last_client = None
+
     def __init__(self, path):
         self.path = path
 
     async def ToTelethon(self, session, flag, proxy=None):
         _FakeTDesktop.last_proxy = proxy
-        return _FakeClient()
+        _FakeTDesktop.last_client = _FakeClient()
+        return _FakeTDesktop.last_client
 
 
 def _setup_workers(tmp_path, monkeypatch, count=2, with_proxies=0):
@@ -256,3 +267,57 @@ def test_convert_keeps_existing_jsession(tmp_path, monkeypatch):
 
     assert phone == "79990001122"
     assert json.loads(existing.read_text()) == {"password": "old-pw"}
+
+
+def test_write_2fa_password_keeps_label(tmp_path):
+    worker = tmp_path / "+79990001122"
+    worker.mkdir()
+    (worker / "Пароль 2фа dark.txt").write_text("2фа пароль к аккануту : old\n", encoding="utf-8")
+
+    tdata_import.write_2fa_password("79990001122", "new", str(tmp_path))
+
+    assert tdata_import.read_2fa_password(str(worker)) == "new"
+    assert (worker / "Пароль 2фа dark.txt").read_text(encoding="utf-8").startswith("2фа пароль к аккануту:")
+    assert (worker / "Пароль 2фа dark.txt").stat().st_mode & 0o777 == 0o600
+
+
+def test_write_2fa_password_creates_file(tmp_path):
+    worker = tmp_path / "79990001122"
+    worker.mkdir()
+
+    tdata_import.write_2fa_password("79990001122", "new", str(tmp_path))
+
+    assert tdata_import.read_2fa_password(str(worker)) == "new"
+
+
+def test_write_2fa_password_no_folder_is_noop(tmp_path):
+    tdata_import.write_2fa_password("79990001122", "new", str(tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_convert_clears_personal_channel(tmp_path, monkeypatch):
+    from telethon.tl.functions.account import UpdatePersonalChannelRequest
+
+    monkeypatch.setattr(tdata_import, "TDesktop", _FakeTDesktop)
+    (tmp_path / "tdata").mkdir()
+
+    phone = asyncio.run(tdata_import.convert(str(tmp_path / "tdata"), None, None, str(tmp_path / "sessions")))
+
+    assert phone == "79990001122"
+    assert any(isinstance(r, UpdatePersonalChannelRequest) for r in _FakeTDesktop.last_client.requests)
+
+
+def test_a_personal_account_is_never_imported_as_a_worker(tmp_path, monkeypatch):
+    from modules import scraper_creds
+
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / "79131332002.jsession").write_text(json.dumps({"account": {"user_id": _FakeMe.id}}))
+    monkeypatch.setattr(scraper_creds, "PERSONAL_DIR", str(personal))
+    monkeypatch.setattr(tdata_import, "TDesktop", _FakeTDesktop)
+    _FakeTDesktop.last_client = None
+
+    with pytest.raises(ValueError, match="личный аккаунт"):
+        asyncio.run(tdata_import.convert(str(tmp_path / "tdata"), None, None, str(tmp_path / "sessions")))
+    assert _FakeTDesktop.last_client is None  # refused before connecting with its key
+    assert not (tmp_path / "sessions").exists()

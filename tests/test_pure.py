@@ -103,6 +103,7 @@ class AccountSettingsRoundTripTest(unittest.TestCase):
                 "user_id": 123,
                 "added_at": 1700000000.0,
                 "phone_number": "123456789",
+                "username": None,
             },
             "application": {
                 "api_id": 6,
@@ -163,6 +164,16 @@ class AccountSettingsRoundTripTest(unittest.TestCase):
             with open(path, "w") as fileobj:
                 fileobj.write("{}")
             os.chmod(path, 0o600)
+
+            settings.save(path)
+
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_new_file_is_private(self):
+        settings = AccountSettings.from_dict(self._base_dict(None))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "123456789.jsession")
 
             settings.save(path)
 

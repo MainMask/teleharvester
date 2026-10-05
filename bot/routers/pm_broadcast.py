@@ -75,6 +75,7 @@ async def got_message(
     started = await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function, job,
         "Рассылка в ЛС…", "Рассылка завершена ✅",
+        cleanup=content.cleanup,
     )
     if not started:
         content.cleanup()

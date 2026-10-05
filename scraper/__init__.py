@@ -1,3 +1,3 @@
-"""scraper: terminal tool for scraping and analysing Telegram data."""
+"""The scraping and analysis engine behind the bot's and the menu's Audience functions.
 
-__version__ = "2.2.0"
+Runs on a worker account (see modules.scraper_creds.build_credentials)."""

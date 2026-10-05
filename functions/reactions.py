@@ -1,4 +1,3 @@
-import asyncio
 import random
 
 from telethon import functions, types
@@ -42,10 +41,10 @@ class ReactionsFunc(TelethonFunction):
     async def run(self, link, reaction, report):
         peer, message_id = self.parse_message_link(link)
 
-        await asyncio.gather(*[
-            self.set_reaction(session, peer, message_id, report, reaction=reaction)
-            for session in self.sessions
-        ])
+        await self.gather_in_order(
+            lambda session, report: self.set_reaction(session, peer, message_id, report, reaction=reaction),
+            report,
+        )
 
     async def execute(self):
         self.ask_accounts_count()

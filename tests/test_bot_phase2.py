@@ -3,6 +3,7 @@ background tasks, the report stepper and scraper helpers."""
 
 import asyncio
 import contextlib
+import os
 import types
 
 from telethon import types as tl
@@ -14,9 +15,11 @@ from bot.services.registry import (
     BOT_FUNCTIONS_BY_KEY,
     RISKY,
     SAFE,
+    SECTIONS,
+    WORKER_GROUPS,
     by_category,
-    categories,
 )
+from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 
 
@@ -31,6 +34,12 @@ class _Storage:
     @contextlib.asynccontextmanager
     async def ainitialize_session(self, session):
         yield
+
+    def get_session_path(self, session):
+        return None
+
+    def remember_name(self, session, first_name, last_name):
+        pass
 
 
 class _Session:
@@ -70,8 +79,12 @@ class TestRegistry:
         assert len(BOT_FUNCTIONS_BY_KEY) == len(BOT_FUNCTIONS)
 
     def test_categories_cover_all(self):
-        total = sum(len(by_category(c)) for c in categories())
+        total = sum(len(by_category(c)) for c in (*SECTIONS, *WORKER_GROUPS))
         assert total == len(BOT_FUNCTIONS)
+
+    def test_every_category_is_reachable_from_the_menu(self):
+        # a category outside SECTIONS / WORKER_GROUPS would have no button leading to it
+        assert {f.category for f in BOT_FUNCTIONS} == set(SECTIONS) | set(WORKER_GROUPS)
 
     def test_risk_values_valid(self):
         assert all(f.risk in (SAFE, RISKY) for f in BOT_FUNCTIONS)
@@ -119,6 +132,23 @@ class TestRuns:
         fn = PhoneNumbersStatsFunc(_Storage(), ns())
         rows = fn.tally(["12025550123", "12025550124"])
         assert rows and rows[0][0] == 1 and rows[0][2] == 2
+
+    def test_statistics_count_a_worker_on_hold_by_its_stored_number(self):
+        from functions.statistics_phones import PhoneNumbersStatsFunc
+
+        class _Worker:
+            async def get_me(self):
+                return ns(phone="12025550123")
+
+        held = object()  # busy scraping: not asked, its .jsession has the number
+        storage = _Storage()
+        storage.jsessions_paths = {"sessions/w.jsession": ns(account=ns(account=ns(phone_number="447700900123")))}
+        storage.get_session_path = lambda s: "sessions/w.jsession" if s is held else None
+        fn = PhoneNumbersStatsFunc(storage, ns())
+        fn.sessions, fn.on_hold = [_Worker()], [held]
+        msgs, report = collect()
+        asyncio.run(fn.run(report))
+        assert sorted((m.split(" — ")[0], m.split(" — ")[-1]) for m in msgs) == [("+1", "1"), ("+44", "1")]
 
 
 class _DeadSession(_Session):
@@ -173,6 +203,7 @@ class _Pool:
         return self._w
 
     async def run(self, instance, bot_function, factory, report):
+        instance.sessions = self.workers  # as WorkerPool.delegate
         await factory(instance)
 
 
@@ -188,9 +219,9 @@ class TestJobManager:
                 started.set()
                 await release.wait()
 
-            ok1 = await m.run(bot, 1, _Pool(), object(), ns(risk="safe"), job, "H1", "done")
+            ok1 = await m.run(bot, 1, _Pool(), ns(), ns(risk="safe"), job, "H1", "done")
             await started.wait()
-            ok2 = await m.run(bot, 1, _Pool(), object(), ns(risk="safe"),
+            ok2 = await m.run(bot, 1, _Pool(), ns(), ns(risk="safe"),
                               lambda f, r: asyncio.sleep(0), "H2", "done")
             release.set()
             await asyncio.sleep(0.05)
@@ -217,7 +248,7 @@ class TestJobManager:
                 started.set()
                 await asyncio.sleep(3600)
 
-            await m.run(bot, 1, _Pool([s]), object(), ns(risk="safe"), job, "H", "done", stop_sessions=[s])
+            await m.run(bot, 1, _Pool([s]), ns(), ns(risk="safe"), job, "H", "done", stop_sessions=[s])
             await started.wait()
             stopped = await m.stop()
             await asyncio.sleep(0.05)
@@ -235,7 +266,7 @@ class TestJobManager:
 
         async def scenario():
             m = JobManager()
-            started = await m.run(_DeadBot(), 1, _Pool(), object(), ns(risk="safe"),
+            started = await m.run(_DeadBot(), 1, _Pool(), ns(), ns(risk="safe"),
                                   lambda f, r: asyncio.sleep(0), "H", "done")
             return started, m.active
 
@@ -255,7 +286,7 @@ class TestJobManager:
         async def scenario():
             m = JobManager()
             s = S()
-            await m.run(_Bot(), 1, _Pool([s]), object(), ns(risk="safe"),
+            await m.run(_Bot(), 1, _Pool([s]), ns(), ns(risk="safe"),
                         lambda f, r: asyncio.sleep(0), "H", "done", stop_sessions=[s])
             await asyncio.sleep(0.05)
             return s.session._entities
@@ -390,6 +421,105 @@ class TestBroadcastHandleCleanup:
         assert session.added[0][0] is session.removed[0][0]  # same handler added and removed
 
 
+    def test_a_days_long_listener_keeps_the_entity_cache_bounded(self, monkeypatch):
+        import functions.broadcast as bc
+        from functions.broadcast import Broadcast
+
+        monkeypatch.setattr(bc, "LISTENER_ENTITY_LIMIT", 3)
+        b = Broadcast(_Storage(), ns(trigger="go", messages=["m"], delay=[0], messages_count=1))
+        session = _ListenSession()
+        session.session = ns(_entities={1, 2, 3})
+
+        async def report(_text):
+            return None
+
+        asyncio.run(b.handle(session, report))
+        handler = session.added[0][0]
+        other = ns(raw_text="hello")  # not the trigger: nothing is sent
+
+        asyncio.run(handler(other))
+        assert session.session._entities == {1, 2, 3}  # at the limit: kept
+        session.session._entities.add(4)
+        asyncio.run(handler(other))
+        assert session.session._entities == set()  # past it: dropped
+
+
+class TestListenerSafety:
+    def _broadcast(self, trigger="go"):
+        from functions.broadcast import Broadcast
+
+        return Broadcast(_Storage(), ns(trigger=trigger, messages=["m"], delay=[0], messages_count=1))
+
+    def _handler(self, b):
+        session = _ListenSession()
+        session.session = ns(_entities=set())
+
+        async def report(_text):
+            return None
+
+        asyncio.run(b.handle(session, report))
+        return session
+
+    def test_listens_to_incoming_messages_only(self):
+        session = self._handler(self._broadcast())
+        event = session.added[0][1]
+        assert event.incoming is True  # a worker's own broadcast never triggers it again
+
+    def test_an_empty_trigger_matches_nothing(self):
+        b = self._broadcast(trigger="")
+        sent = []
+
+        async def broadcast(*a, **k):
+            sent.append(a)
+
+        b.broadcast = broadcast
+        handler = self._handler(b).added[0][0]
+        asyncio.run(handler(ns(raw_text="", reply_to=None, chat_id=1)))  # a photo without a caption
+        assert sent == []
+
+    def test_a_lost_connection_reconnects_and_goes_on(self, monkeypatch):
+        import functions.broadcast as bc
+
+        monkeypatch.setattr(bc, "LISTENER_RECONNECT_DELAY", 0)
+
+        class Flaky(_ListenSession):
+            runs = 0
+
+            async def run_until_disconnected(self):
+                type(self).runs += 1
+                if type(self).runs < 3:  # Telethon's own reconnects ran out, twice
+                    raise ConnectionError("Connection to Telegram failed 5 time(s)")
+
+        b = self._broadcast()
+        msgs = []
+
+        async def report(text):
+            msgs.append(text)
+
+        session = Flaky()
+        asyncio.run(b.handle(session, report))
+        assert Flaky.runs == 3
+        assert sum("reconnecting" in m for m in msgs) == 2
+        assert len(session.removed) == 1
+
+    def test_one_broken_worker_does_not_end_the_others(self):
+        class LoggedOut(_ListenSession):
+            async def run_until_disconnected(self):
+                raise RuntimeError("AUTH_KEY_UNREGISTERED")
+
+        b = self._broadcast()
+        msgs = []
+
+        async def report(text):
+            msgs.append(text)
+
+        async def both():  # as broadcast_chat runs them
+            await asyncio.gather(b.handle(LoggedOut(), report), b.handle(_ListenSession(), report))
+
+        asyncio.run(both())  # must not raise
+        assert any("listener stopped: AUTH_KEY_UNREGISTERED" in m for m in msgs)
+
+
 # --- report _finish always frees the slot (regression: stuck job on error) ---
 
 class TestFinishReleasesSlot:
@@ -410,7 +540,7 @@ class TestFinishReleasesSlot:
             flow = {"session": _Sess(), "rest": [], "peer": "x",
                     "ids": [1], "comment": "c", "selections": []}
             try:
-                await _finish(_Inst(), flow, _Bot(), 1, m)
+                await _finish(_Inst(), flow, _Bot(), 1, m, ns(in_job=[]))
             except RuntimeError:
                 pass
             return m.active
@@ -443,7 +573,7 @@ class TestFinishLocksSlotDuringReplay:
             m.acquire("Репорт", on_abort=lambda: release.set(), timeout=0)
             flow = {"session": _Sess(), "rest": [], "peer": "x",
                     "ids": [1], "comment": "c", "selections": []}
-            task = asyncio.create_task(_finish(_Inst(), flow, _Bot(), 1, m))
+            task = asyncio.create_task(_finish(_Inst(), flow, _Bot(), 1, m, ns(in_job=[])))
             await in_replay.wait()
             stopped = await m.stop()        # a /cancel mid-replay
             active_during = m.active
@@ -623,7 +753,8 @@ class TestBadDateHandled:
 
         class _State:
             async def get_data(self):
-                return {"out_dir": "out", "channels": "@a", "name": "n", "date_min": "01.01.2024"}
+                return {"out_dir": "out", "channels": "@a", "name": "n", "date_min": "01.01.2024",
+                        "account": "sessions/a.jsession"}
 
             async def clear(self):
                 return None
@@ -639,13 +770,10 @@ class TestBadDateHandled:
             async def answer(self, text, **kwargs):
                 self.replies.append(text)
 
-        client = TelegramClient(StringSession(), 1, "x")
         m = _Msg()
-        manager = JobManager()
-        asyncio.run(scraping.scrape_run(m, _State(), ns(workers=[client]), manager))
+        asyncio.run(scraping.scrape_run(m, _State()))  # the date is checked before any slot
 
-        assert any("Неверные параметры" in r for r in m.replies)
-        assert manager.active is False  # slot never taken on a parse failure
+        assert any("Неверные параметры" in r and "not-a-date" in r for r in m.replies)
 
 
 # --- verify: a user-input error (str SystemExit) surfaces its message, not "прервана" ---
@@ -657,7 +785,8 @@ class TestVerifyBadInputReported:
 
         class _State:
             async def get_data(self):
-                return {"input": "nope.parquet", "channel": "@x", "date_min": "01.01.2024"}
+                return {"input": "nope.parquet", "channel": "@x", "date_min": "01.01.2024",
+                        "account": "sessions/a.jsession"}
 
             async def clear(self):
                 return None
@@ -682,9 +811,10 @@ class TestVerifyBadInputReported:
         original = svc.do_verify
         svc.do_verify = _boom
         try:
-            asyncio.run(scraping.verify_run(
-                m, _State(), ns(workers=[client]), manager,
-            ))
+            # one worker in the pool, as the scraper's account
+            pool = WorkerPool(ns(sessions=[client], jsessions_paths={},
+                                 get_session_path=lambda c: "sessions/a.jsession"))
+            asyncio.run(scraping.verify_run(m, _State(), pool, None, manager))
         finally:
             svc.do_verify = original
 
@@ -738,16 +868,13 @@ class TestAnalysisBadInputReported:
 
         class _State:
             async def get_data(self):
-                return {"tool": "combine", "idx": 1, "collected": {"input": missing}}
-
-            async def update_data(self, **kwargs):
-                return None
+                return {"tool": "combine"}
 
             async def clear(self):
                 return None
 
         class _Msg:
-            text = str(tmp_path / "out.parquet")
+            text = missing
             chat = ns(id=1)
             bot = _Bot()
 
@@ -759,7 +886,7 @@ class TestAnalysisBadInputReported:
 
         m = _Msg()
         manager = JobManager()
-        asyncio.run(scraping.analysis_arg(m, _State(), manager))  # must not raise SystemExit
+        asyncio.run(scraping.analysis_file_text(m, _State(), manager))  # must not raise SystemExit
 
         assert any("Ошибка" in r and "No files match" in r for r in m.replies)
         assert manager.active is False  # slot released on the error path
@@ -792,11 +919,105 @@ class TestScraping:
         out = read_preview(df)
         assert "…" in out and len(out) < 4096
 
-    def test_worker_session_none_without_workers(self):
-        from bot.services import scraping
-        assert scraping.worker_session(ns(workers=[])) is None
 
-    def test_worker_session_from_worker(self):
-        from bot.services import scraping
-        client = TelegramClient(StringSession(), 1, "x")
-        assert scraping.worker_session(ns(workers=[client])) is client
+
+# --- change photo: a picture sent to the bot goes to every account ---
+
+class TestChangePhotoFromChat:
+    def test_photo_path_is_used_for_every_account(self, tmp_path, monkeypatch):
+        from functions.change_profile_photo import ChangeProfilePhotoFunc
+
+        monkeypatch.chdir(tmp_path)  # no assets/photos here: the folder must not be read
+        storage = _Storage()
+        storage.sessions = [_Session("A"), _Session("B")]
+        fn = ChangeProfilePhotoFunc(storage, ns(delay=[1]))
+        used = []
+
+        async def fake_set(session, photo_path, report):
+            used.append((session.name, photo_path))
+
+        fn.set_profile_photo = fake_set
+        msgs, report = collect()
+        asyncio.run(fn.run(report, photo_path="/x/avatar.jpg"))
+
+        assert used == [("A", "/x/avatar.jpg"), ("B", "/x/avatar.jpg")]
+        assert not any("No photos" in m for m in msgs)
+
+    def _upload(self, tmp_path, monkeypatch, message):
+        from bot.routers import profile
+
+        monkeypatch.setattr(profile, "PHOTO_TMP_DIR", str(tmp_path / "photo"))
+
+        class _State:
+            cleared = False
+
+            async def clear(self):
+                _State.cleared = True
+
+        class _Manager:
+            path_during_job = None
+
+            async def run(self, bot, chat_id, pool, instance, bot_function, factory, *a, **kw):
+                func = ns(run=None)
+
+                async def fake_run(reporter, photo_path=None):
+                    _Manager.path_during_job = photo_path
+                    assert os.path.exists(photo_path)
+
+                func.run = fake_run
+                await factory(func, None)
+                return True
+
+        state = _State()
+        asyncio.run(profile.photo_upload(message, state, ns(), {"ChangeProfilePhotoFunc": object()}, _Manager()))
+        return state, _Manager
+
+    def _msg(self, photo=None, document=None):
+        class _DlBot(_Bot):
+            async def download(self, source, destination, timeout=None):
+                with open(destination, "wb") as f:
+                    f.write(b"img")
+
+        msg = ns(photo=photo, document=document, chat=ns(id=1), bot=_DlBot(), replies=[])
+
+        async def answer(text, **k):
+            msg.replies.append(text)
+
+        msg.answer = answer
+        return msg
+
+    def test_photo_is_downloaded_used_and_removed(self, tmp_path, monkeypatch):
+        state, manager = self._upload(tmp_path, monkeypatch, self._msg(photo=[ns(), ns()]))
+
+        assert state.cleared is True
+        assert manager.path_during_job is not None
+        assert not os.path.exists(manager.path_during_job)  # temp file cleaned after the job
+
+    def test_image_document_is_accepted(self, tmp_path, monkeypatch):
+        _, manager = self._upload(tmp_path, monkeypatch, self._msg(document=ns(mime_type="image/png")))
+        assert manager.path_during_job is not None
+
+    def test_non_image_keeps_waiting(self, tmp_path, monkeypatch):
+        msg = self._msg(document=ns(mime_type="application/pdf"))
+        state, manager = self._upload(tmp_path, monkeypatch, msg)
+
+        assert state.cleared is False
+        assert manager.path_during_job is None
+        assert any("Ожидается картинка" in r for r in msg.replies)
+
+
+def test_the_trigger_campaign_refuses_an_empty_trigger():
+    from bot.routers import broadcasts
+
+    answers = []
+
+    async def answer(text=None, **k):
+        answers.append(text)
+
+    async def clear():
+        raise AssertionError("the flow must not start")
+
+    callback = ns(answer=answer, message=ns(answer=answer))
+    pool = ns(count=lambda: 1)
+    asyncio.run(broadcasts.cha_start(callback, ns(clear=clear), pool, ns(trigger="")))
+    assert any("Триггер не задан" in (a or "") for a in answers)

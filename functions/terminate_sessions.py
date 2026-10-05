@@ -1,4 +1,3 @@
-import asyncio
 
 from modules.console import console
 
@@ -30,10 +29,7 @@ class TerminateSessionsFunc(TelethonFunction):
                         await report(f"Reset authorization {authorization.ip} ({authorization.device_model}, {authorization.platform})")
 
     async def run(self, report):
-        await asyncio.gather(*[
-            self.terminate_sessions(session, report)
-            for session in self.sessions
-        ])
+        await self.gather_in_order(self.terminate_sessions, report)
 
     async def execute(self):
         self.ask_accounts_count()

@@ -1,13 +1,22 @@
+import os
+from typing import NamedTuple
+
 from modules.console import console
+from modules.storages.sessions_storage import SessionsStorage
 from rich.prompt import Prompt
 
 from scraper.config import Credentials
 
+# personal accounts (.jsession, as in sessions/): never workers, but a scrape — read-only — may
+# run on one when it is picked explicitly
+PERSONAL_DIR = "personal_sessions"
 
-# resume hint for scrapes started from teleharvester (menu or bot): the CLI command
-# scrape.run prints otherwise would resume on the .env account
-TUI_RESUME_HINT = ("teleharvester menu -> Scrape channel/group: the same account, channels, name, "
-                   "dates, keyword and output dir, then answer yes to 'resume an interrupted run?'")
+
+class ScrapeAccount(NamedTuple):
+    path: str        # its session file: a resume runs on the same one
+    client: object   # its TelegramClient (never connected here; build_credentials reads it)
+    label: str
+    personal: bool
 
 
 def build_credentials(client) -> Credentials:
@@ -31,17 +40,52 @@ def build_credentials(client) -> Credentials:
     )
 
 
-def pick_session(storage):
-    """Pick one teleharvester account; return its client (None if none / bad input)."""
-    sessions = storage.sessions
+def personal_storage(api_id, api_hash) -> SessionsStorage | None:
+    """The personal accounts, loaded like the workers (no connection); None without the folder."""
+    if not os.path.isdir(PERSONAL_DIR):
+        return None
+    return SessionsStorage(PERSONAL_DIR, api_id, api_hash, initialize=False)
 
-    if not sessions:
+
+def _label(storage, path: str) -> str:
+    json_session = storage.jsessions_paths.get(path)
+    if json_session is None:  # a plain .session file: nothing but its name
+        return os.path.basename(path)
+    account = json_session.account.account
+    phone = account.phone_number if account.phone_number.startswith("+") else f"+{account.phone_number}"
+    handle = f"@{account.username}" if account.username else phone
+    return f"{account.first_name} ({handle})" if account.first_name else handle
+
+
+def scrape_accounts(workers, personal=None) -> list[ScrapeAccount]:
+    """The accounts a scrape may run on: the personal ones first, then the workers."""
+    accounts = []
+    for storage, is_personal in ((personal, True), (workers, False)):
+        if storage is None:
+            continue
+        for client in storage.sessions:
+            path = storage.get_session_path(client)
+            accounts.append(ScrapeAccount(path, client, _label(storage, path), is_personal))
+    return accounts
+
+
+def find_account(accounts: list[ScrapeAccount], path: str) -> ScrapeAccount | None:
+    return next((account for account in accounts if account.path == path), None)
+
+
+def pick_session(storage, personal=None) -> ScrapeAccount | None:
+    """Pick the account to scrape with (personal ones included); None if none / bad input."""
+    accounts = scrape_accounts(storage, personal)
+
+    if not accounts:
         console.print("[bold red]No accounts in sessions/. Add one first.[/]")
         return None
 
-    for index, client in enumerate(sessions):
-        path = storage.get_session_path(client)
-        console.print(f"[bold white][{index + 1}] {path}[/]")
+    for index, account in enumerate(accounts):
+        mark = " - personal" if account.personal else ""
+        # no markup: a name could hold "[...]"
+        console.print(f"[{index + 1}] {account.label}{mark}  {account.path}", markup=False,
+                      highlight=False, style="bold white")
 
     raw = Prompt.ask("[bold magenta]account to use[/]", default="1")
 
@@ -51,8 +95,8 @@ def pick_session(storage):
 
     choice = int(raw) - 1
 
-    if choice < 0 or choice >= len(sessions):
+    if choice < 0 or choice >= len(accounts):
         console.print("[bold red]Invalid account number.[/]")
         return None
 
-    return sessions[choice]
+    return accounts[choice]

@@ -7,13 +7,15 @@ from aiogram.exceptions import TelegramRetryAfter
 # Best-effort classification of a progress line for the end-of-job summary.
 # Whole words only, so "unlimited" / "present" don't count as "limit" / "sent".
 _ERROR_RE = re.compile(
-    r"⚠️|❌|\[!\]|\bfailed\b|\berrors?\b|\bnot sent\b|\blimit\b|\bcan't\b|\bcouldn't\b"
-    r"|\bskip\b|\bbanned\b|не удал|не отправ|ошибк",
+    r"⚠️|❌|\[!\]|\bfailed\b|\berrors?\b|\bnot (?:sent|changed|cleared|hidden|saved|voted)\b"
+    r"|\blimit\b|\bcan't\b|\bcouldn't\b|\bskip\b|\bbanned\b|\bno invite rights\b|\bnot a supergroup\b"
+    r"|не удал|не отправ|ошибк",
     re.IGNORECASE,
 )
 _OK_RE = re.compile(
     r"✅|\[\+\]|\bsent\b|\bsubmitted\b|\binvited\b|\bjoined\b|\breacted\b|\bchanged\b"
     r"|\bupdated\b|\bsuccess(?:fully)?\b|\badded\b|\bdeleted\b|\buploaded\b"
+    r"|\bhidden\b|\bcleared\b|\bvoted\b|\bset\b|\breset\b"
     r"|отправлен|приглаш|готово",
     re.IGNORECASE,
 )

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import random
 from rich.prompt import Prompt, Confirm
 from modules.console import console
@@ -19,6 +20,14 @@ from modules.rich_message import RichContent
 
 # Invisible mention carrier: each hidden mention is these two chars linked to a user.
 _MENTION_CHARS = "⁬⁯"
+
+# Every update a listening worker receives adds its users/chats to the session's in-memory
+# entity set, which never shrinks; a trigger listener runs for days, so past this many it
+# is dropped (the trigger's own chat is in the client's bounded cache from the same update).
+LISTENER_ENTITY_LIMIT = 50_000
+# A listening worker that loses its connection (a network outage, a dead proxy: Telethon gives
+# up after a few quick retries) tries again after this many seconds; the campaign goes on.
+LISTENER_RECONNECT_DELAY = 30
 
 # A basic group ignores the admins filter (Telethon returns every member), so the
 # participant type decides who is an admin, in groups and supergroups alike.
@@ -126,6 +135,7 @@ class Broadcast(TelethonFunction):
             me = await session.get_me()
         except Exception as err:
             await report(f"get_me failed: {err}")
+            self.progress_drop(self.settings.messages_count)
             return
 
         if self.mention_all:
@@ -188,14 +198,23 @@ class Broadcast(TelethonFunction):
             else:
                 errors = 0
                 count += 1
+                self.progress_step()
                 await report(f"[{me.first_name}] sent. COUNT: {count}")
 
-            # delay between sends only; a break (limit / 3 errors) skips it
-            await self.delay()
+            # delay between sends only; a break (limit / 3 errors) skips it, as does the last send
+            if not (self.settings.messages_count and count >= self.settings.messages_count):
+                await self.delay()
+
+        if self.settings.messages_count:  # stopped early: its unsent rest leaves the total
+            self.progress_drop(self.settings.messages_count - count)
 
     async def handle(self, session, report):
         async def handler(message: types.Message):
-            if message.raw_text == self.settings.trigger:
+            if len(session.session._entities) > LISTENER_ENTITY_LIMIT:  # workers: StringSession
+                session.session._entities.clear()
+
+            # an empty trigger would match every media message without a caption
+            if self.settings.trigger and message.raw_text == self.settings.trigger:
                 # local, not shared state: concurrent per-worker listeners must not
                 # clobber each other's reply target
                 reply_to = message.reply_to.reply_to_msg_id if message.reply_to else None
@@ -207,13 +226,23 @@ class Broadcast(TelethonFunction):
                     reply_to=reply_to,
                 )
 
-        session.add_event_handler(handler, events.NewMessage)
+        # incoming only: a worker's own broadcast must never trigger it again
+        session.add_event_handler(handler, events.NewMessage(incoming=True))
+        label = os.path.basename(self.storage.get_session_path(session) or "") or "worker"
 
         try:
-            if not self.storage.initialize:
-                await session.connect()
-
-            await session.run_until_disconnected()
+            while True:
+                try:
+                    await session.connect()  # a no-op if connected (the CLI's clients are)
+                    await session.run_until_disconnected()
+                    return  # disconnected on purpose: the job is over
+                except OSError as err:  # ConnectionError: Telethon's reconnects ran out
+                    await report(f"[!] [{label}] connection lost ({err}), "
+                                 f"reconnecting in {LISTENER_RECONNECT_DELAY}s")
+                    await asyncio.sleep(LISTENER_RECONNECT_DELAY)
+                except Exception as err:  # e.g. a logged-out session: this worker only
+                    await report(f"[!] [{label}] listener stopped: {err}")
+                    return
         finally:
             session.remove_event_handler(handler, events.NewMessage)
 

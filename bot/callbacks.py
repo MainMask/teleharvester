@@ -4,9 +4,11 @@ from aiogram.filters.callback_data import CallbackData
 
 
 class MenuAction(str, Enum):
-    CATEGORIES = "categories"  # back to the category list
-    PROXY = "proxy"            # open proxy setup on the accounts screen
-    TDATA = "tdata"            # upload a tdata account on the accounts screen
+    WORKERS = "workers"        # back to the "🤖 Воркеры" screen
+    LIST = "list"              # poll and list the worker accounts
+    PROXY = "proxy"            # open proxy setup on the workers screen
+    TDATA = "tdata"            # upload a tdata account on the workers screen
+    DELAY = "delay"            # set the delay between actions (config.toml)
 
 
 class MenuCB(CallbackData, prefix="menu"):
@@ -14,7 +16,7 @@ class MenuCB(CallbackData, prefix="menu"):
 
 
 class CategoryCB(CallbackData, prefix="cat"):
-    index: int  # index into registry.categories()
+    index: int  # index into registry.WORKER_GROUPS
 
 
 class FunctionCB(CallbackData, prefix="fn"):

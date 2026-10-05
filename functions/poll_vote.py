@@ -1,4 +1,3 @@
-import asyncio
 from modules.console import console
 
 from telethon import functions
@@ -11,6 +10,12 @@ class PollVoteFunc(TelethonFunction):
 
     async def vote(self, session, channel, post_id, option_number, report):
         async with self.storage.ainitialize_session(session):
+            try:
+                me = await session.get_me()
+            except Exception as err:
+                await report(f"get_me failed: {err}")
+                return False
+
             try:
                 message = await session.get_messages(channel, ids=post_id)
                 option = message.poll.poll.answers[option_number].option
@@ -25,15 +30,22 @@ class PollVoteFunc(TelethonFunction):
                     )
                 ))
             except Exception as err:
-                await report(f"[!] {err}")
+                await report(f"[{me.first_name}] not voted: {err}")
+                return False
+
+            await report(f"[{me.first_name}] voted")
+            return True
 
     async def run(self, link, option_number, report):
         channel, post_id = self.parse_message_link(link)
 
-        await asyncio.gather(*[
-            self.vote(session, channel, post_id, option_number, report)
-            for session in self.sessions
-        ])
+        results = await self.gather_in_order(
+            lambda session, report: self.vote(session, channel, post_id, option_number, report),
+            report,
+        )
+
+        # no ok/error keyword: the per-account lines above are what the job summary counts
+        await report(f"Done: {sum(results)}/{len(self.sessions)} accounts")
 
     async def execute(self):
         self.ask_accounts_count()

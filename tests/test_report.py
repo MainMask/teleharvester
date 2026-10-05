@@ -87,6 +87,7 @@ def test_job_manager_run_emits_report():
             return ["w1", "w2"]
 
         async def run(self, instance, bot_function, factory, report):
+            instance.sessions = self.workers  # as WorkerPool.delegate
             await factory(instance)
 
     async def scenario():
@@ -96,7 +97,7 @@ def test_job_manager_run_emits_report():
         async def job(f, r):
             await r("[A] sent. done")
 
-        await m.run(bot, 1, _Pool(), object(), ns(risk="safe"), job, "Инвайт", "Готово ✅")
+        await m.run(bot, 1, _Pool(), ns(), ns(risk="safe"), job, "Инвайт", "Готово ✅")
         await asyncio.sleep(0.05)
         return bot
 
@@ -136,6 +137,51 @@ def test_tally_counts_function_error_lines():
                   "[A] couldn't find a free username", "[A] skip 42: x") == (0, 4)
 
 
+def test_tally_negated_success_word_is_an_error():
+    # "not changed" contains "changed": the error check must win
+    assert _tally("[A] not changed: USERNAME_OCCUPIED", "[A] not cleared: x", "[A] not hidden: x",
+                  "[A] not voted: x", "[!] [acc 1] no linked chat",
+                  "[A] no invite rights in destination") == (0, 6)
+
+
+def test_tally_counts_profile_and_activity_success_lines():
+    assert _tally("[A] last seen hidden", "[A] personal channel cleared", "[A] voted",
+                  "[A] username set: @x", "Reset authorization 1.2.3.4 (PC, Windows)",
+                  "[acc 1] joined") == (6, 0)
+
+
+def test_tally_ignores_neutral_lines():
+    # job totals and per-account notes are not counted again
+    assert _tally("Done: 5/5 accounts", "[acc 1] captcha solved", "[acc 1] no captcha in 30s",
+                  "[-] [@a] Account restricted until: 1 Nov 2026") == (0, 0)
+
+
 def test_tally_counts_function_success_lines():
     assert _tally("added. user_id=1 total: 1", "[+] Account active (no restriction)",
                   "[SUCCESS] [A] : Reaction was sent", "[A] Photo uploaded successfully (p)") == (4, 0)
+
+
+def test_report_counts_the_workers_the_job_got():
+    """A worker the scraper holds is left out of the job, and out of the summary's count."""
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+
+    from bot.services.delegation import WorkerPool
+    from bot.services.jobs import JobManager
+
+    async def scenario():
+        bot = _Bot()
+        a, b = (TelegramClient(StringSession(), 1, "x") for _ in range(2))
+        paths = {id(a): "sessions/a.jsession", id(b): "sessions/b.jsession"}
+        pool = WorkerPool(ns(sessions=[a, b], get_session_path=lambda c: paths[id(c)]))
+        pool.scraping = ns(path="sessions/a.jsession", label="A")
+
+        async def job(f, r):
+            await r("[B] sent. done")
+
+        await JobManager().run(bot, 1, pool, ns(), ns(risk="safe"), job, "Инвайт", "Готово ✅")
+        await asyncio.sleep(0.05)
+        return bot
+
+    bot = asyncio.run(scenario())
+    assert any("Воркеров: 1" in text for text, _ in bot.sent)

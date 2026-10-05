@@ -103,6 +103,7 @@ class ReportFunc(TelethonFunction):
                     me = await session.get_me()
                 except Exception as err:
                     await report(f"get_me failed: {err}")
+                    self.progress_step()
                     continue
                 try:
                     await self.replay(session, peer, ids, comment, selections)
@@ -110,6 +111,7 @@ class ReportFunc(TelethonFunction):
                     await report(f"[{me.first_name}] error. {err}")
                 else:
                     await report(f"[{me.first_name}] submitted.")
+                self.progress_step()
 
     async def execute(self):
         self.ask_accounts_count()

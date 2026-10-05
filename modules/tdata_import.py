@@ -15,7 +15,10 @@ import os
 from opentele.api import UseCurrentSession
 from opentele.td import TDesktop
 from telethon.sessions import StringSession
+from telethon.tl.functions.account import UpdatePersonalChannelRequest
+from telethon.tl.types import InputChannelEmpty
 
+from modules import scraper_creds
 from modules.console import console
 from modules.types.account import Account
 from modules.types.account_settings import AccountSettings
@@ -99,6 +102,42 @@ def read_2fa_password(worker_dir: str) -> str | None:
     return password or None
 
 
+def write_2fa_password(phone: str, password: str, workers_dir: str = "tdata_import") -> None:
+    """Store a changed 2FA password back next to the account's tdata, so a later
+    re-import authorizes with the current one. Keeps the file's `<label>:` part;
+    no-op when the account has no folder in `workers_dir`."""
+    for name in (str(phone), f"+{phone}"):
+        worker_dir = os.path.join(workers_dir, name)
+        if os.path.isdir(worker_dir):
+            break
+    else:
+        return
+
+    matches = glob.glob(os.path.join(worker_dir, "Пароль 2фа*.txt"))
+    path = matches[0] if matches else os.path.join(worker_dir, "Пароль 2фа.txt")
+    label = "2фа пароль"
+    if matches:
+        with open(path, encoding="utf-8") as fileobj:
+            label = fileobj.read().strip().partition(":")[0].strip() or label
+
+    tmp_path = path + ".tmp"
+    with os.fdopen(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fileobj:
+        fileobj.write(f"{label}: {password}\n")
+    os.replace(tmp_path, path)
+
+
+def _personal_user_ids() -> set[int]:
+    """The user ids of the personal accounts (personal_sessions/): never workers."""
+    ids = set()
+    directory = scraper_creds.PERSONAL_DIR
+    if os.path.isdir(directory):
+        for name in os.listdir(directory):
+            if name.endswith(".jsession"):
+                with open(os.path.join(directory, name), encoding="utf-8") as fileobj:
+                    ids.add(json.load(fileobj)["account"]["user_id"])
+    return ids
+
+
 async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
                   sessions_dir: str = "sessions") -> str | None:
     """Convert one `tdata` folder to `sessions/<phone>.jsession`.
@@ -111,6 +150,9 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
     keeping its stored 2FA password and proxy.
     """
     tdesktop = TDesktop(tdata_dir)
+    # read offline, before connecting: its key must not show up from a worker's proxy
+    if tdesktop.mainAccount.UserId in _personal_user_ids():
+        raise ValueError(f"это личный аккаунт из {scraper_creds.PERSONAL_DIR}/ — воркером он не станет")
 
     client = await tdesktop.ToTelethon(
         session=StringSession(),
@@ -125,6 +167,12 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
             return None
 
         me = await client.get_me()
+
+        try:  # new workers start without a personal channel pinned to the profile
+            await client(UpdatePersonalChannelRequest(InputChannelEmpty()))
+        except Exception as err:
+            console.print(f"[bold yellow]WARNING:[/] couldn't clear personal channel for +{me.phone}: {err}")
+
         init = client._init_request
 
         account_settings = AccountSettings(
@@ -135,6 +183,7 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
                 user_id=me.id,
                 added_at=datetime.datetime.now().timestamp(),
                 phone_number=me.phone,
+                username=me.username,
             ),
             application=Application(
                 api_id=client.api_id,

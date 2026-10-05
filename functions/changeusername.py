@@ -1,31 +1,35 @@
-import asyncio
-import random
+import itertools
 
+from telethon.errors import UsernameInvalidError, UsernamePurchaseAvailableError
 from telethon.tl.functions.account import UpdateUsernameRequest, CheckUsernameRequest
 from modules.console import console
 
 from functions.base import TelethonFunction
 from functions.base.base import console_report
 
+MAX_ATTEMPTS = 20  # candidates checked per account before giving up
+
 
 class ChangeUsernameFunc(TelethonFunction):
     """Change usernames"""
 
-    async def generate_username(self, session, base):
-        for _ in range(5):
-            candidate = f"{base}_{random.randint(1000, 999999)}"
+    async def generate_username(self, session, base, counter):
+        """First free of base, base1, base2, ...; the counter is shared so accounts never pick the same one."""
+        for _ in range(MAX_ATTEMPTS):
+            n = next(counter)
+            candidate = base if n == 0 else f"{base}{n}"
 
             try:
-                available = await session(CheckUsernameRequest(candidate))
-            except Exception:
+                if await session(CheckUsernameRequest(candidate)):
+                    return candidate
+            # this candidate only: on sale at Fragment, or invalid (e.g. a base under 5 characters
+            # whose base1 is fine); an account's own error (a long flood wait) still ends the search
+            except (UsernamePurchaseAvailableError, UsernameInvalidError):
                 continue
-
-            if available:
-                return candidate
 
         return None
 
-    async def change(self, session, report, username=None, base=None):
+    async def change(self, session, report, username=None, base=None, counter=None):
         async with self.storage.ainitialize_session(session):
             try:
                 me = await session.get_me()
@@ -34,7 +38,11 @@ class ChangeUsernameFunc(TelethonFunction):
                 return
 
             if base is not None:
-                username = await self.generate_username(session, base)
+                try:
+                    username = await self.generate_username(session, base, counter)
+                except Exception as err:
+                    await report(f"[{me.first_name}] не удалось подобрать username: {err}")
+                    return
 
                 if not username:
                     await report(f"[{me.first_name}] couldn't find a free username")
@@ -45,6 +53,7 @@ class ChangeUsernameFunc(TelethonFunction):
             except Exception as err:
                 await report(f"[{me.first_name}] not changed: {err}")
             else:
+                self.storage.remember_username(session, username)  # orders the pool
                 await report(f"[{me.first_name}] username set: @{username}")
 
     async def run(self, report, usernames=None, base=None):
@@ -54,15 +63,19 @@ class ChangeUsernameFunc(TelethonFunction):
                     f"[!] usernames в файле: {len(usernames)}, аккаунтов: {len(self.sessions)} — "
                     f"{len(self.sessions) - len(usernames)} аккаунт(ов) без имени будут пропущены"
                 )
-            await asyncio.gather(*[
-                self.change(session, report, username=username)
-                for session, username in zip(self.sessions, usernames)
-            ])
+            pairs = dict(zip(self.sessions, usernames))  # accounts beyond the file are skipped
+            await self.gather_in_order(
+                lambda session, report: self.change(session, report, username=pairs[session]),
+                report,
+                sessions=list(pairs),
+            )
         else:
-            await asyncio.gather(*[
-                self.change(session, report, base=base)
-                for session in self.sessions
-            ])
+            base = base.strip().lstrip("@")
+            counter = itertools.count()
+            await self.gather_in_order(
+                lambda session, report: self.change(session, report, base=base, counter=counter),
+                report,
+            )
 
     async def execute(self):
         self.ask_accounts_count()

@@ -8,24 +8,28 @@ un-scraped post can be told apart from an ordinary deletion.
 
 import asyncio
 import itertools
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import pandas as pd
-from telethon import TelegramClient
 from telethon.errors import ChannelPrivateError, FloodWaitError
 from telethon.tl.types import MessageService
 
 from scraper.analysis import _count_comments
-from scraper.config import Credentials, session_for, start_kwargs
+from scraper.config import Credentials
 from scraper.datafiles import read_table, resolve_inputs, save_table
 from scraper.scrape import (
-    CLIENT_KWARGS,
     NET_ERRORS,
     RETRYABLE_RPC,
     SEP,
     _channel_ref,
+    _resolve_topic,
+    _topic_id,
     _warm_channel,
+    connect,
+    watch_stop,
 )
 
 ID_BATCH = 200          # messages.getMessages accepts up to 200 ids per call
@@ -39,9 +43,12 @@ class VerifyParams:
     channel: str
     date_min: datetime
     date_max: datetime
-    session: str = "scraper"
     output: str = ""
     comment_sample: int = 0
+    # set from another thread to stop the run (it ends as interrupted)
+    stop: threading.Event | None = None
+    # called with (checked, total) after each batch of the absent-id probe: the bot's 📊 button
+    on_progress: Callable[[int, int], None] | None = None
 
 
 def _chunks(iterable, n):
@@ -52,10 +59,13 @@ def _chunks(iterable, n):
         yield batch
 
 
-def _load_saved(pattern: str, group: str) -> pd.DataFrame:
+def _load_saved(pattern: str, group: str, with_comments: bool = False) -> pd.DataFrame:
+    """The saved posts' ids (and comment columns, for the comment check) - never the
+    posts' text: a giant scrape's file is read by its few needed columns only."""
+    columns = ["Group", "Message ID", "Reactor ID"] + (["Comments", "Comments List"] if with_comments else [])
     frames = []
     for p in resolve_inputs(pattern):
-        df = read_table(p)
+        df = read_table(p, columns=columns)
         # a folder input also holds the run's _reactors / _participants files
         if "Reactor ID" in df.columns or "Message ID" not in df.columns:
             print(f"  - skipped {p.name}: not a posts file")
@@ -76,9 +86,12 @@ def _load_saved(pattern: str, group: str) -> pd.DataFrame:
     return df.drop_duplicates(subset="_id")
 
 
-async def _classify_absent(client, entity, ids, params: VerifyParams):
-    """Probe `ids`; return ([(id, date), ...] real in-window posts, counts dict)."""
-    missed, counts = [], {"deleted": 0, "service": 0, "out_of_window": 0}
+async def _classify_absent(client, entity, ids, params: VerifyParams, on_batch=None, topic=None):
+    """Probe `ids`; return ([(id, date), ...] real in-window posts, counts dict).
+    on_batch(checked) is called after each batch. With `topic` (a forum topic's scrape) the
+    other topics' messages are not missed posts."""
+    missed, counts = [], {"deleted": 0, "service": 0, "out_of_window": 0, "other_topic": 0}
+    checked = 0
     for batch in _chunks(ids, ID_BATCH):
         for mid, m in zip(batch, await client.get_messages(entity, ids=batch)):
             if m is None:
@@ -87,8 +100,13 @@ async def _classify_absent(client, entity, ids, params: VerifyParams):
                 counts["service"] += 1
             elif not (params.date_min <= m.date <= params.date_max):
                 counts["out_of_window"] += 1
+            elif topic is not None and _topic_id(m, True) != topic:
+                counts["other_topic"] += 1
             else:
                 missed.append((mid, m.date))
+        checked += len(batch)
+        if on_batch is not None:
+            on_batch(checked)
         await asyncio.sleep(BATCH_PAUSE)
     return missed, counts
 
@@ -132,13 +150,14 @@ async def _check_comments(client, entity, df: pd.DataFrame, params: VerifyParams
 
 async def _verify(creds: Credentials, params: VerifyParams):
     ref = _channel_ref(params.channel)
-    df = _load_saved(params.input, f"@{ref.slug}")
-    saved = set(df["_id"])
-    id_min, id_max = min(saved), max(saved)
-
-    client = TelegramClient(session_for(creds, params.session), creds.api_id, creds.api_hash,
-                            proxy=creds.proxy, **(creds.device or {}), **CLIENT_KWARGS)
-    await client.start(**start_kwargs(creds))
+    # before connecting: ⏹ must work while a dead proxy is retried for hours
+    watcher = watch_stop(params.stop)
+    try:
+        client = await connect(creds)
+    except BaseException:  # a stop lands in run(), which reports it as interrupted
+        if watcher is not None:
+            watcher.cancel()
+        raise
 
     flagged = []          # (id, date, reason)
     short_threads = []
@@ -148,6 +167,10 @@ async def _verify(creds: Credentials, params: VerifyParams):
             entity = await client.get_entity(ref.arg)
         except (ValueError, ChannelPrivateError) as exc:  # unknown username, or a chat this account is not in
             raise SystemExit(f"{params.channel}: {exc}")
+        ref, _ = await _resolve_topic(client, ref, entity)  # a topic's scrape has its own Group
+        df = _load_saved(params.input, f"@{ref.slug}", with_comments=bool(params.comment_sample))
+        saved = set(df["_id"])
+        id_min, id_max = min(saved), max(saved)
         newest = await client.get_messages(entity, limit=1)
         oldest = await client.get_messages(entity, limit=1, reverse=True)
         total = (await client.get_messages(entity, limit=0)).total
@@ -169,9 +192,15 @@ async def _verify(creds: Credentials, params: VerifyParams):
         absent = (i for i in range(id_min, id_max + 1) if i not in saved)
         note = "  (this will take a few minutes)" if n_absent > 20_000 else ""
         print(f"id range {id_min}..{id_max}: {n_absent} absent id(s), probing...{note}")
-        missed, counts = await _classify_absent(client, entity, absent, params)
+        if params.on_progress is not None:
+            params.on_progress(0, n_absent)
+        missed, counts = await _classify_absent(
+            client, entity, absent, params,
+            on_batch=params.on_progress and (lambda checked: params.on_progress(checked, n_absent)),
+            topic=ref.topic)
+        other = f"{counts['other_topic']} other topics, " if ref.topic is not None else ""
         print(f"  {counts['deleted']} deleted/never existed, {counts['service']} service, "
-              f"{counts['out_of_window']} outside dates, {len(missed)} REAL POSTS MISSED")
+              f"{counts['out_of_window']} outside dates, {other}{len(missed)} REAL POSTS MISSED")
         for mid, mdate in missed:
             print(f"    ! missed id {mid}  {mdate:%Y-%m-%d %H:%M}")
             flagged.append((mid, mdate, "missed"))
@@ -183,7 +212,7 @@ async def _verify(creds: Credentials, params: VerifyParams):
         if lo_start < id_min:
             capped = id_min - lo_start > BOUND_PROBE_CAP
             lo = range(lo_start, min(id_min, lo_start + BOUND_PROBE_CAP))
-            lo_missed, _ = await _classify_absent(client, entity, list(lo), params)
+            lo_missed, _ = await _classify_absent(client, entity, list(lo), params, topic=ref.topic)
             print(f"lower bound: window starts at id {lo_start} < first saved {id_min} -> "
                   f"{'>=' if capped else ''}{len(lo_missed)} in-window post(s) before the scrape")
             for mid, mdate in lo_missed:
@@ -195,7 +224,7 @@ async def _verify(creds: Credentials, params: VerifyParams):
         if last_in and last_in[0].id > id_max:
             capped = last_in[0].id - id_max > BOUND_PROBE_CAP
             hi = range(id_max + 1, min(last_in[0].id + 1, id_max + 1 + BOUND_PROBE_CAP))
-            hi_missed, _ = await _classify_absent(client, entity, list(hi), params)
+            hi_missed, _ = await _classify_absent(client, entity, list(hi), params, topic=ref.topic)
             print(f"upper bound: {'>=' if capped else ''}{len(hi_missed)} in-window post(s) "
                   f"after the last saved id {id_max}")
             for mid, mdate in hi_missed:
@@ -204,6 +233,8 @@ async def _verify(creds: Credentials, params: VerifyParams):
         if params.comment_sample:
             short_threads = await _check_comments(client, entity, df, params)
     finally:
+        if watcher is not None:
+            watcher.cancel()
         await client.disconnect()
 
     return flagged, short_threads
@@ -212,7 +243,8 @@ async def _verify(creds: Credentials, params: VerifyParams):
 def run(creds: Credentials, params: VerifyParams) -> None:
     try:
         flagged, short_threads = asyncio.run(_verify(creds, params))
-    except (KeyboardInterrupt, *NET_ERRORS, FloodWaitError, *RETRYABLE_RPC) as exc:
+    except (KeyboardInterrupt, asyncio.CancelledError, *NET_ERRORS, FloodWaitError,
+            *RETRYABLE_RPC) as exc:  # CancelledError: a stop, which must not escape the thread
         print(SEP)
         print(f"Verification interrupted ({type(exc).__name__}) — re-run to finish.")
         raise SystemExit(1)

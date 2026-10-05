@@ -20,4 +20,19 @@ def yes_no_kb(scope: str) -> InlineKeyboardMarkup:
 
 
 def stop_kb() -> InlineKeyboardMarkup:
-    return choice_kb("job_stop", [("⏹ Стоп", "stop")])
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📊 Прогресс", callback_data=ChoiceCB(scope="job_progress", value="show"))
+    builder.button(text="⏹ Стоп", callback_data=ChoiceCB(scope="job_stop", value="stop"))
+    return builder.as_markup()
+
+
+def progress_kb() -> InlineKeyboardMarkup:
+    """The 📊 button alone, for the bot's task slot (scrape_kb has the scraper's)."""
+    return choice_kb("job_progress", [("📊 Прогресс", "show")])
+
+
+def scrape_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📊 Прогресс", callback_data=ChoiceCB(scope="job_progress", value="scrape"))
+    builder.button(text="⏹ Стоп", callback_data=ChoiceCB(scope="scrape_stop", value="stop"))
+    return builder.as_markup()

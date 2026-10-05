@@ -16,6 +16,8 @@ from functions.broadcast import Broadcast
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
 
+CAPTCHA_WAIT = 30  # seconds a worker waits for a captcha after joining (bot mode)
+
 
 class JoinerFunc(TelethonFunction):
     """Join chat"""
@@ -35,10 +37,10 @@ class JoinerFunc(TelethonFunction):
                     invite = link.split("/")[-1]
                     updates = await self.safe_call(lambda: session(ImportChatInviteRequest(invite)))
             except AccountLimited as error:
-                await emit(f"[-] [acc {index + 1}] limit: {error}")
+                await emit(f"[!] [acc {index + 1}] limit: {error}")
                 return False
             except Exception as error:
-                await emit(f"[-] [acc {index + 1}] {error}")
+                await emit(f"[!] [acc {index + 1}] {error}")
             else:
                 # the joined chat for the follow-up broadcast (a joinchat link is no peer);
                 # the result wraps the Updates on this layer, UpdatesTooLong has no chats
@@ -51,39 +53,76 @@ class JoinerFunc(TelethonFunction):
                 linked_id = full.full_chat.linked_chat_id
 
                 if not linked_id:
-                    await emit(f"[-] [acc {index + 1}] no linked chat")
+                    await emit(f"[!] [acc {index + 1}] no linked chat")
                     return False
 
                 chat = next((c for c in full.chats if c.id == linked_id), None)
 
                 if chat is None:
-                    await emit(f"[-] [acc {index + 1}] linked chat not found")
+                    await emit(f"[!] [acc {index + 1}] linked chat not found")
                     return False
 
                 await self.safe_call(lambda: session(JoinChannelRequest(chat)))
             except AccountLimited as error:
-                await emit(f"[-] [acc {index + 1}] limit: {error}")
+                await emit(f"[!] [acc {index + 1}] limit: {error}")
                 return False
             except Exception as error:
-                await emit(f"[-] [acc {index + 1}] {error}")
+                await emit(f"[!] [acc {index + 1}] {error}")
             else:
                 return chat  # the linked chat, not the channel `link` points to
 
-    async def run(self, mode, link, delay, report):
+    async def join_with_captcha(self, session, link, index, mode, report):
+        """Join, then wait up to CAPTCHA_WAIT for a captcha and click it."""
+        clicked = asyncio.Event()
+
+        async def handler(msg):
+            if await self.on_message(msg):
+                clicked.set()
+
+        # registered before joining: the captcha can arrive right after the join
+        session.add_event_handler(handler, events.NewMessage)
+
+        try:
+            joined = await self.join(session, link, index, mode, report)
+
+            if joined:
+                await report(f"[acc {index + 1}] joined")
+                try:
+                    await asyncio.wait_for(clicked.wait(), CAPTCHA_WAIT)
+                except asyncio.TimeoutError:
+                    await report(f"[acc {index + 1}] no captcha in {CAPTCHA_WAIT}s")
+                else:
+                    await report(f"[acc {index + 1}] captcha solved")
+
+            return joined
+        finally:
+            session.remove_event_handler(handler, events.NewMessage)
+
+    async def run(self, mode, link, delay, report, captcha=False):
         """Simplified join for the bot: join `mode` into `link` on every worker."""
         self.delay_range = delay
         link = link.replace("+", "joinchat/")
 
         joined = 0
+        self.progress_total(len(self.sessions))
 
         for index, session in enumerate(self.sessions):
             async with self.storage.ainitialize_session(session):
-                if await self.join(session, link, index, mode, report):
+                if captcha:
+                    is_joined = await self.join_with_captcha(session, link, index, mode, report)
+                else:
+                    is_joined = await self.join(session, link, index, mode, report)
+                    if is_joined:
+                        await report(f"[acc {index + 1}] joined")
+
+                if is_joined:
                     joined += 1
 
+            self.progress_step()
             await self.delay()
 
-        await report(f"[+] {joined}/{len(self.sessions)} accounts joined")
+        # no ok/error keyword: the per-account lines above are what the job summary counts
+        await report(f"Done: {joined}/{len(self.sessions)} accounts")
 
     def solve_captcha(self, session: TelegramClient):
         # just a handler on the already-connected client: run_until_disconnected() here
@@ -94,14 +133,17 @@ class JoinerFunc(TelethonFunction):
         )
 
     async def on_message(self, msg: types.Message):
+        """Click the first callback button of a message mentioning this account; True if clicked."""
         if not msg.mentioned:
-            return
+            return False
         # MessageButton.data: callback bytes, None for URL / reply / other buttons
         # (hides this layer's KeyboardButton(type=InlineButtonTypeCallback) layout)
         buttons = await msg.get_buttons()
         data = buttons[0][0].data if buttons and buttons[0] else None
         if data:
             await msg.click(data=data)  # raw bytes: the data need not be UTF-8
+            return True
+        return False
 
     async def execute(self):
         self.ask_accounts_count()

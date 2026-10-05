@@ -17,6 +17,7 @@ class CommentsBroadcastFunc(TelethonFunction):
                 me = await session.get_me()
             except Exception as err:
                 await report(f"get_me failed: {err}")
+                self.progress_drop(self.settings.messages_count)
                 return
 
             count = 0
@@ -42,15 +43,22 @@ class CommentsBroadcastFunc(TelethonFunction):
                 else:
                     errors = 0
                     count += 1
+                    self.progress_step()
                     await report(f"[{me.first_name}] sent. COUNT: {count}")
 
-                # delay between sends only; a break (limit / 5 errors) skips it
-                await self.delay()
+                # delay between sends only; a break (limit / 5 errors) skips it, as does the last send
+                if not (self.settings.messages_count and count >= self.settings.messages_count):
+                    await self.delay()
+
+            if self.settings.messages_count:  # stopped early: its unsent rest leaves the total
+                self.progress_drop(self.settings.messages_count - count)
 
     async def run(self, link, content, delay, report):
         self.delay_range = delay
 
         channel, post_id = self.parse_message_link(link)
+        per_worker = self.settings.messages_count  # 0: unlimited, a counter only
+        self.progress_total(len(self.sessions) * per_worker if per_worker else None)
 
         await asyncio.gather(*[
             self.broadcast(session, channel, post_id, content, report)

@@ -16,6 +16,9 @@ class InstantBroadcastFunc(TelethonFunction):
         broadcast = Broadcast(self.storage, self.settings)
         broadcast.configure(choice, mention_all, mention_mode, sticker_set, self.settings.delay, content)
         broadcast.sessions = list(self.sessions)
+        broadcast.progress = self.progress
+        per_worker = self.settings.messages_count  # 0: unlimited, a counter only
+        self.progress_total(len(self.sessions) * per_worker if per_worker else None)
 
         await asyncio.gather(*[
             self._one(broadcast, session, link, report)

@@ -3,11 +3,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import choice_kb
+from bot.keyboards.common import choice_kb, yes_no_kb
 from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Join
+from functions.joiner import CAPTCHA_WAIT
 from modules.settings import Settings
 
 router = Router()
@@ -33,6 +34,16 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
 @router.callback_query(ChoiceCB.filter(F.scope == "join_mode"))
 async def pick_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
     await state.update_data(mode=callback_data.value)
+    await callback.message.answer(
+        f"Нажимать капчу после вступления? (каждый воркер ждёт её до {CAPTCHA_WAIT} с)",
+        reply_markup=yes_no_kb("join_captcha"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(ChoiceCB.filter(F.scope == "join_captcha"))
+async def pick_captcha(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    await state.update_data(captcha=callback_data.value == "yes")
     await state.set_state(Join.link)
     await callback.message.answer("Ссылка на чат/канал:")
     await callback.answer()
@@ -61,6 +72,6 @@ async def got_link(
     instance, bot_function = resolve(functions, "join")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(data["mode"], link, settings.delay, r),
+        lambda f, r: f.run(data["mode"], link, settings.delay, r, captcha=data.get("captcha", False)),
         "Вступление…", "Вступление завершено ✅",
     )

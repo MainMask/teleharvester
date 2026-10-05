@@ -1,5 +1,5 @@
-import asyncio
 
+from modules import tdata_import
 from modules.console import console
 
 from telethon import TelegramClient
@@ -35,11 +35,17 @@ class SetPasswordFunc(TelethonFunction):
                     json_session.account.save(path)
                 await report(f"[{me.first_name}] : Successfully updated password")
 
+                if json_session is not None:  # and next to the tdata, for a re-import
+                    try:
+                        tdata_import.write_2fa_password(json_session.account.account.phone_number, password)
+                    except Exception as err:
+                        await report(f"[{me.first_name}] : password not saved to tdata_import: {err}")
+
     async def run(self, password: str, report):
-        await asyncio.gather(*[
-            self.edit_2fa(session, password, report)
-            for session in self.sessions
-        ])
+        await self.gather_in_order(
+            lambda session, report: self.edit_2fa(session, password, report),
+            report,
+        )
 
     async def execute(self):
         self.ask_accounts_count()

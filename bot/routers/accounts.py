@@ -10,12 +10,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import MenuAction, MenuCB
-from bot.keyboards.menu import accounts_kb, main_menu
+from bot.keyboards.menu import WORKERS_BUTTON, main_menu, workers_kb
 from bot.routers._common import ensure_workers, require_text
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.states import ImportTdata, SetProxy
+from bot.states import ImportTdata, SetDelay, SetProxy
+from functions.base.base import BaseFunction
 from modules import tdata_import
+from modules.storages.sessions_storage import profile_order
+from modules.settings import Settings
 from modules.types.proxy import ACCOUNTS_PER_PROXY, parse_proxies
 
 router = Router()
@@ -33,57 +36,87 @@ PROXY_PROMPT = (
 )
 
 
-async def _worker_line(storage, client, index: int) -> str:
-    """One account's line for the list; live get_me(), falling back to stored data."""
-    async def fetch_me():
-        async with storage.ainitialize_session(client):
-            return await client.get_me()
-
-    try:
-        # the timeout covers connect() too: a dead proxy must not stall the whole list
-        me = await asyncio.wait_for(fetch_me(), GET_ME_TIMEOUT)
-    except Exception:
+def _worker_line(storage, client, me, index: int, busy: bool = False) -> str:
+    """One account's card for the list; falls back to stored data when get_me() failed
+    or was not asked (busy: the scraper runs on it)."""
+    if me is None:
+        status = "⏳ занят скрапом" if busy else "⚠️ не удалось опросить"
         js = storage.jsessions_paths.get(storage.get_session_path(client))
         if js is not None:
             account = js.account.account
             name = " ".join(filter(None, [account.first_name, account.last_name])) or "—"
-            return (f"{index}. {html.escape(name)} — +{html.escape(str(account.phone_number))} — "
-                    f"ID {account.user_id} — ⚠️ не удалось опросить")
-        return f"{index}. ⚠️ не удалось опросить (StringSession)"
+            return (f"<b>{index}. {html.escape(name)}</b>\n"
+                    f"📱 <code>+{html.escape(str(account.phone_number))}</code> · "
+                    f"🆔 <code>{account.user_id}</code>\n"
+                    f"{status}")
+        return f"<b>{index}.</b> {status} (StringSession)"
 
     name = " ".join(filter(None, [me.first_name, me.last_name])) or "—"
-    username = f"@{me.username}" if me.username else "—"
-    return f"{index}. {html.escape(name)} — {html.escape(username)} — ID {me.id}"
+    username = f"@{html.escape(me.username)}" if me.username else "—"  # plain: Telegram links it
+    return (f"<b>{index}. {html.escape(name)}</b>\n"
+            f"👤 {username} · 🆔 <code>{me.id}</code>")
 
 
 async def _send_chunked(message: Message, header: str, lines: list[str]):
-    """Send header + lines in message-sized chunks; keyboard goes on the last one."""
+    """Send header + cards (blank line between) in message-sized chunks."""
     chunks, current = [], header
     for line in lines:
-        if len(current) + len(line) + 1 > MAX_MESSAGE:
+        if len(current) + len(line) + 2 > MAX_MESSAGE:
             chunks.append(current)
             current = ""
-        current += ("\n" if current else "") + line
+        current += ("\n\n" if current else "") + line
     chunks.append(current)
 
-    for i, chunk in enumerate(chunks):
-        await message.answer(
-            chunk, parse_mode="HTML",
-            reply_markup=accounts_kb() if i == len(chunks) - 1 else None,
-        )
+    for chunk in chunks:
+        await message.answer(chunk, parse_mode="HTML")
 
 
-@router.message(F.text == "👥 Аккаунты")
+WORKERS_HELP = (
+    "<b>📋 Список аккаунтов</b> — имя, username и номер каждого воркера\n"
+    "<b>👤 Профиль</b> — имя, username, bio, фото, видимость\n"
+    "<b>🔐 Безопасность</b> — 2FA и сброс чужих сессий\n"
+    "<b>🩺 Проверка и статистика</b> — ограничения от @SpamBot, страны номеров, очистка\n"
+    "<b>🌐 Прокси</b> — раздать прокси всем аккаунтам\n"
+    "<b>⏱ Задержка</b> — пауза между действиями воркера в рассылках и вступлениях\n"
+    "<b>📥 Загрузить tdata</b> — добавить аккаунт из Telegram Desktop"
+)
+
+
+def _workers_screen(pool: WorkerPool) -> str:
+    text = f"🤖 <b>Воркеры</b> — подключено: <b>{pool.count()}</b>"
+    if pool.count() == 0:
+        text += "\n\nЗагрузите tdata или добавьте сессии в <code>sessions/</code>, чтобы запускать задачи."
+    return f"{text}\n\n{WORKERS_HELP}"
+
+
+@router.message(F.text == WORKERS_BUTTON)
+async def workers(message: Message, state: FSMContext, pool: WorkerPool):
+    await state.clear()
+    await message.answer(_workers_screen(pool), parse_mode="HTML", reply_markup=workers_kb())
+
+
+@router.callback_query(MenuCB.filter(F.action == MenuAction.WORKERS))
+async def back_to_workers(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
+    await state.clear()
+    await callback.message.edit_text(_workers_screen(pool), parse_mode="HTML", reply_markup=workers_kb())
+    await callback.answer()
+
+
+@router.callback_query(MenuCB.filter(F.action == MenuAction.LIST))
+async def list_accounts(callback: CallbackQuery, pool: WorkerPool, manager: JobManager):
+    await callback.answer()
+    await accounts(callback.message, pool, manager)
+
+
 async def accounts(message: Message, pool: WorkerPool, manager: JobManager):
     count = pool.count()
 
     if count == 0:
         await message.answer(
             "👥 <b>Аккаунты</b>\n\n"
-            "🛡 Хост (этот бот): рискованные действия заблокированы.\n"
             "🤖 Воркеров: <b>0</b>\n\n"
-            "Добавьте сессии в <code>sessions/</code>, чтобы запускать задачи.",
-            parse_mode="HTML", reply_markup=accounts_kb(),
+            "Загрузите tdata или добавьте сессии в <code>sessions/</code>, чтобы запускать задачи.",
+            parse_mode="HTML",
         )
         return
 
@@ -91,21 +124,34 @@ async def accounts(message: Message, pool: WorkerPool, manager: JobManager):
         await message.answer(
             f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>\n\n"
             f"⛔ Идёт задача «{manager.label}». Детали аккаунтов — после её завершения.",
-            parse_mode="HTML", reply_markup=accounts_kb(),
+            parse_mode="HTML",
         )
         return
 
+    # the scraper's worker isn't polled: its auth key is in use by the scrape's own client, and
+    # a second connection from another IP (a rotating proxy) risks AUTH_KEY_DUPLICATED
+    scraping = pool.scraping.path if pool.scraping is not None else None
+
+    def busy(client) -> bool:
+        return scraping is not None and pool.storage.get_session_path(client) == scraping
+
+    async def profile(client):
+        return None if busy(client) else await pool.storage.fetch_me(client, GET_ME_TIMEOUT)
+
     try:
         workers = pool.workers
-        lines = await asyncio.gather(*[
-            _worker_line(pool.storage, client, i + 1)
-            for i, client in enumerate(workers)
-        ])
+        pool.in_job = [w for w in workers if not busy(w)]  # polled now: no scrape starts on them
+        profiles = await asyncio.gather(*[profile(client) for client in workers])
     finally:
+        pool.in_job = []
         manager.release()
 
-    header = f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>\n"
-    await _send_chunked(message, header, list(lines))
+    ordered = sorted(zip(workers, profiles), key=lambda pair: profile_order(pair[1]))
+    lines = [_worker_line(pool.storage, client, me, i + 1, busy(client))
+             for i, (client, me) in enumerate(ordered)]
+
+    header = f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>"
+    await _send_chunked(message, header, lines)
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.PROXY))
@@ -167,6 +213,45 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
         text += f"\n⚠️ Пропущено .session-аккаунтов (без метаданных): {summary['string_sessions_skipped']}."
 
     await message.answer(text, parse_mode="HTML")
+
+
+# --- delay between actions ---------------------------------------------------
+
+def _delay_text(delay: list) -> str:
+    return "–".join(str(part) for part in delay) + " с"
+
+
+@router.callback_query(MenuCB.filter(F.action == MenuAction.DELAY))
+async def delay_start(callback: CallbackQuery, state: FSMContext, settings: Settings):
+    await callback.answer()
+    await state.set_state(SetDelay.input)
+    await callback.message.answer(
+        f"⏱ Сейчас между действиями воркера: <b>{_delay_text(settings.delay)}</b> "
+        "(рассылки, инвайтинг, контакты, вступления).\n\n"
+        "Пришлите новую задержку в секундах: <code>5-10</code> (случайная в диапазоне) "
+        "или <code>7</code>.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(SetDelay.input)
+async def delay_apply(message: Message, state: FSMContext, settings: Settings):
+    raw = (message.text or "").replace(" ", "")
+    try:
+        delay = BaseFunction().parse_delay(raw)
+    except ValueError:
+        delay = None
+    if not delay or len(delay) > 2 or any(part < 0 for part in delay):
+        await message.answer("Нужно число или диапазон, например 5-10 или 7. Пришлите ещё раз.")
+        return
+
+    try:
+        settings.set_delay(delay)
+    except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
+        await message.answer(f"⚠️ Не удалось сохранить config.toml: {err}")
+        return
+    await state.clear()
+    await message.answer(f"✅ Задержка: {_delay_text(delay)}. Действует сразу и в CLI.", reply_markup=main_menu())
 
 
 # --- tdata upload ---------------------------------------------------------

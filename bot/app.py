@@ -3,6 +3,7 @@ from aiogram import Bot, Dispatcher
 from modules.config import load_env
 from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
+from modules.scraper_creds import personal_storage
 from modules.storages.sessions_storage import SessionsStorage
 
 from bot.config import BotConfig
@@ -63,6 +64,12 @@ async def run_bot():
     dp["functions"] = functions
     dp["settings"] = settings
     dp["manager"] = JobManager()
+    # the scraper's jobs run on their own client in their own slot, so a multi-day scrape
+    # doesn't hold up the other tasks; personal accounts are scraper-only, never workers
+    dp["scrapes"] = JobManager()
+    dp["personal"] = personal_storage(settings.api_id, settings.api_hash)
+    dp.startup.register(scraping.resume_after_restart)
+    dp.shutdown.register(scraping.stop_for_shutdown)
 
     dp.update.outer_middleware(AuthMiddleware(config.admins))
     dp.message.outer_middleware(AlbumMiddleware())

@@ -1,4 +1,3 @@
-import asyncio
 import random
 
 from typing import List, Tuple, Optional
@@ -51,17 +50,18 @@ class ChangeNameFunc(TelethonFunction):
             except Exception as error:
                 await report(f"[!] {error}")
             else:
+                self.storage.remember_name(session, first_name, last_name or None)
                 new_name = " ".join(p for p in (first_name, last_name) if p)
                 await report(f"Name changed successfully. ( {full_name} → {new_name} )")
 
     async def run(self, report, names=None, first_name=None, last_name=None):
-        await asyncio.gather(*[
-            self.change_name(
+        await self.gather_in_order(
+            lambda session, report: self.change_name(
                 session, report,
                 names=names, first_name=first_name, last_name=last_name
-            )
-            for session in self.sessions
-        ])
+            ),
+            report,
+        )
 
     async def execute(self):
         self.ask_accounts_count()

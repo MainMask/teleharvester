@@ -15,10 +15,13 @@ and session management.
 ## Features
 
 Functions are auto-discovered from [`functions/`](functions/) and shown as a numbered
-menu on startup (the in-app menu is in English):
+menu on startup, grouped into the same sections as the control bot, with the same Russian
+titles and a one-line description under each (the prompts inside a function stay in English):
 
 - **Mailing to PM (with stats)** — broadcast a message (text or media) to a list of
-  recipients and keep persistent per-recipient success counts with dates.
+  recipients and keep persistent per-recipient success counts with dates. Each person in a
+  scraped base goes to the worker that has them in contacts; workers are checked with
+  @SpamBot first (see [*Workers*](#workers-contacts-restrictions-and-order)).
 - **Broadcast to PM** — send a message to a single user by username or phone number.
 - **Broadcast to chat** — trigger-based campaigns: text, media, reply, or stickers.
 - **Instant broadcast (no trigger)** — broadcast to a chat immediately, without a trigger.
@@ -26,26 +29,32 @@ menu on startup (the in-app menu is in English):
 - **Join chat** — join channels/groups, optionally solving captchas and broadcasting.
 - **Invite users from supergroup** — parse members of one chat and invite them to another.
 - **Add users to contacts from a .parquet database** — bulk-add users by `user_id` +
-  `access_hash`, with per-account rotation when an account hits a limit.
+  `access_hash`, with per-account rotation when an account hits a limit. Who was added by
+  which worker is recorded, so the mailing later writes to each person from that worker.
 - **Set reactions to message/post** — put reactions on a post.
 - **Vote in poll** — vote in a poll from multiple accounts.
 - **Moderation report (message/post)** and **Moderation report (user)** — submit
   reports from multiple accounts.
-- **Change names**, **Change usernames**, **Change bio**, **Change profile photo** — bulk profile edits.
+- **Change names**, **Change usernames**, **Change bio**, **Change profile photo** — bulk profile edits:
+  one name for all or a random one from a list; a base username with numbers or one per account
+  from a list; one photo for all (a file path) or a random one per account from `assets/photos/`.
 - **Set two-step verification password to accounts** — bulk 2FA setup.
 - **Clear all dialogs** — wipe dialogs / leave channels.
 - **Terminate other authorized sessions** — reset other logins on each account.
-- **Check accounts status** — check each account against @SpamBot for account restrictions.
+- **Check accounts status** — check each account against @SpamBot: permanently restricted
+  workers are left out of mailing/contacts until they are clean again, dead sessions are moved
+  to `sessions/inactive/`.
+- **Accounts list** — name, username, phone, proxy and status of every worker, by username.
+- **Set proxies** — distribute the proxies from a file across all accounts (3 per proxy) and
+  reconnect them through the new proxies.
 - **Statistics (phone numbers)** — breakdown of accounts by country code.
-- **Scrape channel/group** — collect posts, comments, reactions and participants from a
-  channel/group into `.parquet`/`.xlsx` (absorbed from scraper; see below).
-- **Verify scrape against live channel** — cross-check a scrape for posts it missed.
-- **Analyze scraped data** — offline tools over scraped files: combine, comments,
-  participants, summary, sample, filter, links, read.
-
-The scraping and analysis features are also available as a command-line tool for
-automation and server/Docker use: `python -m scraper <command>` (see
-[*Scraping & analysis*](#scraping--analysis) below).
+- **Scrape channel/group** — collect messages, their authors, comments, reactions and
+  participants from channels and groups into `.parquet` (see below).
+- **Group members** — a group's whole member list, the silent members too, as a mailing base.
+- **Verify scrape against live channel** — cross-check a scrape for posts it missed; the
+  channel and the scrape's date window are filled in from the posts file.
+- **Analyze scraped data** — offline tools over scraped files: t.me links, keyword search,
+  view a file, combine, comments, monthly activity, sample, rebuild participants.
 
 These functions can also be driven from Telegram through a control bot instead of the terminal
 menu (see [*Control bot*](#control-bot-telegram) below). Rich broadcast content — media, albums,
@@ -71,10 +80,9 @@ pip install -r requirements.txt
 
 Settings are split in two git-ignored files:
 
-- **`.env` — secrets**: `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN` (and the scraper's optional
-  `TG_PHONE`, `TG_PASSWORD`, `TG_SESSION_STRING`). See [`.env.example`](.env.example). Real
-  environment variables override the file. It holds secrets — keep it private
-  (`chmod 600 .env`, readable only by the user that runs the bot/scraper).
+- **`.env` — secrets**: `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN`. See [`.env.example`](.env.example).
+  Real environment variables override the file. It holds secrets — keep it private
+  (`chmod 600 .env`, readable only by the user that runs the bot).
 - **`config.toml` — behaviour**: `[broadcast]`, `[limits]` and `[bot] admins`. See
   [`config.toml.example`](config.toml.example).
 
@@ -83,7 +91,9 @@ On the first run the app creates `config.toml` and asks for:
 - **API ID** and **API hash** (only if they are not in `.env` yet; they are saved to `.env`) —
   get them at <https://my.telegram.org> → *API development tools*.
 - **Broadcast messages**, **delay** (e.g. `1-3`) and a **trigger** phrase used by the
-  trigger-based broadcast functions.
+  trigger-based broadcast functions. The delay between a worker's actions can later be changed
+  from the bot (**🤖 Воркеры → ⏱ Задержка**); it is written back to `config.toml`, and the
+  terminal menu offers it as the default.
 
 Older configs with a `[sessions]` section or `[bot] token` are rejected at startup with a
 message to move those values into `.env`.
@@ -142,8 +152,12 @@ change it later even when a password is already set.
 
 ## Assets
 
-- `assets/names.txt` — pool of names for **Change names** (one per line, `First Last`).
-- `assets/usernames.txt` — usernames for **Change usernames** file mode (one per account).
+- `assets/databases/` — scraped files (`<name>_posts_…`, `<name>_participants_…`, …); the
+  default scrape output. The menu and the bot offer the files here to pick from.
+- `assets/names.txt` — pool of names for **Change names** (one per line, `First Last`); the bot
+  also takes such a list as a `.txt` sent to it.
+- `assets/usernames.txt` — usernames for **Change usernames** file mode (one per account); same
+  in the bot.
 - `assets/targets.txt` — recipients for **Mailing to PM** (one username/phone per line).
 - `assets/contacts.parquet` — users database for **Add users to contacts**
   (columns `user_id`, `access_hash`; optional `first_name`, `last_name`, `phone`).
@@ -153,6 +167,10 @@ change it later even when a password is already set.
 - `stats/pm_mailing.json` — mailing stats, created at runtime (git-ignored).
 - `stats/account_limits.json` — per-account daily send counts for **Mailing to PM**'s
   `per_account_daily` cap, created at runtime (git-ignored).
+- `stats/contacts.json` — which worker added whom to contacts (`{user_id: worker id}`),
+  written by **Add users to contacts** and read by the mailing (git-ignored).
+- `stats/restricted.json` — session files the last @SpamBot check found permanently
+  restricted; rewritten on every check (git-ignored).
 
 ## Usage
 
@@ -160,7 +178,10 @@ change it later even when a password is already set.
 python main.py
 ```
 
-Choose whether to initialize sessions, then pick a function by its number. On startup
+Choose whether to initialize sessions, then pick a function by its number. The menu lists
+the sections (📣 Рассылки, 💬 Активность, 🎯 Аудитория, 🤖 Воркеры, 👤 Профиль,
+🔐 Безопасность, 🩺 Проверка и статистика) with a description of every item; ⚠️ marks the
+actions that workers perform in other people's chats. On startup
 the tool checks for updates via git and can pull them automatically (only when run from a git
 checkout; otherwise the check is skipped).
 
@@ -180,50 +201,88 @@ cannot (and never does) perform the risky MTProto actions. Every task is **deleg
 worker accounts** in `sessions/` — the bot only orchestrates them. Access is restricted to the
 Telegram user IDs in `[bot].admins` (everyone else is ignored).
 
-Send `/start`, then **📋 Функции** to pick a function by category:
+Send `/start` and pick a section from the keyboard. Every section message lists its items with a
+one-line description of what each does:
 
-- **📣 Рассылки** — PM mailing (with stats), PM broadcast, comments, instant, trigger-based chat.
-  PM mailing takes its recipients as an uploaded `.txt`, a list pasted into the chat (one per line),
-  or a file path (`.txt`/`.parquet`, `-` = `assets/targets.txt`); the message itself is sent to the bot.
-- **👤 Профиль** — name, username, bio, photo, 2FA.
-- **👥 Аккаунты** — total count and a per-account list (name, `@username`, ID, polled live);
-  **📥 Загрузить tdata (ZIP)**: send a ZIP of one Telegram Desktop `tdata` folder, enter its 2FA
-  password in chat, and the account is imported live (proxy auto-picked from the pool, 3 per proxy);
-  and **🌐 Настроить прокси**: send a `.txt` file or paste a
-  proxy list (one per line), distributed across accounts (one proxy per 3 accounts), applied to
-  the live `.jsession` sessions and saved to `assets/proxies.txt`.
-- **🎯 Аудитория** — invite from chat, add contacts from `.parquet`.
-- **⚡ Активность** — join chat, reactions, poll vote.
-- **🛡 Модерация** — report message/post, report user.
-- **🧹 Сервис** — account status (@SpamBot), phone stats, terminate sessions, clear dialogs.
-- **🔎 Скрапинг** — scrape, verify, analyse (runs on one worker's session; results come back as files).
-  Bot-launched scrapes run in a background thread that **cannot be stopped from the bot**, hold the single
-  job slot for their whole duration, and **cannot be resumed from the bot** — a bot restart (e.g.
-  `systemctl restart`) ends the run; continue it from the terminal menu (*Scrape channel/group* with the same
-  worker account, channels, name, dates, keyword and output dir, answering yes to resume). Prompts with a
-  default take `-` for it. Use the bot for short, interactive scrapes; run
-  **long or multi-day scrapes through the `deploy/teleharvester-scrape@.service` template** (below), which
-  passes `--resume` and checkpoints on SIGTERM.
+- **📣 Рассылки** — PM mailing (with stats), PM to one recipient, post comments, instant and
+  trigger-based chat broadcasts. PM mailing offers the scraped bases from `assets/databases/` as
+  buttons, or takes an uploaded `.txt`, a pasted list (one per line) or a file path.
+- **💬 Активность** — join chat, reactions, poll vote, report message/post, report user.
+- **🎯 Аудитория** — scrape, verify, data analysis, invite from chat, add to contacts:
+  - **Scrape** shows a summary before starting: **▶️ Запустить**, or **⚙️ Дополнительно** for a
+    keyword filter and a faster scrape without reactors. Output is always parquet.
+  - **Verify** offers the posts files as buttons; a channel button runs it at once over the
+    scrape's own date window (stored in the file). Older files ask for the dates.
+  - **Анализ данных** — 🔗 t.me links (top list in chat + table), 🔎 keyword search, 👀 view a
+    file, and under ➕ Ещё: combine posts files, comments as a table, monthly activity, sample.
+    The file is picked by button; results are named automatically next to it and sent back.
+- **🤖 Воркеры** — 📋 account list (name, `@username`, ID, polled live, by username), three groups:
+  **👤 Профиль** (name, username, bio, photo, hide last seen, remove the profile channel — names
+  and usernames can come from a `.txt`), **🔐 Безопасность** (2FA, terminate other sessions),
+  **🩺 Проверка и статистика** (@SpamBot status, phone stats, clear dialogs); and
+  **🌐 Прокси** (a `.txt` or pasted list, one proxy per 3 accounts, applied live and saved to
+  `assets/proxies.txt`), **⏱ Задержка** (the delay between a worker's actions) and
+  **📥 Загрузить tdata** (a ZIP of one Telegram Desktop `tdata` folder; its 2FA password is asked
+  in chat and the account is imported live).
+
+Scraper jobs (scrape, group members, verify) run in **a separate process** and **their own job
+slot**, so even a multi-day scrape doesn't hold up mailings or the other functions. One account never
+does both at once: while a worker scrapes, new bot jobs run without it (and say so), and a scrape
+won't start on a worker a running bot job uses — pick another account or wait. In the mailing and
+adding to contacts, the people of a worker busy scraping wait for it instead of going to other workers. The memory a big
+scrape's final step takes goes back to the system when it ends, and running out of memory ends only
+that job (what a scrape checkpointed is kept), never the bot. Their status messages have
+**📊 Прогресс** and **⏹ Стоп** — a scrape stops at a checkpoint (continued later), *group members*
+saves the members listed so far. A bot restart (e.g.
+`systemctl restart`) checkpoints the running scrape and **continues it automatically** on the next
+start; after a long flood ban start *Скрап канала/группы* again with the same name and output folder
+and the bot offers to **continue** it (the terminal menu does the same). Prompts with a default take
+`-` for it.
 
 Risky functions are marked ⚠️ and refuse to run with no workers. Only **one task runs at a time**
-(the worker pool is shared); long or looping jobs — and the trigger-based chat listener — show a
+(the worker pool is shared; the scraper's jobs have a slot of their own, see above); long or looping jobs — and the trigger-based chat listener — show a
 **⏹ Стоп** button, and `/cancel` aborts an in-progress dialog. When a task ends (done, stopped
 or error) the bot sends a **summary report** — task name, workers used, success/error counts and
 elapsed time — and returns the main menu. Scrape/verify/analyse send their result files, then the menu.
 
 Broadcast content is taken from the message you send the bot — text, media or an album, with
 any formatting and custom emoji; it is captured and re-sent as-is by the workers (Bot API caps
-each download at ~20 MB). Profile photos for **Сменить фото** come from the local
-`assets/photos/` folder.
+each download at ~20 MB). **Сменить фото** takes a photo sent to the bot (one for every
+account) or picks a random one per account from the local `assets/photos/` folder.
+
+## Workers: contacts, restrictions and order
+
+The same rules apply in the terminal menu and in the bot.
+
+- **Contacts ledger.** *Add users to contacts* records which worker added each person
+  (`stats/contacts.json`). The mailing then writes to that person only from that worker — to its
+  own contact, not to a stranger, which is what keeps it out of the spam filter. People without a
+  username in a scraped base go to the account that scraped it (only its access hashes are valid,
+  see `Owner ID` below); everyone else is a shared queue for all workers.
+- **@SpamBot check before every run.** The mailing and *Add users to contacts* first ask @SpamBot
+  about their workers (a few seconds). A dead session (banned or logged out) is moved to
+  `sessions/inactive/`; a permanently restricted one is left out (`stats/restricted.json`). The
+  people of a worker that is out become shared: other workers take them in the mailing, and the
+  next *Add users to contacts* re-adds them to live workers. Each check rewrites the list, so a
+  worker that is clean again is back in the next run. **Check accounts status** does the same on
+  demand.
+- **Mid-run.** If a worker stops during a mailing, it is asked about at once: out for good
+  (permanent restriction or dead) → its remaining people are handed to the other workers in the
+  same run; a daily cap or a temporary limit → they wait for it until the next run (another
+  worker would be writing to a stranger).
+- **Order.** Workers are ordered by username (`name1, name2 … name10`), in the pool and in every
+  report; workers running at once still report in that order. The username is remembered in the
+  `.jsession` the first time it is seen (a status check, a run, the account list).
 
 ## Running under systemd
 
-For long-lived server use (the control bot as a daemon, or multi-day scrape runs), unit files are
-in [`deploy/`](deploy/). They assume the repo at `/opt/teleharvester` with a venv in `.venv/` and a
+For long-lived server use (the control bot as a daemon), the unit file is in [`deploy/`](deploy/). It assumes the repo at `/opt/teleharvester` with a venv in `.venv/` and a
 `teleharvester` user — edit the `User=`, `WorkingDirectory=` and `ExecStart=` lines to match your install.
 
 **Control bot** — `deploy/teleharvester-bot.service` runs `python -m bot` with `Restart=on-failure`
-(so it survives crashes) and logs to journald. aiogram already retries transient polling errors and
+(so it survives crashes) and logs to journald. Five failed starts within 5 minutes (e.g. a config
+error) leave the unit failed instead of restarting forever: fix it, then
+`systemctl reset-failed teleharvester-bot`. aiogram already retries transient polling errors and
 stops gracefully on SIGTERM. The worker accounts in `sessions/` are read once at startup, so after
 adding or removing a session file restart the service (`systemctl restart teleharvester-bot`) for the
 change to take effect.
@@ -235,22 +294,6 @@ sudo systemctl enable --now teleharvester-bot
 journalctl -u teleharvester-bot -f
 ```
 
-**Scrape jobs** — `deploy/teleharvester-scrape@.service` is a template: one instance per job, with its
-arguments in `deploy/scrape-<name>.env` (see [`deploy/scrape-example.env`](deploy/scrape-example.env)).
-The unit always passes `--resume`, and the scraper turns SIGTERM (`systemctl stop`/`restart`) into a
-clean checkpoint, so a restart continues from where it left off instead of re-scraping or losing data.
-
-For multi-day runs keep the default file session (`scraper.session`) rather than `TG_SESSION_STRING`:
-Telethon caches every user/chat it sees, and a file session keeps that cache on disk (flat memory),
-while a string session keeps it all in RAM and grows unbounded over millions of scraped reactors.
-
-```bash
-sudo cp deploy/teleharvester-scrape@.service /etc/systemd/system/
-cp deploy/scrape-example.env deploy/scrape-myrun.env   # edit channels/dates/name
-sudo systemctl daemon-reload
-sudo systemctl start teleharvester-scrape@myrun
-```
-
 ## Scraping & analysis
 
 teleharvester includes a full Telegram scraper and analyser: scraping Telegram channels,
@@ -260,109 +303,76 @@ analysing the result, stored as **Apache Parquet** (`.parquet`) or **Excel** (`.
 > Scraper and analysis originally by **Ergon Cugler de Moraes Silva** —
 > <https://github.com/ergoncugler/web-scraping-telegram/>. See *Citation* below.
 
-Two ways to run it:
+Everything runs from the terminal menu or the control bot, in the **🎯 Аудитория** section, on an
+account you pick: a worker from `sessions/` or a **personal account from `personal_sessions/`**
+(the same `.jsession` format; personal accounts are never workers — mailings and the other
+functions don't see them — but the scraper only reads, so it may run on one). Each runs with that
+account's own API credentials, proxy and device — no separate login. A scrape is continued on the
+account it was started on: the scraped access hashes are valid for that account only. For the same
+reason a base scraped by a personal account reaches, through the workers' mailing, only the people
+with a username (the rest are skipped as *another account's base*) — the bot and the menu say so
+when a personal account is picked; scrape with a worker for a full base. The output is parquet in `assets/databases/`, so a `_participants`
+base flows straight into *Add to contacts* and the mailing; files are picked by number, verify
+fills in the channel and the scrape window, and the analysis tools suggest an output name next to
+the input.
 
-- **From the menu** — pick *Scrape channel/group*, *Verify scrape against live channel*,
-  or *Analyze scraped data*. These run on one of your existing `sessions/` accounts (you
-  pick which at run time) with that account's own API credentials, proxy and device — no
-  separate login.
-  Scrapes default to `assets/databases/`, so a `_participants` file flows straight into
-  *Add users to contacts from a .parquet database*.
-- **From the command line** — `python -m scraper <command>` (or the `scraper`
-  console script after `pip install -e .`). This path is for automation, long resumable
-  runs and Docker; it reads credentials from `.env` (`TG_API_ID`, `TG_API_HASH`) and uses its own
-  `scraper.session` (run `python -m scraper login` once, or set `TG_SESSION_STRING`).
+- **Скрап канала/группы** — messages, their authors, comments and reactions of channels and groups
+  over a date window. A source may be a channel, a supergroup (forum topics included) or a basic
+  group, given as `@name`, `t.me/name`, a full `https://t.me/name` URL, a `t.me/+hash` invite link,
+  or a **numeric ID** such as `-1001629147115` (a basic group's is `-123456`). A private source
+  (an invite link, `t.me/c/…`, a numeric ID) is read only if the account is already a member. Dates are `DD.MM.YYYY` or ISO `YYYY-MM-DD`, both inclusive. In a group the
+  people are the message authors, so they go into the participants base too (bots and deleted
+  accounts never do); a basic group's
+  messages have no links, so their `Url` is empty. In a forum every post gets its `Topic ID`
+  (1 = General); a topic link (`t.me/name/42`, `t.me/c/<id>/42`) scrapes that topic alone into the
+  group `@name-topic42` (verify then checks just that topic). A private chat is given as
+  `@username`; its messages have no links either. The files are named after the scrape with the
+  post-date span appended: `<name>_posts_<from>-<to>`, `<name>_participants_…` and
+  `<name>_reactors_…` (reactors are slow — one API call per reacted message). `FLOOD_WAIT` rate
+  limits are waited out automatically. In the bot, *⚙️ Дополнительно* toggles comments, reactors
+  and the participants base, and sets a keyword filter and a post limit.
+- **Участники чата** — a group's whole member list, the silent members too, into
+  `<name>_participants_members.parquet` (the same columns as a participants base). Telegram lists
+  up to ~10,000 members; past that the rest is reached by searching names letter by letter. A
+  channel's subscribers, or a group with a hidden member list, are visible to admins only
+  (reported, then skipped), and a private chat has no member list. A topic link lists the whole
+  group: a forum's members are shared by its topics.
+- **Верификация скрапа** — the scrape walks a channel with `iter_messages`; verify cross-checks with
+  `get_messages(ids=…)` and lists any real message inside the date window the scrape missed. It
+  assumes a full scrape: for a keyword scrape every non-matching post is reported as missed.
+- **Анализ данных** — combine posts files, flatten comments, rebuild participants, monthly
+  summaries, samples, keyword filters, `t.me` links (all of them in the menu and in the bot).
 
-| Command   | What it does |
-|-----------|--------------|
-| `scrape`  | scrape channels/groups into `.parquet` or `.xlsx` |
-| `verify`  | probe the live channel for posts a scrape missed |
-| `login`   | authorise once and save a session (CLI path only) |
-| `read`    | print the head of a data file, optionally convert it |
-| `combine` | merge many `.parquet` files, drop duplicates, recount comments |
-| `comments`| flatten `Comments List` into one row per comment |
-| `participants`| unique `ID` + `Username` + `Access Hash` + `Name` of everyone who commented or reacted |
-| `summary` | per-group monthly tables (contents / comments / total) |
-| `sample`  | proportional per-category sample to `.xlsx` |
-| `filter`  | keep rows matching keywords, add one 0/1 column per keyword |
-| `links`   | extract and count `t.me` links from `Content` |
+**Interruptions.** A dropped connection is retried for hours. If a run still stops (a long outage,
+a flood ban, a restart, `Ctrl-C`, ⏹), it keeps a checkpoint in `<name>_partial/`: start the same
+scrape again — the same name and output folder — and it offers to continue from there with the
+interrupted run's account, channels, dates and settings.
 
-Run `python -m scraper <command> --help` for the full flag list.
+**Giant runs.** The scrape is memory-bounded: it checkpoints and frees its buffers as it goes, and
+Telethon's cache of every user/chat it meets lives in a SQLite file in the checkpoint folder
+(`entities.session`, removed on a clean finish) instead of RAM — on millions of scraped reactors an
+in-memory cache would grow without bound. The file holds the cache only, never the account's login.
+The outputs are built from the checkpoint shards one shard at a time — the `_posts` and
+`_reactors` files, the per-channel `_until_` snapshots and the participants base (one entry per
+person, the posts file read in batches) — so a scrape's memory doesn't grow with its size. The
+posts in `_posts` go channel by channel, newest first within each.
 
-### Scrape
+`Access Hash` (and `Comment Author Access Hash`, `Author Access Hash`) is the user's Telegram
+`access_hash`: with the `ID` it forms an `InputPeerUser`, so the user can be addressed without
+resolving them again (only from the account that scraped it). This is exactly what *Add to
+contacts* and the mailing consume.
 
-```bash
-python -m scraper scrape \
-  --channels "@LulanoTelegram, @jairbolsonarobrasil" \
-  --date-min 2024-10-15 --date-max 2025-01-15 \
-  --name Test --out-dir output
-```
-
-A channel may be `@name`, `t.me/name`, a full `https://t.me/name` URL, a `t.me/+hash`
-invite link, or a **numeric ID** such as `-1001629147115` (the account must already be a
-member). Dates are `DD.MM.YYYY` or ISO `YYYY-MM-DD`, both inclusive. Output is parquet by
-default (`--format excel` only for small runs — Excel truncates cells over 32,767 chars).
-
-Output files are named after `--name` with the scraped post-date span appended:
-`<name>_posts_<from>-<to>`, plus `<name>_participants_…` (unless `--no-participants`) and
-`<name>_reactors_…` (unless `--no-reactors`; slow — one API call per reacted message).
-`FLOOD_WAIT` rate limits are waited out automatically.
-
-The scrape itself is memory-bounded (it checkpoints and frees its buffers as it goes), but
-the final `participants` step loads the whole posts + reactors output into RAM at once. On a
-very large scrape (millions of reactors) that step can run the machine out of memory **after**
-the `_posts`/`_reactors` files are already safely written. If RAM is tight, scrape with
-`--no-participants` and build the participants file separately later
-(`python -m scraper participants …`) on a machine with more memory.
-
-### Interruptions / resume
-
-A dropped connection is retried for hours. If a run dies (long outage, crash, `Ctrl-C`)
-it prints the ready-to-paste command that resumes it — the same arguments plus `--resume`,
-which continues from the checkpoint in `<name>_partial/`.
-
-### Verify
-
-```bash
-python -m scraper verify --input output/Test_posts_02.01.2024-30.01.2024.parquet \
-  --channel @Test --date-min 01.01.2020 --date-max 31.12.2024 --output output/Test_missed.parquet
-```
-
-`scrape` walks the channel with `iter_messages`; `verify` cross-checks with
-`get_messages(ids=…)` and lists any real message inside the date window the scrape missed.
-It assumes a full scrape: for a `--keyword` scrape every non-matching post is reported as missed.
-
-### Analyse
-
-```bash
-python -m scraper combine      --input 'output/*_posts_*.parquet' --output output/unified.parquet
-python -m scraper participants --input output/unified.parquet --output output/people.parquet
-python -m scraper summary      --input output/unified.parquet --output-base output/resume
-python -m scraper read         output/unified.parquet --head 20 --to xlsx
-```
-
-`Access Hash` (and `Comment Author Access Hash`) is the user's Telegram `access_hash`:
-with the `ID` it forms an `InputPeerUser`, so the user can be addressed without resolving
-them again (only from the account that scraped it). This is exactly what *Add users to
-contacts from a .parquet database* consumes.
+The posts file also stores, in its parquet metadata, the scrape's own date window and the
+account that scraped it. *Verify* uses the window as its default dates (the saved posts' span
+would hide a scrape cut short), and rebuilding the participants from the posts file keeps the
+`Owner ID` column — without it the mailing can't tell which worker may write to people without
+a username.
 
 ### Output columns
 
-`Type, Group, Author ID, Content, Date, Message ID, Author, Views, Reactions, Shares,
-Media, Url, Comments List` (plus a `Comments` count added on write).
-
-### Docker
-
-Deploy the scraper CLI on a server without a local Python setup. The session and every
-scraped file live in `./data/`.
-
-```bash
-cp .env.example .env        # set TG_API_ID, TG_API_HASH
-docker compose build
-docker compose run --rm scraper login          # authorise once
-docker compose run --rm scraper scrape --channels '@channel' \
-  --date-min 01.01.2024 --date-max 31.01.2024 --name Test
-```
+`Type, Group, Author ID, Author Username, Author Access Hash, Author Name, Content, Date,
+Message ID, Author, Views, Reactions, Shares, Media, Url, Comments List` (plus a `Comments`
+count added on write).
 
 ### Notes
 

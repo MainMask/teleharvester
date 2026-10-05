@@ -26,6 +26,7 @@ def _client():
 
 class _Pool(WorkerPool):
     def __init__(self, workers):
+        super().__init__(None)
         self._workers = list(workers)
 
     @property
@@ -44,7 +45,7 @@ class TestCallbacks:
         assert (cb.scope, cb.value) == ("pm_mode", "phone")
 
     def test_menu_roundtrip(self):
-        assert MenuCB.unpack(MenuCB(action=MenuAction.CATEGORIES).pack()).action == MenuAction.CATEGORIES
+        assert MenuCB.unpack(MenuCB(action=MenuAction.WORKERS).pack()).action == MenuAction.WORKERS
 
 
 # --- auth middleware (whitelist) -------------------------------------------
@@ -107,6 +108,55 @@ class TestWorkerPool:
     def test_assert_workers_rejects_non_client(self):
         with pytest.raises(HostActionBlocked):
             WorkerPool._assert_workers([object()])
+
+    @staticmethod
+    def _pool_of(*paths):
+        clients = [_client() for _ in paths]
+        by_id = dict(zip(map(id, clients), paths))
+        storage = types.SimpleNamespace(sessions=clients, get_session_path=lambda c: by_id.get(id(c)))
+        return WorkerPool(storage), clients
+
+    def test_a_scraping_worker_is_left_out_of_jobs(self):
+        pool, (scraping, other) = self._pool_of("sessions/a.jsession", "sessions/b.jsession")
+        pool.scraping = types.SimpleNamespace(path="sessions/a.jsession", label="Ann (@a)")
+        instance, messages, seen = types.SimpleNamespace(sessions=None), [], []
+
+        async def report(text):
+            messages.append(text)
+
+        async def factory(f):
+            seen.append((f.sessions, list(pool.in_job)))
+
+        assert asyncio.run(pool.run(instance, BOT_FUNCTIONS_BY_KEY["pm"], factory, report)) is True
+        assert seen == [([other], [other])] and pool.in_job == []
+        assert instance.on_hold == [scraping]  # on hold, not gone: a mailing keeps its people for it
+        assert messages == ["ℹ️ Воркер Ann (@a) занят скрапом — задача идёт без него."]
+
+    def test_a_risky_job_waits_when_the_only_worker_is_scraping(self):
+        pool, _ = self._pool_of("sessions/a.jsession")
+        pool.scraping = types.SimpleNamespace(path="sessions/a.jsession", label="Ann (@a)")
+        messages, ran = [], []
+
+        async def report(text):
+            messages.append(text)
+
+        async def factory(f):
+            ran.append(True)
+
+        assert asyncio.run(pool.run(types.SimpleNamespace(), BOT_FUNCTIONS_BY_KEY["pm"], factory, report)) is False
+        assert ran == [] and "занят скрапом" in messages[0]
+
+    def test_a_worker_is_busy_while_its_job_runs_and_not_after(self):
+        pool, _ = self._pool_of("sessions/a.jsession")
+        during = []
+
+        async def factory(f):
+            during.append(pool.busy("sessions/a.jsession"))
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            asyncio.run(pool.run(types.SimpleNamespace(), BOT_FUNCTIONS_BY_KEY["status"], factory, report=None))
+        assert during == [True] and not pool.busy("sessions/a.jsession")
 
     def test_delegates_workers_to_instance(self):
         workers = [_client()]

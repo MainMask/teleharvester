@@ -2,6 +2,7 @@ import asyncio
 
 from bot.keyboards.common import stop_kb
 from bot.keyboards.menu import main_menu
+from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
 
 
@@ -26,6 +27,7 @@ class JobManager:
         self._cancelable = True
         self._timeout_task = None
         self._cancel_requested = False
+        self.progress = None         # Progress of the active job, for the 📊 button
 
     @property
     def active(self) -> bool:
@@ -37,7 +39,8 @@ class JobManager:
 
     # --- coro jobs ---------------------------------------------------------
 
-    async def run(self, bot, chat_id, pool, instance, bot_function, factory, header, done, stop_sessions=None) -> bool:
+    async def run(self, bot, chat_id, pool, instance, bot_function, factory, header, done, stop_sessions=None,
+                  cleanup=None) -> bool:
         # Take the slot synchronously (before any await) to avoid a race between tasks.
         if self._active:
             await bot.send_message(chat_id, f"⛔ Занят: {self._label}. Остановите текущую задачу.")
@@ -47,6 +50,7 @@ class JobManager:
         self._label = header
         self._kind = "task"
         self._cancelable = True
+        self.progress = Progress()
 
         reporter = TelegramReporter(
             bot, chat_id, header=header, reply_markup=stop_kb(),
@@ -71,16 +75,25 @@ class JobManager:
 
         self._stop_sessions = list(stop_sessions) if stop_sessions is not None else list(pool.workers)
         task = asyncio.create_task(
-            self._wrap(pool, instance, bot_function, factory, reporter, done)
+            self._wrap(pool, instance, bot_function, factory, reporter, done, cleanup)
         )
         self._task = task
         # backstop: a cancel before _wrap starts, or during its finally, skips its _clear()
         task.add_done_callback(lambda t: self._clear() if self._task is t else None)
         return True
 
-    async def _wrap(self, pool, instance, bot_function, factory, reporter, done):
+    async def _wrap(self, pool, instance, bot_function, factory, reporter, done, cleanup):
+        instance.progress = self.progress  # the function steps it (see BaseFunction.progress)
+        entered = False
+
+        def start(func):  # pool.run calls it once it has given the job its workers
+            nonlocal entered
+            entered = True
+            reporter.workers = len(func.sessions)  # the summary's count: a scraping worker is left out
+            return factory(func, reporter)
+
         try:
-            ran = await pool.run(instance, bot_function, lambda f: factory(f, reporter), reporter)
+            ran = await pool.run(instance, bot_function, start, reporter)
             # done: a Stop during finish() must not relabel the job as stopped
             self._cancelable = False
             await reporter.finish("⚠️ Не выполнено" if ran is False else done)
@@ -90,6 +103,11 @@ class JobManager:
             self._cancelable = False  # as on success: a Stop must not swallow the error text
             await reporter.finish(f"⚠️ Ошибка: {err}")
         finally:
+            # not run (no free worker) or stopped before it began: the job's own finally,
+            # which drops its temp files, never ran
+            if not entered and cleanup is not None:
+                cleanup()
+            instance.progress = None  # the instance is reused by later runs
             for session in self._stop_sessions:
                 try:
                     await session.disconnect()
@@ -196,3 +214,4 @@ class JobManager:
         self._cancelable = True
         self._timeout_task = None
         self._cancel_requested = False
+        self.progress = None

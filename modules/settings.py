@@ -1,4 +1,6 @@
 import os
+import re
+import shutil
 import sys
 import toml
 from dotenv import set_key
@@ -6,6 +8,23 @@ from modules.console import console
 from typing import List, Tuple
 
 from modules.config import load_toml
+
+
+def _replace_delay_line(text: str, delay: List[int]) -> str | None:
+    """text with the [broadcast] section's one-line `delay = [...]` set to delay (a
+    trailing comment kept); None if there is no such line."""
+    lines = text.splitlines(keepends=True)
+    section = None
+    for index, line in enumerate(lines):
+        header = re.match(r"\s*\[([^\]]+)\]\s*(#.*)?$", line)
+        if header:
+            section = header.group(1).strip()
+            continue
+        match = re.match(r"(\s*delay\s*=\s*)\[[^\]]*\](.*)$", line, re.DOTALL)
+        if section == "broadcast" and match:
+            lines[index] = f"{match.group(1)}[{', '.join(str(part) for part in delay)}]{match.group(2)}"
+            return "".join(lines)
+    return None
 
 
 class Settings:
@@ -50,6 +69,30 @@ class Settings:
         limits = config.get("limits", {})
         self.per_account_daily: int = limits.get("per_account_daily", 30)
         self.account_pause: List[int] = limits.get("account_pause", [30, 60])
+
+    def set_delay(self, delay: List[int], path: str = "config.toml"):
+        """Change the delay between actions in config.toml, keeping every other setting
+        (save() would reset [limits] to its defaults), and in this live object.
+
+        Only the [broadcast] delay line is rewritten, so the file's comments survive;
+        a layout that line can't be found in is rewritten whole."""
+        with open(path, encoding="utf-8") as file:
+            text = file.read()
+
+        updated = _replace_delay_line(text, delay)
+        if updated is None or toml.loads(updated).get("broadcast", {}).get("delay") != delay:
+            config = toml.loads(text)
+            config.setdefault("broadcast", {})["delay"] = delay
+            updated = toml.dumps(config)
+
+        # atomic: the file also holds the bot's admin whitelist
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as file:
+            file.write(updated)
+        shutil.copymode(path, tmp_path)  # the rename must not widen a locked-down file's mode
+        os.replace(tmp_path, path)
+
+        self.delay = delay
 
     @staticmethod
     def ensure_config(path: str = "config.toml"):

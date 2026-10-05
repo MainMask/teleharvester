@@ -39,6 +39,15 @@ class _Storage:
     def _forget_session(self, path):
         self.forgotten.append(path)
 
+    def get_session_path(self, session):
+        return None
+
+    def remember_username(self, session, username):
+        pass
+
+    def remember_name(self, session, first_name, last_name):
+        pass
+
 
 async def _no_sleep(*_):
     return None
@@ -100,7 +109,7 @@ class TestCtrlCCancelsFunction:
 
         loop.call_later(0.01, _interrupt)  # Ctrl-C while the loop idles, not inside the task
         try:
-            fs.execute(0)
+            fs.run_instance(fs.functions[0][0])
             assert False, "KeyboardInterrupt must propagate to the menu"
         except KeyboardInterrupt:
             pass
@@ -242,6 +251,9 @@ class TestSpamBlockMove:
         from functions.spamblock import SpamBlockFunc
 
         class _S:
+            async def get_me(self):
+                return ns(username="C1", first_name="Acc", last_name=None)
+
             def conversation(self, *_):
                 raise YouBlockedUserError(request=None)
 
@@ -251,7 +263,142 @@ class TestSpamBlockMove:
         fn = SpamBlockFunc(_Storage(), ns(delay=[0]))
         msgs, report = collect()
         assert asyncio.run(fn.check(_S(), report)) is None
-        assert any("can't unblock" in m for m in msgs)
+        assert any("[@C1] can't unblock" in m for m in msgs)
+
+
+class TestSpamBlockReport:
+    def _check(self, reply, username="C1"):
+        from functions.spamblock import SpamBlockFunc
+
+        class _Conv:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def send_message(self, text):
+                pass
+
+            async def get_response(self):
+                return ns(message=reply)
+
+        class _S:
+            async def get_me(self):
+                return ns(username=username, first_name="Acc", last_name=None)
+
+            def conversation(self, *_):
+                return _Conv()
+
+        msgs, report = collect()
+        result = asyncio.run(SpamBlockFunc(_Storage(), ns(delay=[0])).check(_S(), report))
+        return msgs, result
+
+    def test_active_names_the_account(self):
+        msgs, result = self._check("Good news, no limits are currently applied.")
+        assert msgs == ["[+] [@C1] Account active (no restriction)"]
+        assert result[0] == "active"
+
+    def test_restricted_until_names_the_account(self):
+        msgs, result = self._check("Unfortunately...\nlimited until 12 Nov 2026, 10:00 UTC.")
+        assert msgs == ["[-] [@C1] Account restricted until: 12 Nov 2026"]
+        assert result[0] == "12 Nov 2026"
+
+    def test_falls_back_to_name_without_username(self):
+        msgs, _ = self._check("Good news, no limits are currently applied.", username=None)
+        assert msgs == ["[+] [Acc] Account active (no restriction)"]
+
+
+class TestSpamBlockUnusableWorkers:
+    """Dead sessions leave the pool; permanently restricted ones are excluded until clean."""
+
+    class _S:
+        def __init__(self, path, reply=None, me=True):
+            self.path, self.reply, self.me = path, reply, me
+            self.session = ns(_entities=set())
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def get_me(self):
+            if self.me is None:
+                return None  # what Telethon returns for a banned / logged-out account
+            if isinstance(self.me, Exception):
+                raise self.me
+            return ns(id=7, username="C1", first_name="Acc", last_name=None)
+
+        def conversation(self, *_):
+            reply = self.reply
+
+            class _Conv:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *exc):
+                    return False
+
+                async def send_message(self, text):
+                    pass
+
+                async def get_response(self):
+                    return ns(message=reply)
+
+            return _Conv()
+
+    def _storage(self, tmp_path, sessions):
+        from modules.storages.sessions_storage import SessionsStorage
+
+        (tmp_path / "sessions").mkdir(exist_ok=True)
+        storage = SessionsStorage("sessions", 1, "x", initialize=False)
+        for s in sessions:
+            (tmp_path / s.path).write_text("x")
+            storage.full_sessions[s.path] = s
+        return storage
+
+    def _run(self, storage):
+        from functions.spamblock import SpamBlockFunc
+
+        fn = SpamBlockFunc(storage, ns(delay=[0]))
+        fn.sessions = storage.sessions
+        msgs, report = collect()
+        asyncio.run(fn.run(report))
+        return msgs
+
+    def test_dead_session_moves_to_inactive(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        dead = self._S("sessions/d.jsession", me=None)
+        alive = self._S("sessions/a.jsession", reply="Good news, no limits are currently applied.")
+        storage = self._storage(tmp_path, [dead, alive])
+
+        msgs = self._run(storage)
+
+        assert (tmp_path / "sessions" / "inactive" / "d.jsession").exists()
+        assert storage.sessions == [alive]
+        assert any("[d.jsession] Session is dead" in m for m in msgs)
+
+    def test_permanent_is_excluded_until_clean(self, monkeypatch, tmp_path):
+        from modules import contacts_ledger, restricted_workers
+
+        monkeypatch.chdir(tmp_path)
+        contacts_ledger.save({"1": 7, "2": 7, "3": 8})
+        s = self._S("sessions/a.jsession", reply="Unfortunately...\nyou are limited forever.")
+        storage = self._storage(tmp_path, [s])
+
+        msgs = self._run(storage)
+        assert restricted_workers.load() == ["sessions/a.jsession"]
+        assert storage.sessions == [s]  # stays in sessions/
+        assert any("its 2 people go to other workers" in m for m in msgs)
+
+        s.me = RuntimeError("network")  # a failed check keeps the entry
+        self._run(storage)
+        assert restricted_workers.load() == ["sessions/a.jsession"]
+
+        s.me, s.reply = True, "Good news, no limits are currently applied."
+        self._run(storage)
+        assert restricted_workers.load() == []
 
 
 class TestPmMailingPause:
@@ -368,7 +515,7 @@ class TestReportFlowConcurrency:
         flow = {"busy": True, "selections": []}
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
         cb, data, _ = _callback(0)
-        asyncio.run(moderation.rm_choose(cb, data, _Manager()))
+        asyncio.run(moderation.rm_choose(cb, data, _Manager(), ns(in_job=[])))
 
         assert stepped == [] and flow["selections"] == []
 
@@ -387,7 +534,7 @@ class TestReportFlowConcurrency:
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
         cb, data, _ = _callback(0)
         manager = _Manager()
-        asyncio.run(moderation.rm_choose(cb, data, manager))
+        asyncio.run(moderation.rm_choose(cb, data, manager, ns(in_job=[])))
 
         assert manager.released == 0
         assert 7 not in moderation._FLOWS
@@ -398,7 +545,7 @@ class TestReportFlowConcurrency:
         flow = {"busy": False, "selections": []}
         moderation._FLOWS[7] = (ns(step=None), flow, [ns(option=b"a")])
         cb, data, _ = _callback(5)
-        asyncio.run(moderation.rm_choose(cb, data, _Manager()))
+        asyncio.run(moderation.rm_choose(cb, data, _Manager(), ns(in_job=[])))
 
         assert flow["selections"] == [] and flow["busy"] is False
 
@@ -524,9 +671,12 @@ class TestAddContactsUsernameFallback:
             async def get_input_entity(self, username):
                 return ns(username=username)
 
+            async def get_me(self):
+                return ns(id=7)
+
         fn = AddContactsFunc(_Storage(), ns(delay=[0]))
         msgs, fn._report = collect()
-        fn.added = 0
+        fn.added, fn.ledger, fn._unsaved, fn._my_ids = 0, {}, 0, {}
         asyncio.run(fn.add_one(_S(), row))
         return fn.added, added_ids, msgs
 
@@ -537,6 +687,38 @@ class TestAddContactsUsernameFallback:
     def test_no_username_is_skipped(self):
         added, _, msgs = self._add({"user_id": 1, "access_hash": 2})
         assert added == 0 and any("skip user_id=1" in m for m in msgs)
+
+
+class TestAddContactsName:
+    def _first_name(self, row):
+        from functions.add_contacts import AddContactsFunc
+
+        sent = []
+
+        class _S:
+            async def __call__(self, request):
+                sent.append(request)
+
+            async def get_me(self):
+                return ns(id=7)
+
+        fn = AddContactsFunc(_Storage(), ns(delay=[0]))
+        msgs, fn._report = collect()
+        fn.added, fn.ledger, fn._unsaved, fn._my_ids = 0, {}, 0, {}
+        asyncio.run(fn.add_one(_S(), {"user_id": 1, "access_hash": 2, **row}))
+        return sent[0].first_name
+
+    def test_scrape_base_full_name(self):
+        assert self._first_name({"name": "Иван Петров"}) == "Иван Петров"
+
+    def test_first_name_column_wins(self):
+        assert self._first_name({"first_name": "Ivan", "name": "Иван Петров"}) == "Ivan"
+
+    def test_username_when_no_name(self):
+        assert self._first_name({"name": "", "username": "bob"}) == "bob"
+
+    def test_placeholder_when_nothing(self):
+        assert self._first_name({}) == "contact"
 
 
 class TestProfilePhotoSkipsHiddenFiles:
@@ -560,15 +742,6 @@ class TestProfilePhotoSkipsHiddenFiles:
         asyncio.run(fn.run(report))
 
         assert picked and all(p.endswith("a.jpg") for p in picked)
-
-
-class TestScraperMenuChoice:
-    def test_typo_reasks_instead_of_default(self):
-        from scraper.menu import Prompt
-
-        answers = iter(["xlsx", "2"])
-        prompt = Prompt(input_fn=lambda _msg: next(answers))
-        assert prompt.choice("Format", ["parquet", "excel"], "parquet") == "excel"
 
 
 class TestCancelNonCancelable:
@@ -892,8 +1065,10 @@ class TestScrapeFuncSwappedDates:
     def test_reports_and_does_not_run(self, monkeypatch):
         from functions import scraper as fs
 
-        answers = iter(["@chan", "name", "out", "31.12.2024", "01.01.2024", "", "parquet"])
-        monkeypatch.setattr(fs, "pick_session", lambda storage: object())
+        answers = iter(["name", "out", "@chan", "31.12.2024", "01.01.2024", ""])
+        monkeypatch.setattr(fs, "pick_session",
+                            lambda storage, personal=None: ns(path="sessions/a.jsession", client=object(),
+                                                              personal=False))
         monkeypatch.setattr(fs.Prompt, "ask", lambda *a, **k: next(answers))
         monkeypatch.setattr(fs.Confirm, "ask", lambda *a, **k: False)
         printed = []
@@ -901,7 +1076,7 @@ class TestScrapeFuncSwappedDates:
         ran = []
         monkeypatch.setattr(fs, "scrape_run", lambda *a: ran.append(1))
 
-        f = fs.ScrapeFunc(_Storage(), ns(delay=[0]))
+        f = fs.ScrapeFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h"))
         f.ask_int = lambda *a, **k: 100
         f.execute()
 
@@ -1157,36 +1332,19 @@ class TestScraperCredentials:
                                 "app_version": "10.3", "lang_code": "en", "system_lang_code": "en-US"}
 
 
-class TestResumeCommandNumericIds:
-    def test_parses_back(self, tmp_path):
-        import shlex
-        from datetime import datetime, timezone
-
-        from scraper.cli import build_parser
-        from scraper.scrape import ScrapeParams, _resume_command
-
-        params = ScrapeParams(channels=["-1001629147115", "-1001234567890"],
-                              date_min=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                              date_max=datetime(2024, 2, 1, tzinfo=timezone.utc),
-                              name="n", keyword="-30%", out_dir=tmp_path)
-        argv = shlex.split(_resume_command(params))[1:]  # drop "scraper"
-        args = build_parser().parse_args(argv)
-        assert args.channels == "-1001629147115,-1001234567890" and args.keyword == "-30%"
-
-
 class TestVerifyFuncSwappedDates:
     def test_reports_and_does_not_run(self, monkeypatch):
         from functions import scraper as fs
 
         answers = iter(["posts.parquet", "@chan", "31.12.2024", "01.01.2024", ""])
-        monkeypatch.setattr(fs, "pick_session", lambda storage: object())
+        monkeypatch.setattr(fs, "pick_session", lambda storage, personal=None: object())
         monkeypatch.setattr(fs.Prompt, "ask", lambda *a, **k: next(answers))
         printed = []
         monkeypatch.setattr(fs.console, "print", lambda *a, **k: printed.append(str(a[0])))
         ran = []
         monkeypatch.setattr(fs, "verify_run", lambda *a: ran.append(1))
 
-        f = fs.VerifyFunc(_Storage(), ns(delay=[0]))
+        f = fs.VerifyFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h"))
         f.ask_int = lambda *a, **k: 0
         f.execute()
 
@@ -1243,7 +1401,7 @@ class TestReportAbortDuringAnswer:
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
         cb = ns(message=ns(chat=ns(id=7), answer=answer), answer=answer, bot=None)
         try:
-            asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager()))
+            asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager(), ns(in_job=[])))
         finally:
             moderation._FLOWS.clear()
         assert stepped == []
@@ -1260,21 +1418,19 @@ class TestScrapeSnapshotBeforeSlot:
 
         monkeypatch.setattr(svc, "dir_snapshot", boom)
 
-        class _State:
-            async def get_data(self):
-                return {"out_dir": "/root/x", "channels": "@a", "name": "n", "date_min": "01.01.2024"}
-
-            async def clear(self):
-                return None
-
         replies = []
 
-        async def answer(text, **k):
-            replies.append(text)
+        class _Bot:
+            async def send_message(self, chat_id, text, **k):
+                replies.append(text)
 
-        manager = JobManager()
-        msg = ns(text="02.01.2024", chat=ns(id=1), bot=None, answer=answer)
-        asyncio.run(scraping.scrape_run(msg, _State(), ns(workers=[object()]), manager))
+        manager = JobManager()  # the scraper's slot
+        pool = ns(storage=ns(sessions=[object()], jsessions_paths={},
+                             get_session_path=lambda c: "sessions/w.jsession"))
+        params = scraping._scrape_params({"out_dir": "/root/x", "channels": "@a", "name": "n",
+                                          "date_min": "01.01.2024", "date_max": "02.01.2024",
+                                          "account": "sessions/w.jsession"})
+        asyncio.run(scraping._run_scrape(_Bot(), 1, manager, pool, None, params))
 
         assert manager.active is False and any("недоступна" in r for r in replies)
 
@@ -1411,13 +1567,42 @@ class TestJobNotRunLabel:
 
         async def scenario():
             manager = JobManager()
-            await manager.run(None, 1, ns(workers=[], run=pool_run), None, None,
+            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), None,
                               lambda f, r: None, "job", "Готово ✅")
             await asyncio.sleep(0.01)
 
         monkeypatch.setattr(jobs_mod, "TelegramReporter", lambda *a, **k: _Reporter())
         asyncio.run(scenario())
         assert finished == ["⚠️ Не выполнено"]
+
+    def test_skipped_job_runs_its_cleanup(self, monkeypatch):
+        # the job's own finally (content.cleanup) never runs when pool.run skips it:
+        # the broadcast's temp media must still go
+        from bot.services import jobs as jobs_mod
+        from bot.services.jobs import JobManager
+
+        cleaned = []
+
+        class _Reporter:
+            async def start(self):
+                return None
+
+            async def finish(self, text):
+                pass
+
+        async def pool_run(*a):
+            return False  # RISKY job, the only worker is scraping
+
+        async def scenario():
+            manager = JobManager()
+            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), None,
+                              lambda f, r: None, "job", "Готово ✅",
+                              cleanup=lambda: cleaned.append(True))
+            await asyncio.sleep(0.01)
+
+        monkeypatch.setattr(jobs_mod, "TelegramReporter", lambda *a, **k: _Reporter())
+        asyncio.run(scenario())
+        assert cleaned == [True]
 
 
 class TestReadTableKeepsNaText:
@@ -1561,6 +1746,80 @@ class TestCaptchaHandler:
         button = tl.KeyboardButton("go", tl.InlineButtonTypeCallback(data=b"\x01x"))
         assert MessageButton(None, button, None, None, 1).data == b"\x01x"
 
+    def test_returns_whether_clicked(self):
+        from functions.joiner import JoinerFunc
+
+        async def click(data=None):
+            pass
+
+        def msg(mentioned, buttons):
+            async def get_buttons():
+                return buttons
+            return ns(mentioned=mentioned, get_buttons=get_buttons, click=click)
+
+        fn = JoinerFunc(_Storage(), ns(delay=[0]))
+        assert asyncio.run(fn.on_message(msg(True, [[ns(data=b"x")]]))) is True
+        assert asyncio.run(fn.on_message(msg(True, [[ns(data=None)]]))) is False
+        assert asyncio.run(fn.on_message(msg(False, [[ns(data=b"x")]]))) is False
+
+
+class TestJoinerBotCaptcha:
+    class _S:
+        """Worker session: joins fine; optionally posts a captcha right after the join."""
+
+        def __init__(self, captcha):
+            self.captcha, self.handlers, self.clicked = captcha, [], []
+
+        def add_event_handler(self, cb, ev):
+            self.handlers.append(cb)
+
+        def remove_event_handler(self, cb, ev):
+            self.handlers.remove(cb)
+
+        async def __call__(self, request):
+            if self.captcha:
+                async def get_buttons():
+                    return [[ns(data=b"ok")]]
+
+                async def click(data=None):
+                    self.clicked.append(data)
+
+                msg = ns(mentioned=True, get_buttons=get_buttons, click=click)
+                for handler in list(self.handlers):
+                    asyncio.ensure_future(handler(msg))
+            return ns(chats=[ns(id=5)])
+
+    def _run(self, monkeypatch, session, captcha):
+        from functions import joiner
+
+        monkeypatch.setattr(joiner, "CAPTCHA_WAIT", 0.05)
+        fn = joiner.JoinerFunc(_Storage(), ns(delay=[0]))
+        fn.sessions = [session]
+        msgs, report = collect()
+        asyncio.run(fn.run("1", "@chat", [0], report, captcha=captcha))
+        return msgs
+
+    def test_captcha_clicked(self, monkeypatch):
+        s = self._S(captcha=True)
+        msgs = self._run(monkeypatch, s, captcha=True)
+        assert s.clicked == [b"ok"]
+        assert any("captcha solved" in m for m in msgs)
+        assert "Done: 1/1 accounts" in msgs and "[acc 1] joined" in msgs
+        assert s.handlers == []  # removed before the session is released
+
+    def test_no_captcha_times_out(self, monkeypatch):
+        s = self._S(captcha=False)
+        msgs = self._run(monkeypatch, s, captcha=True)
+        assert any("no captcha" in m for m in msgs)
+        assert "Done: 1/1 accounts" in msgs and "[acc 1] joined" in msgs
+        assert s.handlers == []
+
+    def test_disabled_registers_no_handler(self, monkeypatch):
+        s = self._S(captcha=True)
+        msgs = self._run(monkeypatch, s, captcha=False)
+        assert s.clicked == []
+        assert not any("captcha" in m for m in msgs)
+
 
 class TestUpdaterPipFailure:
     def test_reported_without_restart(self, monkeypatch):
@@ -1649,7 +1908,7 @@ class TestReportAnswerFailure:
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
         cb = ns(message=ns(chat=ns(id=7), answer=answer), answer=failing_answer, bot=None)
         try:
-            asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager()))
+            asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager(), ns(in_job=[])))
             assert stepped == [b"a"] and moderation._FLOWS[7][1]["busy"] is False
         finally:
             moderation._FLOWS.clear()
@@ -1712,10 +1971,56 @@ class TestStopWhileFinishing:
             return True
 
         async def scenario():
-            await manager.run(None, 1, ns(workers=[], run=pool_run), None, None,
+            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), None,
                               lambda f, r: None, "job", "Готово ✅")
             await asyncio.sleep(0.05)
 
         monkeypatch.setattr(jobs_mod, "TelegramReporter", lambda *a, **k: _Reporter())
         asyncio.run(scenario())
         assert stopped == [False] and finished == ["Готово ✅"] and manager.active is False
+
+
+
+class TestReportFlowHoldsItsWorkers:
+    def test_busy_until_aborted(self):
+        from bot.routers import moderation
+
+        class _First:
+            async def connect(self):
+                return None
+
+            async def disconnect(self):
+                return None
+
+        async def step(flow, option):
+            return "choose", [ns(text="spam", option=b"1")]
+
+        class _Manager:
+            label = ""
+
+            def acquire(self, *a, **k):
+                return True
+
+            def release(self):
+                return None
+
+        class _State:
+            async def get_data(self):
+                return {"link": "l", "ids": [1]}
+
+            async def clear(self):
+                return None
+
+        async def answer(*a, **k):
+            return None
+
+        workers = [_First(), _First()]
+        pool = ns(delegate=lambda inst: workers, in_job=[])
+        msg = ns(text="-", chat=ns(id=7), answer=answer, bot=None)
+        try:
+            asyncio.run(moderation.rm_begin(msg, _State(), pool, {"ReportFunc": ns(step=step)}, _Manager()))
+            assert pool.in_job == workers  # the flow drives them: no scrape may start on them
+            asyncio.run(moderation._abort(7, pool))  # /cancel or the inactivity timeout
+            assert pool.in_job == []
+        finally:
+            moderation._FLOWS.clear()

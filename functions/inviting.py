@@ -72,13 +72,16 @@ class InvitingFunc(TelethonFunction):
                 dest = await session.get_entity(destination)
             except Exception as err:
                 await report(f"[!] can't prepare account: {err}")
+                self.progress_drop(len(target_ids))
                 return
 
             if isinstance(dest, types.Chat):  # a basic group: InviteToChannel needs a channel/supergroup
                 await report(f"[{me.first_name}] destination is not a supergroup/channel")
+                self.progress_drop(len(target_ids))
                 return
 
             added = 0
+            tried = 0
             wanted = set(target_ids)
 
             try:
@@ -109,9 +112,14 @@ class InvitingFunc(TelethonFunction):
                             added += 1
                             await report(f"[{me.first_name}] invited {user.id} total: {added}")
 
+                    tried += 1
+                    self.progress_step()
                     await self.delay()
             except Exception as err:
                 await report(f"[{me.first_name}] can't read participants: {err}")
+
+            # a limit / no rights / users not found in the source: the rest won't be tried
+            self.progress_drop(len(target_ids) - tried)
 
     async def parse_targets(self, source_link, report):
         """Resolve the source chat with the first able worker; return member ids."""
@@ -133,6 +141,7 @@ class InvitingFunc(TelethonFunction):
 
     async def run(self, source_link, destination, delay, report):
         self.delay_range = delay
+        self.progress_prepare()
 
         target_ids = await self.parse_targets(source_link, report)
 
@@ -141,6 +150,7 @@ class InvitingFunc(TelethonFunction):
             return
 
         await report(f"[*] Parsed {len(target_ids)} users")
+        self.progress_total(len(target_ids))
 
         chunks = self.chunkify(target_ids, len(self.sessions))
 

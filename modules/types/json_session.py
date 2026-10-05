@@ -64,6 +64,7 @@ class JsonSession:
                     user_id=account.id,
                     added_at=datetime.now().timestamp(),
                     phone_number=account.phone,
+                    username=account.username,
                 ),
                 application=Application(
                     api_id=api_id,

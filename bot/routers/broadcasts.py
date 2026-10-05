@@ -9,6 +9,7 @@ from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import choice_kb, yes_no_kb
 from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
+from modules import scraped_files
 from bot.services.jobs import JobManager
 from bot.states import ChatBroadcast, Comments, Instant, PmMailing
 from modules.settings import Settings
@@ -36,11 +37,27 @@ async def mail_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
         return
     await state.clear()  # an abandoned run's `recipients` would otherwise override a new path
     await state.set_state(PmMailing.path)
+    bases = scraped_files.participant_bases()
+    await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
+    choose = "выберите базу из скрапа ниже, или " if bases else ""
     await callback.message.answer(
-        "Получатели: пришлите <b>.txt файлом</b>, вставьте список (по одному @username/номеру "
+        f"Получатели: {choose}пришлите <b>.txt файлом</b>, вставьте список (по одному @username/номеру "
         f"на строку), или укажите путь к .parquet/.txt («-» = {DEFAULT_TARGETS}):",
         parse_mode="HTML",
+        reply_markup=choice_kb("mail_base", [(label, str(i)) for i, (_, label) in enumerate(bases)])
+        if bases else None,
     )
+
+
+@router.callback_query(PmMailing.path, ChoiceCB.filter(F.scope == "mail_base"))
+async def mail_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    await callback.answer()
+    bases = (await state.get_data()).get("bases", [])
+    index = int(callback_data.value)
+    if not 0 <= index < len(bases):
+        return
+    await state.update_data(path=bases[index])
+    await callback.message.answer("Пропускать уже отправленных?", reply_markup=yes_no_kb("mail_skip"))
 
 
 @router.message(PmMailing.path)
@@ -151,10 +168,14 @@ async def mail_run(
             await func.run(recipients, content, settings.delay, reporter)
         finally:
             content.cleanup()
+            # every run (and "skip already sent") reloads the ledger from its file: the shared
+            # instance must not hold everyone ever messaged in memory between mailings
+            func.stats = {}
 
     started = await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function, job,
         f"Рассылка в ЛС ({len(recipients)})…", "Рассылка завершена ✅",
+        cleanup=content.cleanup,
     )
     if not started:
         content.cleanup()
@@ -204,6 +225,7 @@ async def com_run(
     started = await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function, job,
         "Рассылка в комментарии…", "Готово ✅",
+        cleanup=content.cleanup,
     )
     if not started:
         content.cleanup()
@@ -305,6 +327,7 @@ async def ins_run(
     started = await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function, job,
         "Мгновенная рассылка…", "Готово ✅",
+        cleanup=content.cleanup,
     )
     if not started:
         content.cleanup()
@@ -313,9 +336,13 @@ async def ins_run(
 # =========================== Broadcast to chat (trigger) ===========================
 
 @router.callback_query(FunctionCB.filter(F.key == "chat"))
-async def cha_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
+async def cha_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, settings: Settings):
     await callback.answer()
     if not await ensure_workers(callback, pool):
+        return
+    if not settings.trigger:  # an empty one would fire on every media message without a caption
+        await callback.message.answer("Триггер не задан: укажите trigger в [broadcast] config.toml "
+                                      "и перезапустите бота.")
         return
     await state.clear()
     await callback.message.answer("Режим кампании:", reply_markup=choice_kb("cha_mode", MODE_OPTIONS))
@@ -399,7 +426,7 @@ async def cha_run(
     started = await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function, factory,
         "Слушатель рассылки запущен", "Слушатель остановлен",
-        stop_sessions=pool.workers,
+        stop_sessions=pool.workers, cleanup=content.cleanup,
     )
 
     if started:

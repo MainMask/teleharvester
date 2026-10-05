@@ -52,8 +52,12 @@ class _Storage:
         yield
 
 
-def test_edit_2fa_uses_stored_password_and_persists(tmp_path):
+def test_edit_2fa_uses_stored_password_and_persists(tmp_path, monkeypatch):
     SetPasswordFunc = _load_func()
+    from modules import tdata_import
+
+    written = []
+    monkeypatch.setattr(tdata_import, "write_2fa_password", lambda phone, pw: written.append((phone, pw)))
 
     path = str(tmp_path / "acc.jsession")
     # a full jsession on disk, so the rewrite round-trips through AccountSettings.asdict
@@ -89,3 +93,5 @@ def test_edit_2fa_uses_stored_password_and_persists(tmp_path):
     assert any("Successfully" in r for r in reports)
     # new password persisted to disk
     assert json.loads(Path.read_text())["password"] == "new_pw"
+    # and next to the account's tdata
+    assert written == [("1", "new_pw")]

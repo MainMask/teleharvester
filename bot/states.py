@@ -27,11 +27,19 @@ class ChangeBio(StatesGroup):
     text = State()
 
 
+class ChangePhoto(StatesGroup):
+    photo = State()
+
+
 class SetPassword(StatesGroup):
     password = State()
 
 
 class SetProxy(StatesGroup):
+    input = State()
+
+
+class SetDelay(StatesGroup):
     input = State()
 
 
@@ -87,11 +95,20 @@ class ReportMessage(StatesGroup):
 
 
 class Scrape(StatesGroup):
-    channels = State()
     name = State()
     out_dir = State()
+    resume = State()
+    channels = State()
     date_min = State()
     date_max = State()
+    confirm = State()
+    keyword = State()
+    max_messages = State()
+
+
+class Members(StatesGroup):
+    chats = State()
+    name = State()
 
 
 class Verify(StatesGroup):
@@ -102,4 +119,5 @@ class Verify(StatesGroup):
 
 
 class Analysis(StatesGroup):
-    args = State()
+    file = State()
+    keywords = State()

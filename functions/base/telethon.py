@@ -16,6 +16,22 @@ class TelethonFunction(BaseFunction):
 
         self.sessions: List[TelegramClient] = storage.sessions
 
+    async def request_each(self, session, report, request, done: str, failed: str):
+        """One request on one worker, reported under its name: `done`, or `failed: <error>`."""
+        async with self.storage.ainitialize_session(session):
+            try:
+                me = await session.get_me()
+            except Exception as err:
+                await report(f"get_me failed: {err}")
+                return
+
+            try:
+                await session(request)
+            except Exception as err:
+                await report(f"[{me.first_name}] {failed}: {err}")
+            else:
+                await report(f"[{me.first_name}] {done}")
+
     async def import_phone_contact(self, session, phone):
         """Resolve a phone number to users via ImportContactsRequest.
 

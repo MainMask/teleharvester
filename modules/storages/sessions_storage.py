@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import Dict, List, Union
 
@@ -12,16 +13,32 @@ from modules.types.json_session import JsonSession
 from modules.types.proxy import ACCOUNTS_PER_PROXY, Proxy
 
 
+def natural_key(text: str) -> list:
+    """Sort key so that name10 comes after name9."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
+
+
+def profile_order(me) -> tuple:
+    """Sort key for live profiles: by username; accounts without one, then unreachable
+    ones (None), keep their order at the end."""
+    if me is None:
+        return (2, [])
+    if not me.username:
+        return (1, [])
+    return (0, natural_key(me.username))
+
+
 class SessionsStorage:
     def __init__(self, directory: str, api_id: Union[str, int], api_hash: str, initialize: bool = True):
         self.full_sessions: Dict[str, Union[TelegramClient, JsonSession]] = {}
         self.json_sessions: List[JsonSession] = []
         self.jsessions_paths: Dict[str, JsonSession] = {}
+        self.usernames: Dict[str, str] = {}  # path -> username: the pool's order
 
         self.initialize = initialize
         self.loop = None  # the loop clients were connected on (initialize=True only)
 
-        for file in os.listdir(directory):
+        for file in sorted(os.listdir(directory)):  # stable order (by phone), not filesystem order
             if file.endswith(".session"):
                 session_path = os.path.join(directory, file)
 
@@ -73,6 +90,8 @@ class SessionsStorage:
                 self.full_sessions[session_path] = client
                 self.json_sessions.append(session)
                 self.jsessions_paths[session_path] = session
+                if session.account.account.username:
+                    self.usernames[session_path] = session.account.account.username
 
         if self.initialize:
             if len(self.full_sessions) == 0:
@@ -126,6 +145,8 @@ class SessionsStorage:
         self.full_sessions[path] = self.build_jsession_client(session)
         self.json_sessions.append(session)
         self.jsessions_paths[path] = session
+        if session.account.account.username:
+            self.usernames[path] = session.account.account.username
         return session
 
     def apply_proxies(self, proxies: List[Proxy]) -> dict:
@@ -161,6 +182,7 @@ class SessionsStorage:
     def _forget_session(self, path: str):
         """Drop a session from every index, so no stale reference survives a removal."""
         self.full_sessions.pop(path, None)
+        self.usernames.pop(path, None)
         json_session = self.jsessions_paths.pop(path, None)
         if json_session is not None and json_session in self.json_sessions:
             self.json_sessions.remove(json_session)
@@ -196,14 +218,19 @@ class SessionsStorage:
         if not authorized:
             console.log(f"Session {path} is inactive. Moving it to sessions/inactive")
             await session.disconnect()
-            self._forget_session(path)
-
-            inactive_dir = os.path.join(os.path.dirname(path), "inactive")
-            os.makedirs(inactive_dir, exist_ok=True)
-            os.rename(path, os.path.join(inactive_dir, os.path.basename(path)))
+            self.move_to_inactive(path)
             return
 
         console.log(f"Initialized {path}")
+
+    def move_to_inactive(self, path: str):
+        """Drop a dead (banned / logged out) session from the pool and move its file
+        to sessions/inactive/."""
+        self._forget_session(path)
+
+        inactive_dir = os.path.join(os.path.dirname(path), "inactive")
+        os.makedirs(inactive_dir, exist_ok=True)
+        os.rename(path, os.path.join(inactive_dir, os.path.basename(path)))
 
     def get_session_path(self, session: TelegramClient | JsonSession) -> str:
         for path, client in self.full_sessions.items():
@@ -222,9 +249,62 @@ class SessionsStorage:
 
         return False
 
+    def remember_username(self, session: TelegramClient, username: str | None):
+        """Note a worker's current username (it orders the pool); a .jsession keeps it."""
+        path = self.get_session_path(session)
+        if path is None or self.usernames.get(path) == username:
+            return
+
+        if username:
+            self.usernames[path] = username
+        else:
+            self.usernames.pop(path, None)
+
+        json_session = self.jsessions_paths.get(path)
+        if json_session is not None:
+            json_session.account.account.username = username
+            json_session.account.save(path)
+
+    def remember_name(self, session: TelegramClient, first_name: str, last_name: str | None):
+        """Note a worker's current name; a .jsession keeps it (the account pickers show it)."""
+        path = self.get_session_path(session)
+        json_session = self.jsessions_paths.get(path)
+        if json_session is None:
+            return
+
+        account = json_session.account.account
+        if (account.first_name, account.last_name) == (first_name, last_name):
+            return
+
+        account.first_name, account.last_name = first_name, last_name
+        json_session.account.save(path)
+
+    async def fetch_me(self, client: TelegramClient, timeout: float = 20):
+        """Live get_me(), or None if the worker can't be polled within `timeout` (it covers
+        connect() too: a dead proxy must not stall a whole list)."""
+        async def fetch():
+            async with self.ainitialize_session(client):
+                return await client.get_me()
+
+        try:
+            me = await asyncio.wait_for(fetch(), timeout)
+        except Exception:
+            return None
+
+        if me is not None:
+            self.remember_username(client, me.username)  # orders the pool in every job
+            self.remember_name(client, me.first_name, me.last_name)
+        return me
+
     @property
     def sessions(self) -> List[TelegramClient]:
-        return list(self.full_sessions.values())
+        """Workers by username (name10 after name9); ones without a known username
+        follow in file order."""
+        def order(path):
+            username = self.usernames.get(path)
+            return (0, natural_key(username)) if username else (1, [])
+
+        return [self.full_sessions[path] for path in sorted(self.full_sessions, key=order)]
 
     @asynccontextmanager
     async def ainitialize_session(self, session):

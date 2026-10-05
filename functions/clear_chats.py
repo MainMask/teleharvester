@@ -1,4 +1,3 @@
-import asyncio
 
 from telethon import functions, types, TelegramClient
 from rich.prompt import Confirm
@@ -39,10 +38,7 @@ class ClearDialogsFunc(TelethonFunction):
                 await report(f"Dialog {dialog.id} | {dialog.title} has been deleted")
 
     async def run(self, report):
-        await asyncio.gather(*[
-            self.clear(session, report)
-            for session in self.sessions
-        ])
+        await self.gather_in_order(self.clear, report)
 
     async def execute(self):
         self.ask_accounts_count()

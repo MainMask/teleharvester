@@ -75,8 +75,10 @@ class TestCapture:
 
 
 class TestClearOrphanTemp:
-    def test_removes_leftover_broadcast_dirs(self):
+    def test_removes_leftover_broadcast_dirs(self, monkeypatch, tmp_path):
         from bot.services.capture import BROADCAST_TMP_DIR, clear_orphan_temp
+
+        monkeypatch.chdir(tmp_path)  # never the real tmp/broadcast of a running bot
 
         os.makedirs(BROADCAST_TMP_DIR, exist_ok=True)
         orphan = tempfile.mkdtemp(prefix="bcast_", dir=BROADCAST_TMP_DIR)  # a killed run's leftover

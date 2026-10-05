@@ -44,6 +44,15 @@ async def ensure_workers(callback, pool) -> bool:
     return True
 
 
+async def read_text_document(message, max_size: int) -> str | None:
+    """Text of a .txt the user sent; report and return None if it's too big."""
+    if (message.document.file_size or 0) > max_size:
+        await message.answer("Файл слишком большой. Пришлите .txt поменьше.")
+        return None
+    buffer = await message.bot.download(message.document)
+    return buffer.read().decode("utf-8", "replace")
+
+
 async def require_text(message) -> str | None:
     """Text of a text-only FSM step, stripped; re-prompt and return None if the user
     sent a non-text message (sticker/photo/…), so the step isn't lost to AttributeError."""

@@ -11,8 +11,8 @@ from modules.console import console
 from rich.table import Table
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited, console_report
-from modules import parquet_db, rich_message
+from functions.base.base import SKIPPED, AccountLimited, console_report
+from modules import contacts_ledger, parquet_db, rich_message, scraped_files
 from modules.rich_message import RichContent
 
 
@@ -106,7 +106,14 @@ class PmMailingFunc(TelethonFunction):
         self.save_limits()
 
     @staticmethod
-    def recipient_key(recipient):  # stable string key for stats/output
+    def recipient_key(recipient):  # stable string key for stats
+        if isinstance(recipient, dict):
+            return str(recipient["user_id"])  # a username can change or appear; the id can't
+
+        return recipient
+
+    @staticmethod
+    def recipient_label(recipient):  # how a recipient is shown in reports
         if isinstance(recipient, dict):
             return recipient.get("username") or str(recipient["user_id"])
 
@@ -115,8 +122,10 @@ class PmMailingFunc(TelethonFunction):
     async def _deliver(self, session, peer):
         await rich_message.send(session, peer, self._content, self.safe_call, report=self._report)
 
-    async def resolve_peer(self, session, recipient):
+    async def resolve_peer(self, session, recipient, foreign=False):
         if isinstance(recipient, dict):
+            if foreign:  # the base's access hash belongs to another account: it can't work here
+                return recipient["username"]
             return types.InputPeerUser(recipient["user_id"], recipient["access_hash"])
 
         if recipient.startswith("+") or recipient.lstrip("+").isdigit():
@@ -159,15 +168,21 @@ class PmMailingFunc(TelethonFunction):
         me = await self.account(session)
         account_key = str(me.id)
         name = me.first_name or ""
-        fallback = False
+        foreign = isinstance(recipient, dict) and recipient.get("owner_id") not in (None, me.id)
+        fallback = foreign
+
+        if foreign and not recipient.get("username"):
+            self._skipped += 1  # only the base's owner can reach them; left unsent for it
+            return SKIPPED
 
         if self.account_sent_today(account_key) >= self.settings.per_account_daily:
+            self._capped.add(id(session))  # out for today only: its people wait for it
             raise AccountLimited(f"daily cap {self.settings.per_account_daily} reached")
 
         await self.pause_between_accounts(account_key, name)
 
         try:
-            peer = await self.resolve_peer(session, recipient)
+            peer = await self.resolve_peer(session, recipient, foreign)
 
             try:
                 await self._deliver(session, peer)
@@ -180,7 +195,7 @@ class PmMailingFunc(TelethonFunction):
         except AccountLimited:
             raise
         except Exception as err:
-            await self._report(f"[{name}] not sent. {key} {err}")
+            await self._report(f"[{name}] not sent. {self.recipient_label(recipient)} {err}")
             return
 
         self.record_success(key)
@@ -189,7 +204,7 @@ class PmMailingFunc(TelethonFunction):
             "[{name}] sent{via}. {recipient} COUNT: {count}".format(
                 name=name,
                 via=" (via username)" if fallback else "",
-                recipient=key,
+                recipient=self.recipient_label(recipient),
                 count=self.stats[key]["count"],
             )
         )
@@ -204,7 +219,14 @@ class PmMailingFunc(TelethonFunction):
 
     def filter_unsent(self, recipients):
         """Drop recipients already recorded in stats (requires load_stats first)."""
-        return [r for r in recipients if self.recipient_key(r) not in self.stats]
+        def sent(recipient):
+            if self.recipient_key(recipient) in self.stats:
+                return True
+            # stats written before the user_id key keep a base's people by username
+            return isinstance(recipient, dict) and bool(recipient.get("username")) \
+                and recipient["username"] in self.stats
+
+        return [r for r in recipients if not sent(r)]
 
     async def run(self, recipients, content, delay, report):
         self._report = report
@@ -212,17 +234,49 @@ class PmMailingFunc(TelethonFunction):
         self._me_cache = {}
         self._active_accounts = set()
         self._unsaved = 0
+        self._skipped = 0
+        self._capped = set()
         self.delay_range = delay
+        self.progress_prepare()
 
         self.load_stats()
         self.load_limits()
+        await self.check_workers(report)
+        self.progress_total(len(recipients))
 
         try:
-            processed = await self.run_with_rotation(recipients, self.send_one)
+            processed = waiting = 0
+            *own, (shared_sessions, shared) = self.split_queues(recipients, contacts_ledger.load())
+            for (worker,), queue in own:
+                if worker in self.on_hold:  # busy scraping: its people wait for it, as for a daily cap
+                    waiting += len(queue)
+                    await report(f"{len(queue)} получателей ждут своего воркера: он занят скрапом.")
+                    self.progress_drop(len(queue))
+                    continue
+                done = await self.run_with_rotation(queue, self.send_one, [worker])
+                processed += done
+                rest = queue[done:]
+                if not rest:
+                    continue
+                # it stopped short (a cap, a flood, out for good): no more sends from it this run
+                shared_sessions = [s for s in shared_sessions if s is not worker]
+                # a contact is that worker's own: another one would write to a stranger, so
+                # its people move only when it is out for good, not for a daily cap or a wait
+                if id(worker) not in self._capped and await self.worker_gone(worker, report):
+                    shared = shared + rest
+                    await report(f"Воркер выбыл: {len(rest)} его получателей переданы другим воркерам.")
+                else:
+                    waiting += len(rest)
+                    await report(f"{len(rest)} получателей ждут своего воркера до следующего запуска.")
+                    self.progress_drop(len(rest))  # not this run: out of the total
+            processed += await self.run_with_rotation(shared, self.send_one, shared_sessions)
         finally:
             self.flush_stats()  # persist the tail on any exit (success, error, cancel)
 
-        if processed < len(recipients):
+        if self._skipped:
+            await report(f"Пропущено без username (база другого аккаунта): {self._skipped}")
+
+        if processed + waiting < len(recipients):
             await report(
                 f"Внимание: обработано {processed}/{len(recipients)} — аккаунты исчерпаны, "
                 "остаток не отправлен."
@@ -247,24 +301,11 @@ class PmMailingFunc(TelethonFunction):
     async def execute(self):
         self.ask_accounts_count()
 
-        databases_dir = os.path.join("assets", "databases")
-        databases = sorted(
-            f for f in os.listdir(databases_dir) if f.endswith(".parquet")
-        ) if os.path.isdir(databases_dir) else []
-
-        if databases:
-            console.print("[bold white]databases in assets/databases/:[/]")
-            for index, name in enumerate(databases):
-                console.print(f"  [{index + 1}] {name}")
-            console.print("[bold white]enter a number, or a path to a file[/]")
-
-        path = Prompt.ask(
+        path = self.ask_file(
             "[bold red]file with recipients[/]",
-            default=os.path.join("assets", "targets.txt")
+            scraped_files.participant_bases(),  # the scraped bases, newest first, as in the bot
+            default=os.path.join("assets", "targets.txt"),
         )
-
-        if path.isdigit() and 1 <= int(path) <= len(databases):
-            path = os.path.join(databases_dir, databases[int(path) - 1])
 
         if not os.path.exists(path):
             console.print("[bold red]File not found!")
@@ -307,7 +348,7 @@ class PmMailingFunc(TelethonFunction):
 
         console.print("[bold white]first recipients:[/]")
         for recipient in recipients[:5]:
-            console.print("  " + self.recipient_key(recipient))
+            console.print("  " + self.recipient_label(recipient))
 
         if not Confirm.ask(f"[bold red]send to {len(recipients)} recipients?"):
             return

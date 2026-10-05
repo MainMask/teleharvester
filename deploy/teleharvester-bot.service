@@ -2,6 +2,10 @@
 Description=teleharvester control bot (aiogram host over Telethon workers)
 After=network-online.target
 Wants=network-online.target
+# a config error (exit 1 at start) is restarted 5 times, then the unit stays failed
+# instead of restarting every 5 s forever; `systemctl reset-failed` after fixing it
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -22,6 +26,8 @@ TimeoutStopSec=30
 # logs go to journald (journalctl -u teleharvester-bot -f)
 StandardOutput=journal
 StandardError=journal
+# unbuffered: the scraper's child process prints reach the journal at once, not lost on a kill
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

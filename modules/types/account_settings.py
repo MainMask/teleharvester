@@ -36,7 +36,8 @@ class AccountSettings:
         Via a temp file + rename: the file holds the account's only auth key, so a
         write that dies midway must not leave it truncated."""
         tmp_path = path + ".tmp"
-        with open(tmp_path, "w") as fileobj:
+        # 0o600 from creation: the file holds the auth key and the 2FA password
+        with os.fdopen(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fileobj:
             json.dump(dataclasses.asdict(self), fileobj, ensure_ascii=True, indent=4)
 
         if os.path.exists(path):  # the rename must not widen a locked-down file's mode
