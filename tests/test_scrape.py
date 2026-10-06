@@ -293,6 +293,18 @@ def test_combine_takes_a_list_of_files(tmp_path):
     assert sorted(map(int, pd.read_parquet(out)["Message ID"])) == [1, 2, 3]  # c not in the list
 
 
+def test_summary_of_an_empty_posts_file_says_so(tmp_path):
+    from scraper import analysis
+
+    # a scrape that found no posts still writes its _posts file, which the tools offer
+    path = tmp_path / "E_posts.parquet"
+    pd.DataFrame({"Group": pd.Series([], dtype=str), "Date": pd.Series([], dtype="datetime64[us]"),
+                  "Comments": pd.Series([], dtype=int)}).to_parquet(path)
+
+    with pytest.raises(SystemExit, match="no posts"):
+        analysis.summary(str(path), str(tmp_path / "S"), "Date", "Group", "Comments")
+
+
 def test_group_channel_is_the_inverse_of_channel_ref():
     for raw, channel in [("@name", "@name"), ("-1001629147115", "-1001629147115"),
                          ("https://t.me/+AbC", "https://t.me/+AbC")]:
@@ -706,6 +718,22 @@ def test_sigterm_checkpoints_and_hints(monkeypatch, tmp_path, capsys):
     assert "with the same name" in out
     meta = json.loads((_ckpt(tmp_path) / "resume.json").read_text())
     assert meta["last_id"] == 30  # post 30 saved; post 20 never reached
+
+
+def test_scrape_restores_the_callers_sigterm_handler(fake_client, tmp_path):
+    """The bot's child process sets SIGTERM -> stop; after the channel loop the scrape must hand
+    it back, not leave SIG_DFL: a SIGTERM during the final file writes would kill the child."""
+    import signal
+
+    def caller_handler(*_):
+        pass
+
+    previous = signal.signal(signal.SIGTERM, caller_handler)
+    try:
+        scrape.run(Credentials(1, "h", ""), _params(tmp_path))
+        assert signal.getsignal(signal.SIGTERM) is caller_handler
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 

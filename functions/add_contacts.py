@@ -7,6 +7,7 @@ from rich.prompt import Prompt
 from functions.base import TelethonFunction
 from functions.base.base import SKIPPED, AccountLimited, console_report
 from modules import contacts_ledger, parquet_db, scraped_files
+from modules.account_limits import DailyCounter
 
 
 LEDGER_SAVE_EVERY = 25  # buffered like the mailing stats; run() always flushes the tail
@@ -37,8 +38,14 @@ class AddContactsFunc(TelethonFunction):
         await self._add(session, user, row)
 
     async def add_one(self, session, row):
+        aid = await self.my_id(session)
+
+        if self._limits.reached(aid):
+            # out for today: rotation moves this person to the next account (item not lost)
+            raise AccountLimited(f"daily cap {self._limits.cap} reached")
+
         owner = row.get("owner_id")
-        foreign = owner is not None and owner != await self.my_id(session)
+        foreign = owner is not None and owner != aid
 
         if foreign and not row.get("username"):
             self.skipped += 1  # only the base's owner can reach them
@@ -65,7 +72,8 @@ class AddContactsFunc(TelethonFunction):
             return
 
         self.added += 1
-        self.ledger[str(row["user_id"])] = await self.my_id(session)  # the mailing routes them here
+        self._limits.bump(aid)
+        self.ledger[str(row["user_id"])] = aid  # the mailing routes them here
         self._unsaved += 1
         if self._unsaved >= LEDGER_SAVE_EVERY:
             self.flush_ledger()
@@ -83,6 +91,9 @@ class AddContactsFunc(TelethonFunction):
         self.skipped = 0
         self._my_ids = {}
         self._unsaved = 0
+        self._limits = DailyCounter(
+            "stats/contacts_limits.json", self.settings.contacts_per_account_daily
+        )
         self.progress_prepare()
 
         try:
@@ -111,7 +122,7 @@ class AddContactsFunc(TelethonFunction):
         stopped = set()  # workers that ran out on a queue: not tried again this run
         try:
             for sessions, queue in self.split_queues(rows):
-                if sessions and sessions[0] in self.on_hold:  # busy scraping: its people wait for it
+                if sessions and sessions[0] in self.on_hold:  # on hold (scraping, or left out of a CLI run): its people wait for it
                     waiting += len(queue)
                     self.progress_drop(len(queue))
                     continue
@@ -130,7 +141,7 @@ class AddContactsFunc(TelethonFunction):
         if self.skipped:
             await report(f"Пропущено без username (база другого аккаунта): {self.skipped}")
         if waiting:
-            await report(f"Ждут воркера, занятого скрапом: {waiting}")
+            await report(f"Ждут своего воркера (он не участвует в этом запуске): {waiting}")
         if processed + waiting < len(rows):
             await report(
                 f"Внимание: обработано {processed}/{len(rows)} — аккаунты исчерпаны, "

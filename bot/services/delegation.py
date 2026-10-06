@@ -21,6 +21,7 @@ class WorkerPool:
         # new jobs run without it, so one account never scrapes and mails at once
         self.scraping = None
         self.in_job: list = []  # the workers of the job run() is running: no scrape starts on them
+        self.polling = None  # the session path autoreply is polling now: no scrape starts on it either
 
     @property
     def workers(self) -> list:
@@ -38,8 +39,8 @@ class WorkerPool:
                 )
 
     def busy(self, path: str) -> bool:
-        """The worker (session path) is in the job run() is running."""
-        return any(self.storage.get_session_path(worker) == path for worker in self.in_job)
+        """The worker (session path) is in the job run() is running, or autoreply polls it."""
+        return path == self.polling or any(self.storage.get_session_path(worker) == path for worker in self.in_job)
 
     def delegate(self, func_instance) -> list:
         """Point a function at the workers (never the host) but the one the scraper runs

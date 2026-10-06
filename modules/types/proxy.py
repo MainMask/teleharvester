@@ -10,22 +10,8 @@ class Proxy:
     proxy_type: str  # socks4, socks5, http
     ip: str
     port: int
-    user: str
-    password: str
-
-    def __init__(
-        self,
-        proxy_type: str,
-        ip: str,
-        port: int,
-        user: str = None,
-        password: str = None,
-    ):
-        self.proxy_type = proxy_type
-        self.ip = ip
-        self.port = port
-        self.user = user
-        self.password = password
+    user: str | None = None
+    password: str | None = None
 
     @classmethod
     def from_url(cls, line: str) -> "Proxy":

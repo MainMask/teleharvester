@@ -192,3 +192,12 @@ def test_mail_start_drops_stale_recipients_from_an_abandoned_run():
 
 async def _noop(*args, **kwargs):
     pass
+
+
+def test_photo_is_not_taken_as_default_targets():
+    """A photo / sticker (no text, no document) must re-prompt, not pick assets/targets.txt."""
+    msg = _Msg()
+    state = _State()
+    asyncio.run(broadcasts.mail_path(msg, state))
+    assert "path" not in state.data and "recipients" not in state.data
+    assert msg.replies  # re-prompted

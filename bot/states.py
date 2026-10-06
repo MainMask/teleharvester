@@ -43,6 +43,20 @@ class SetDelay(StatesGroup):
     input = State()
 
 
+class SetProfilePause(StatesGroup):
+    input = State()
+
+
+class SetAutoreplyText(StatesGroup):
+    input = State()
+
+
+class AddByPhone(StatesGroup):
+    phone = State()
+    code = State()
+    password = State()
+
+
 class ImportTdata(StatesGroup):
     archive = State()
     password = State()
@@ -86,6 +100,12 @@ class Instant(StatesGroup):
 class ChatBroadcast(StatesGroup):
     sticker = State()
     message = State()
+
+
+class BroadcastOptions(StatesGroup):
+    """Steps shared by the chat / instant / comments flows; FSM data "flow" says which one."""
+    trigger = State()
+    count = State()
 
 
 class ReportMessage(StatesGroup):

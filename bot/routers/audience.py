@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import choice_kb
-from bot.routers._common import ensure_workers, resolve
+from bot.routers._common import ensure_workers, require_text, resolve
 from modules import scraped_files
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -56,7 +56,9 @@ async def run_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMC
 
 @router.message(AddContacts.path)
 async def run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager, settings: Settings):
+    raw = await require_text(message)  # a file / photo must not fall back to the default base
+    if raw is None:
+        return
     await state.clear()
-    raw = (message.text or "").strip()
-    path = DEFAULT_DB if raw in ("", "-") else raw  # Telegram can't send an empty message
+    path = DEFAULT_DB if raw == "-" else raw
     await _launch(message, path, pool, functions, manager, settings)

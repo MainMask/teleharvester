@@ -283,7 +283,7 @@ def test_contacts_foreign_base(monkeypatch, tmp_path):
     pd.DataFrame({"ID": [1, 2], "Access Hash": [11, 22], "Username": ["alice", None],
                   "Owner ID": [OWNER, OWNER]}).to_parquet(path)
     other = _Session(OTHER)
-    fn = AddContactsFunc(_WorkerStorage([other]), ns(delay=[0]))
+    fn = AddContactsFunc(_WorkerStorage([other]), ns(delay=[0], contacts_per_account_daily=0))
     fn.sessions = [other]
     msgs = []
 
@@ -302,7 +302,7 @@ def _contacts(sessions, rows, tmp_path, storage=None, progress=None, on_hold=())
 
     path = tmp_path / "base.parquet"
     pd.DataFrame(rows).to_parquet(path)
-    fn = AddContactsFunc(storage or _WorkerStorage(sessions), ns(delay=[0]))
+    fn = AddContactsFunc(storage or _WorkerStorage(sessions), ns(delay=[0], contacts_per_account_daily=0))
     fn.sessions = list(sessions)
     fn.on_hold = list(on_hold)
     fn.progress = progress
@@ -356,8 +356,8 @@ def test_a_limited_worker_s_contacts_wait_for_it(monkeypatch, tmp_path):
     a, b = _Session(1, "a"), _Session(2, "b")
     contacts_ledger.save({"10": 2})
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
-    monkeypatch.setattr("functions.pmmailing.PmMailingFunc.account_sent_today",
-                        lambda self, key: 100 if key == "2" else 0)  # b is out for today
+    monkeypatch.setattr("modules.account_limits.DailyCounter.reached",
+                        lambda self, key: key == "2")  # b is out for today
     msgs, _ = _mailing([a, b], rows, monkeypatch, tmp_path)
 
     assert a.sent == [] and b.sent == []  # a doesn't take b's contact
@@ -828,8 +828,8 @@ def test_a_daily_cap_is_not_asked_about(monkeypatch, tmp_path):
 
     a, b = _Session(1, "a"), _Session(2, "b")
     contacts_ledger.save({"10": 2})
-    monkeypatch.setattr("functions.pmmailing.PmMailingFunc.account_sent_today",
-                        lambda self, key: 100 if key == "2" else 0)
+    monkeypatch.setattr("modules.account_limits.DailyCounter.reached",
+                        lambda self, key: key == "2")
     _, asked = _mailing_with_limit([a, b], _B_ROWS[:1], None, monkeypatch, tmp_path, gone=True)
     assert asked == [] and a.sent == []  # no @SpamBot check, b's contact waits
 
@@ -926,7 +926,7 @@ def test_adding_contacts_leaves_a_worker_on_hold_its_people(tmp_path):
 
     assert v.added == [] and w.added == []  # alice is W's already; the no-username one is W's base
     assert contacts_ledger.load() == {"1": OWNER}
-    assert "Уже в контактах (пропущено): 1" in msgs and "Ждут воркера, занятого скрапом: 1" in msgs
+    assert "Уже в контактах (пропущено): 1" in msgs and "Ждут своего воркера (он не участвует в этом запуске): 1" in msgs
     assert not any("база другого аккаунта" in m or "Внимание" in m for m in msgs)
 
 
@@ -935,7 +935,7 @@ def test_mailing_leaves_a_worker_on_hold_its_people(monkeypatch, tmp_path):
     msgs, _ = _mailing([v], ROWS, monkeypatch, tmp_path, storage=storage, on_hold=[w])
 
     assert v.sent == [] and w.sent == []  # nobody writes to W's contact or W's base instead of it
-    assert "2 получателей ждут своего воркера: он занят скрапом." in msgs
+    assert "2 получателей ждут своего воркера: он не участвует в этом запуске." in msgs
     assert not any("база другого аккаунта" in m or "Внимание" in m for m in msgs)
 
 
@@ -994,3 +994,69 @@ def test_contacts_owner_limited_on_its_own_queue_is_not_tried_again(tmp_path):
     _contacts([owner], [{"ID": 1, "Access Hash": 11, "Username": None, "Owner ID": OWNER},
                         {"ID": 2, "Access Hash": 22, "Username": "bob", "Owner ID": OWNER}], tmp_path)
     assert _Limited.calls == 1  # its own queue stopped it: the shared one is not tried on it
+
+
+def test_contacts_path_upload_does_not_launch_the_default_base():
+    """A file sent instead of a typed path must re-prompt, not run on assets/contacts.parquet."""
+    class _Manager:
+        async def run(self, *args, **kwargs):
+            raise AssertionError("must not launch")
+
+    message = _Msg()
+    message.text, message.document = None, ns(file_name="base.parquet")
+    state = _State({"bases": []})
+    asyncio.run(audience.run(message, state, ns(), {"AddContactsFunc": object()}, _Manager(), ns(delay=[1])))
+    assert message.answers and state.data == {"bases": []}  # re-prompted, flow kept
+
+
+# --- CLI: a worker left out of "how many accounts to use?" keeps its contacts ----------
+
+def _picked_first_of(sessions, cls, settings, monkeypatch):
+    from functions.base.base import BaseFunction
+
+    monkeypatch.setattr(BaseFunction, "ask_int", staticmethod(lambda *a, **k: 1))
+    fn = cls(_WorkerStorage(sessions), settings)
+    fn.ask_accounts_count()
+    return fn
+
+
+def test_cli_subset_mailing_leaves_unpicked_workers_contacts(monkeypatch, tmp_path):
+    from functions.pmmailing import PmMailingFunc
+    from modules import contacts_ledger
+
+    monkeypatch.chdir(tmp_path)
+    a, b = _Session(1, "a"), _Session(2, "b")
+    contacts_ledger.save({"1": 2})  # alice is in b's contacts
+    fn = _picked_first_of([a, b], PmMailingFunc,
+                          ns(delay=[0], per_account_daily=100, account_pause=[0]), monkeypatch)
+
+    async def deliver(session, peer):
+        session.sent.append(peer)
+
+    fn._deliver = deliver
+    msgs = []
+
+    async def report(text):
+        msgs.append(text)
+
+    asyncio.run(fn.run([ROWS[0]], None, [0], report))
+    assert a.sent == [] and b.sent == []  # a stranger to her: she waits for b
+
+
+def test_cli_subset_contacts_skip_unpicked_workers_people(monkeypatch, tmp_path):
+    from functions.add_contacts import AddContactsFunc
+    from modules import contacts_ledger
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "base.parquet"
+    pd.DataFrame({"ID": [1], "Access Hash": [11], "Username": ["alice"]}).to_parquet(path)
+    a, b = _Session(1, "a"), _Session(2, "b")
+    contacts_ledger.save({"1": 2})
+    fn = _picked_first_of([a, b], AddContactsFunc,
+                          ns(delay=[0], contacts_per_account_daily=0), monkeypatch)
+
+    async def report(text):
+        pass
+
+    asyncio.run(fn.run(str(path), [0], report))
+    assert a.added == [] and contacts_ledger.load() == {"1": 2}

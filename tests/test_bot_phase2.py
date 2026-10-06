@@ -95,10 +95,10 @@ class TestRegistry:
 class TestRuns:
     def test_changebio(self):
         from functions.changebio import ChangeBioFunc
-        fn = ChangeBioFunc(_Storage(), ns(delay=[0]))
+        fn = ChangeBioFunc(_Storage(), ns(delay=[0], profile_pause=[0]))
         fn.sessions = [_Session()]
         msgs, report = collect()
-        asyncio.run(fn.run("hello", report))
+        asyncio.run(fn.run(report, bio="hello"))
         assert any("bio changed" in m for m in msgs)
 
     def test_reactions_parses_link(self):
@@ -111,7 +111,7 @@ class TestRuns:
 
     def test_report_user(self):
         from functions.report_user import ReportUserFunc
-        fn = ReportUserFunc(_Storage(), ns())
+        fn = ReportUserFunc(_Storage(), ns(delay=[0]))
         fn.sessions = [_Session()]
         msgs, report = collect()
         reason = fn.reasons[0][1]
@@ -163,7 +163,7 @@ class TestDeadWorkerSkipped:
 
     def test_report_user_skips_dead_worker(self):
         from functions.report_user import ReportUserFunc
-        fn = ReportUserFunc(_Storage(), ns())
+        fn = ReportUserFunc(_Storage(), ns(delay=[0]))
         fn.sessions = [_DeadSession(), _Session()]
         msgs, report = collect()
         asyncio.run(fn.run("@someone", fn.reasons[0][1], "spam", report))
@@ -172,7 +172,7 @@ class TestDeadWorkerSkipped:
 
     def test_changename_survives_dead_worker(self):
         from functions.changename import ChangeNameFunc
-        fn = ChangeNameFunc(_Storage(), ns())
+        fn = ChangeNameFunc(_Storage(), ns(profile_pause=[0]))
         fn.sessions = [_DeadSession(), _Session()]
         msgs, report = collect()
         asyncio.run(fn.run(report, first_name="Ivan", last_name=None))  # must not raise
@@ -370,7 +370,7 @@ class TestReportStepper:
 
     def test_replay_rest_reports(self):
         from functions.report import ReportFunc
-        fn = ReportFunc(_Storage(), ns())
+        fn = ReportFunc(_Storage(), ns(delay=[0]))
 
         called = []
 
@@ -477,6 +477,47 @@ class TestListenerSafety:
         asyncio.run(handler(ns(raw_text="", reply_to=None, chat_id=1)))  # a photo without a caption
         assert sent == []
 
+    def test_a_repeated_trigger_in_a_busy_chat_is_ignored(self):
+        """Telethon runs handlers concurrently: a second trigger in a chat this worker is
+        already broadcasting to must not start a second loop there (the rate would double)."""
+        b = self._broadcast()
+        started, release = [], asyncio.Event()
+
+        async def broadcast(session, chat_id, report, reply_to=None):
+            started.append(chat_id)
+            await release.wait()
+
+        b.broadcast = broadcast
+        session = _ListenSession()
+        session.session = ns(_entities=set())
+        reports = []
+
+        async def report(text):
+            reports.append(text)
+
+        asyncio.run(b.handle(session, report))
+        handler = session.added[0][0]
+
+        def trigger(chat_id):
+            return handler(ns(raw_text="go", reply_to=None, chat_id=chat_id))
+
+        async def scenario():
+            first = asyncio.create_task(trigger(1))
+            await asyncio.sleep(0)
+            # same chat, still running: ignored (returns at once instead of a second loop)
+            await asyncio.wait_for(trigger(1), 1)
+            other = asyncio.create_task(trigger(2))  # another chat: its own loop
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(first, other)
+            await trigger(1)                      # finished: a new trigger starts again
+
+        asyncio.run(scenario())
+        assert started == [1, 2, 1]
+        # the operator is told once, for the one ignored trigger
+        assert [r for r in reports if "повторный триггер" in r] == [
+            "[worker] уже рассылаю в этот чат — повторный триггер пропущен"]
+
     def test_a_lost_connection_reconnects_and_goes_on(self, monkeypatch):
         import functions.broadcast as bc
 
@@ -548,32 +589,40 @@ class TestFinishReleasesSlot:
         assert asyncio.run(scenario()) is False
 
 
-# --- report _finish locks the slot so /cancel can't free it mid-replay (race) ---
+# --- report _finish locks the slot so /cancel can't free it mid-replay (race), but a ⏹ /
+# /cancel softly stops it: the rest of the accounts are skipped, the slot freed only at the end ---
 
 class TestFinishLocksSlotDuringReplay:
-    def test_cancel_during_replay_is_refused(self):
+    def test_cancel_during_replay_stops_softly(self):
         from bot.routers.moderation import _finish
 
         release = asyncio.Event()
         in_replay = asyncio.Event()
+        aborted = []
+        summaries = []
 
         class _Inst:
             async def replay_rest(self, *a):
                 in_replay.set()
                 await release.wait()  # replay is driving the rest of the workers right now
+                return a[-1].is_set()  # the ⏹ reached it: the rest were skipped
 
         class _Sess:
             async def disconnect(self):
                 return None
 
+        class _ReportBot(_Bot):
+            async def send_message(self, chat_id, text, **kw):
+                summaries.append(text)
+                return ns(message_id=1)
+
         async def scenario():
             m = JobManager()
-            # on_abort would fire only if stop() were (wrongly) allowed; set release so a
-            # regression can't deadlock the test, but the assertions still catch it.
-            m.acquire("Репорт", on_abort=lambda: release.set(), timeout=0)
+            # on_abort would free the slot under the running replay: it must not fire
+            m.acquire("Репорт", on_abort=lambda: aborted.append(True), timeout=0)
             flow = {"session": _Sess(), "rest": [], "peer": "x",
                     "ids": [1], "comment": "c", "selections": []}
-            task = asyncio.create_task(_finish(_Inst(), flow, _Bot(), 1, m, ns(in_job=[])))
+            task = asyncio.create_task(_finish(_Inst(), flow, _ReportBot(), 1, m, ns(in_job=[])))
             await in_replay.wait()
             stopped = await m.stop()        # a /cancel mid-replay
             active_during = m.active
@@ -582,9 +631,95 @@ class TestFinishLocksSlotDuringReplay:
             return stopped, active_during, m.active
 
         stopped, active_during, active_after = asyncio.run(scenario())
-        assert stopped is False         # stop refused while locked
+        assert stopped is True          # accepted, as a soft stop
         assert active_during is True    # slot stayed held during replay_rest
-        assert active_after is False    # and freed once _finish returned
+        assert aborted == []            # on_abort didn't free it
+        assert active_after is False    # freed once _finish returned
+        assert any("⏹ Остановлено" in text for text in summaries)
+
+
+class TestSoftStop:
+    def test_locked_slot_without_soft_stop_refuses(self):
+        async def scenario():
+            m = JobManager()
+            m.acquire("Анализ", cancelable=False, timeout=0)
+            return await m.stop(), m.active
+
+        assert asyncio.run(scenario()) == (False, True)
+
+    def test_soft_stop_is_set_and_cleared_with_the_slot(self):
+        async def scenario():
+            m = JobManager()
+            m.acquire("Репорт", timeout=0)
+            m.lock()
+            event = m.soft_stop()
+            stopped, active = await m.stop(), m.active
+            m.release()
+            m.acquire("Следующая", cancelable=False, timeout=0)  # a later locked job: no stale event
+            return stopped, active, event.is_set(), await m.stop()
+
+        assert asyncio.run(scenario()) == (True, True, True, False)
+
+    def test_replay_rest_skips_accounts_after_a_stop(self):
+        from functions.report import ReportFunc
+
+        stop = asyncio.Event()
+        done = []
+
+        @contextlib.asynccontextmanager
+        async def ctx(session):
+            yield
+
+        class _Session:
+            def __init__(self, name):
+                self.name = name
+
+            async def get_me(self):
+                return ns(first_name=self.name)
+
+        fn = ReportFunc(ns(sessions=[], ainitialize_session=ctx), ns(delay=[0]))
+
+        async def replay(session, *a):
+            done.append(session.name)
+            stop.set()  # ⏹ pressed while the first remaining account reports
+
+        fn.replay = replay
+
+        async def report(text):
+            pass
+
+        skipped = asyncio.run(fn.replay_rest([_Session("a"), _Session("b")], "x", [1], "", [], report, stop))
+        assert done == ["a"] and skipped is True
+
+    def test_stop_after_the_last_account_is_not_reported_as_stopped(self):
+        from bot.routers.moderation import _finish
+
+        summaries = []
+
+        class _Inst:
+            async def replay_rest(self, *a):
+                a[-1].set()  # ⏹ pressed once every account had reported
+                return False
+
+        class _Sess:
+            async def disconnect(self):
+                return None
+
+        class _ReportBot(_Bot):
+            async def send_message(self, chat_id, text, **kw):
+                summaries.append(text)
+                return ns(message_id=1)
+
+        async def scenario():
+            m = JobManager()
+            m.acquire("Репорт", timeout=0)
+            flow = {"session": _Sess(), "rest": [], "peer": "x",
+                    "ids": [1], "comment": "c", "selections": []}
+            await _finish(_Inst(), flow, _ReportBot(), 1, m, ns(in_job=[]))
+
+        asyncio.run(scenario())
+        assert any("Репорт отправлен" in t for t in summaries)
+        assert not any("Остановлено" in t for t in summaries)
 
 
 # --- mail_run bails before touching the shared instance when a job is running ---
@@ -930,7 +1065,7 @@ class TestChangePhotoFromChat:
         monkeypatch.chdir(tmp_path)  # no assets/photos here: the folder must not be read
         storage = _Storage()
         storage.sessions = [_Session("A"), _Session("B")]
-        fn = ChangeProfilePhotoFunc(storage, ns(delay=[1]))
+        fn = ChangeProfilePhotoFunc(storage, ns(delay=[1], profile_pause=[0]))
         used = []
 
         async def fake_set(session, photo_path, report):
@@ -1004,20 +1139,3 @@ class TestChangePhotoFromChat:
         assert state.cleared is False
         assert manager.path_during_job is None
         assert any("Ожидается картинка" in r for r in msg.replies)
-
-
-def test_the_trigger_campaign_refuses_an_empty_trigger():
-    from bot.routers import broadcasts
-
-    answers = []
-
-    async def answer(text=None, **k):
-        answers.append(text)
-
-    async def clear():
-        raise AssertionError("the flow must not start")
-
-    callback = ns(answer=answer, message=ns(answer=answer))
-    pool = ns(count=lambda: 1)
-    asyncio.run(broadcasts.cha_start(callback, ns(clear=clear), pool, ns(trigger="")))
-    assert any("Триггер не задан" in (a or "") for a in answers)

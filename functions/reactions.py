@@ -19,7 +19,7 @@ class ReactionsFunc(TelethonFunction):
 
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 return
@@ -41,9 +41,10 @@ class ReactionsFunc(TelethonFunction):
     async def run(self, link, reaction, report):
         peer, message_id = self.parse_message_link(link)
 
-        await self.gather_in_order(
+        await self.run_sequential(
             lambda session, report: self.set_reaction(session, peer, message_id, report, reaction=reaction),
             report,
+            pause=self.settings.delay,
         )
 
     async def execute(self):

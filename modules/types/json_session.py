@@ -1,5 +1,5 @@
+import getpass
 import random
-from datetime import datetime
 from typing import Any
 
 from telethon import TelegramClient
@@ -7,7 +7,6 @@ from telethon.sessions import StringSession
 
 from modules.generators.linux import LinuxAPI
 from modules.generators.telegram_android import TelegramAppAPI
-from modules.types.account import Account
 from modules.types.account_settings import AccountSettings
 from modules.types.application import Application
 from modules.types.proxy import Proxy
@@ -43,7 +42,13 @@ class JsonSession:
         lang_pack = generator.lang_pack
         system_lang_code = generator.system_lang_code()
 
-        async with TelegramClient(
+        typed = {}
+
+        def ask_password():  # Telethon's own prompt, but what is typed is kept: the .jsession stores it
+            typed["password"] = getpass.getpass("Please enter your password: ")
+            return typed["password"]
+
+        client = TelegramClient(
             session=StringSession(),
             api_id=api_id,
             api_hash=api_hash,
@@ -53,30 +58,15 @@ class JsonSession:
             lang_code=system_lang_code,
             system_lang_code=system_lang_code,
             proxy=proxy.as_telethon() if proxy else None
-        ) as client:
+        )
+        # a wrong password is asked again: the last one typed is the one that signed in
+        await client.start(password=password or ask_password)
+        try:
             account = await client.get_me()
 
-            account_settings = AccountSettings(
-                auth_key=client.session.save(),
-                account=Account(
-                    first_name=account.first_name,
-                    last_name=account.last_name,
-                    user_id=account.id,
-                    added_at=datetime.now().timestamp(),
-                    phone_number=account.phone,
-                    username=account.username,
-                ),
-                application=Application(
-                    api_id=api_id,
-                    api_hash=api_hash,
-                    device_name=device_name,
-                    app_version=app_version,
-                    sdk=sdk,
-                    lang_pack=lang_pack,
-                    system_lang_code=system_lang_code,
-                ),
-                proxy=proxy,
-                password=password,
+            account_settings = AccountSettings.from_client(
+                client, account, proxy, typed.get("password", password), lang_pack
             )
-
             account_settings.save(f"{account.phone}.jsession")
+        finally:
+            await client.disconnect()

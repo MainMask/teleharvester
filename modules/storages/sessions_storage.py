@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
@@ -11,6 +12,8 @@ from telethon.sync import TelegramClient
 
 from modules.types.json_session import JsonSession
 from modules.types.proxy import ACCOUNTS_PER_PROXY, Proxy
+
+log = logging.getLogger(__name__)
 
 
 def natural_key(text: str) -> list:
@@ -26,6 +29,21 @@ def profile_order(me) -> tuple:
     if not me.username:
         return (1, [])
     return (0, natural_key(me.username))
+
+
+async def release_client(client):
+    """Disconnect a worker client and drop its entity cache. Bot mode reuses the same worker
+    clients for the whole process life, and Telethon keeps appending every RPC result's
+    users/chats to the StringSession's in-memory _entities set, which never shrinks; the
+    next use re-resolves peers anyway."""
+    try:
+        await client.disconnect()
+    except Exception:
+        pass
+    try:
+        client.session._entities.clear()
+    except Exception:
+        pass
 
 
 class SessionsStorage:
@@ -309,21 +327,19 @@ class SessionsStorage:
     @asynccontextmanager
     async def ainitialize_session(self, session):
         if not self.initialize:
-            await session.connect()
+            try:
+                await session.connect()
+            except OSError as err:
+                # one worker's dead proxy / network must not end the whole job: its first request
+                # then fails at once ("Cannot send requests while disconnected"), which every
+                # caller handles per worker, as for any get_me failure (skip it / next account)
+                log.warning("%s: can't connect: %s", self.get_session_path(session), err)
 
         try:
             yield
         finally:
             if not self.initialize:
-                await session.disconnect()
-                # Bot mode reuses the same worker clients for the whole process life.
-                # Telethon keeps appending every RPC result's users/chats to the
-                # StringSession's in-memory _entities set, which never shrinks, so drop
-                # it when the client is released (the next use re-resolves peers anyway).
-                try:
-                    session.session._entities.clear()
-                except Exception:
-                    pass
+                await release_client(session)
 
     def __len__(self):
         return len(self.sessions)

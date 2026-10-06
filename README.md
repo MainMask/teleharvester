@@ -35,9 +35,13 @@ titles and a one-line description under each (the prompts inside a function stay
 - **Vote in poll** — vote in a poll from multiple accounts.
 - **Moderation report (message/post)** and **Moderation report (user)** — submit
   reports from multiple accounts.
-- **Change names**, **Change usernames**, **Change bio**, **Change profile photo** — bulk profile edits:
-  one name for all or a random one from a list; a base username with numbers or one per account
-  from a list; one photo for all (a file path) or a random one per account from `assets/photos/`.
+  Reactions, poll votes and reports go one account at a time with a pause between them (the
+  `delay` setting), so they don't all land on the same post within the same second.
+- **Change names**, **Change usernames**, **Change bio**, **Change profile photo** — bulk profile edits,
+  run one account at a time with a pause between them (`profile_pause`) so identical edits don't land
+  on every account at once: one name for all or a random one from a list; a base username with a random
+  suffix per account or one per account from a list; one bio for all or a random one from a list; one
+  photo for all (a file path) or a random one per account from `assets/photos/`.
 - **Set two-step verification password to accounts** — bulk 2FA setup.
 - **Clear all dialogs** — wipe dialogs / leave channels.
 - **Terminate other authorized sessions** — reset other logins on each account.
@@ -93,15 +97,36 @@ On the first run the app creates `config.toml` and asks for:
 - **Broadcast messages**, **delay** (e.g. `1-3`) and a **trigger** phrase used by the
   trigger-based broadcast functions. The delay between a worker's actions can later be changed
   from the bot (**🤖 Воркеры → ⏱ Задержка**); it is written back to `config.toml`, and the
-  terminal menu offers it as the default.
+  terminal menu offers it as the default. The trigger and `messages_count` (how many messages
+  each worker sends per chat / post, `0` = until stopped) are asked in the bot's chat, instant
+  and comments broadcasts, with the current value one tap away; the chosen value is written
+  back to `config.toml` when the job starts.
 
 Older configs with a `[sessions]` section or `[bot] token` are rejected at startup with a
 message to move those values into `.env`.
 
 The optional `[limits]` section throttles the **Mailing to PM** function: `per_account_daily`
-caps how many messages each account sends per day (rotating to the next account when reached),
-and `account_pause` (`[min, max]` seconds) is the pause taken when switching accounts. If the
-section is missing, defaults (`30` and `[30, 60]`) apply.
+caps how many messages each account sends per day (`0` = unlimited; rotating to the next account when reached),
+and `account_pause` (`[min, max]` seconds) is the pause taken when switching accounts.
+`profile_pause` (`[min, max]` seconds) is the pause between accounts for profile-wide changes
+(name, bio, username, 2FA, photo, channel, last seen) — they run one account at a time so the
+same edit doesn't land on every account at once. `invite_per_account_daily` and
+`contacts_per_account_daily` cap how many invites / contact-adds each account makes per day
+(`0` = unlimited; when reached, the person is handed to the next account). If the section is
+missing, defaults (`30`, `[30, 60]`, `[60, 180]`, `0`, `0`) apply.
+
+`profile_pause` can also be changed from the bot (**🤖 Воркеры → ⏳ Пауза профиля**), like the
+delay; it is written back to `config.toml`.
+
+The optional `[autoreply]` section is for the bot only: every `interval` seconds (default
+`900`, 15 min; at least `60`) it checks each worker's unread private chats, answers once anyone who replies to a
+worker that wrote to them first with `text` (e.g. "for further contact write to @MainMask"),
+marks the chat read and forwards what they wrote to the admins (name, username, phone if known,
+the worker, and an "open profile" button). What an answered person writes later is forwarded
+too, without another reply. `enabled = false`, an empty `text` or no section turns it off.
+On/off and the text can be changed from the bot (**🤖 Воркеры → 💬 Автоответ**, written back
+to `config.toml`, effective from the next check); the same screen shows how many people
+replied — in all, in the last day / week and per worker.
 
 The Telegram control bot (see [*Control bot*](#control-bot-telegram)) needs `BOT_TOKEN` in
 `.env` (from [@BotFather](https://t.me/BotFather)) and `admins` in the `[bot]` section of
@@ -119,9 +144,15 @@ Helper scripts (run from inside `sessions/`):
 
 ```bash
 cd sessions
-python add_session.py   # log in a new account and save it as .jsession (optional proxy)
+python add_session.py   # log in a new account and save it as .jsession (optional proxy; a 2FA password typed at sign-in is stored)
 python login.py <file.jsession>   # connect a session and print service messages
 ```
+
+The control bot does both without a terminal: **🤖 Воркеры → 📲 Добавить по номеру** (phone,
+then the code — typed with spaces, `1 2 3 4 5`, as Telegram expires a code sent through Telegram
+whole — and the 2FA password if set; the account gets a proxy from `assets/proxies.txt` and joins
+the pool live) and **🤖 Воркеры → 🔑 Код входа** (a worker's login codes from the last 15 minutes,
+shown spaced, with 🔄 to refresh).
 
 ### Importing Telegram Desktop `tdata`
 
@@ -136,8 +167,10 @@ tdata_import/
 
 On startup `main.py` converts every new folder to `sessions/<phone>.jsession`
 (authorizing over the network, so the account's proxy must be reachable) and marks
-the folder with a `.imported` file so it is not converted again. If `sessions/<phone>.jsession`
-already exists, it is left untouched (its stored 2FA password and proxy are kept). Run it
+the folder with a `.imported` file so it is not converted again. An account that is already a
+worker (matched offline by its user id against `sessions/*.jsession`) is not connected at all — its
+key must not show up from another proxy — and its file is left untouched (its stored 2FA password
+and proxy are kept). Run it
 manually (from any directory) with:
 
 ```bash
@@ -157,7 +190,11 @@ change it later even when a password is already set.
 - `assets/names.txt` — pool of names for **Change names** (one per line, `First Last`); the bot
   also takes such a list as a `.txt` sent to it.
 - `assets/usernames.txt` — usernames for **Change usernames** file mode (one per account); same
-  in the bot.
+  in the bot. Without a list, a base is suffixed with a random 2-4 digit number per account
+  (e.g. `CitadelCurator24`).
+- `assets/bios.txt` — pool of bio variants for **Change bio** in the bot (one per line); each
+  account gets a random one. The bot also takes such a list as a `.txt`, or a single bio typed in;
+  the CLI asks for one bio for all accounts.
 - `assets/targets.txt` — recipients for **Mailing to PM** (one username/phone per line).
 - `assets/contacts.parquet` — users database for **Add users to contacts**
   (columns `user_id`, `access_hash`; optional `first_name`, `last_name`, `phone`).
@@ -171,6 +208,8 @@ change it later even when a password is already set.
   written by **Add users to contacts** and read by the mailing (git-ignored).
 - `stats/restricted.json` — session files the last @SpamBot check found permanently
   restricted; rewritten on every check (git-ignored).
+- `stats/auto_replies.json` — who the `[autoreply]` already answered (per worker), so no
+  one is answered twice (git-ignored).
 
 ## Usage
 
@@ -223,7 +262,8 @@ one-line description of what each does:
   **🌐 Прокси** (a `.txt` or pasted list, one proxy per 3 accounts, applied live and saved to
   `assets/proxies.txt`), **⏱ Задержка** (the delay between a worker's actions) and
   **📥 Загрузить tdata** (a ZIP of one Telegram Desktop `tdata` folder; its 2FA password is asked
-  in chat and the account is imported live).
+  in chat and the account is imported live), **📲 Добавить по номеру** and **🔑 Код входа**
+  (see [*Adding accounts*](#adding-accounts)).
 
 Scraper jobs (scrape, group members, verify) run in **a separate process** and **their own job
 slot**, so even a multi-day scrape doesn't hold up mailings or the other functions. One account never
@@ -258,7 +298,9 @@ The same rules apply in the terminal menu and in the bot.
   (`stats/contacts.json`). The mailing then writes to that person only from that worker — to its
   own contact, not to a stranger, which is what keeps it out of the spam filter. People without a
   username in a scraped base go to the account that scraped it (only its access hashes are valid,
-  see `Owner ID` below); everyone else is a shared queue for all workers.
+  see `Owner ID` below); everyone else is a shared queue for all workers. In the terminal menu,
+  the workers left out by *how many accounts to use?* keep their people too: those wait for them,
+  they don't go to the workers picked for the run (*Add users to contacts* doesn't re-add them either).
 - **@SpamBot check before every run.** The mailing and *Add users to contacts* first ask @SpamBot
   about their workers (a few seconds). A dead session (banned or logged out) is moved to
   `sessions/inactive/`; a permanently restricted one is left out (`stats/restricted.json`). The
@@ -270,6 +312,8 @@ The same rules apply in the terminal menu and in the bot.
   (permanent restriction or dead) → its remaining people are handed to the other workers in the
   same run; a daily cap or a temporary limit → they wait for it until the next run (another
   worker would be writing to a stranger).
+- **Dead workers in other functions.** A worker whose session is dead is skipped with
+  `get_me failed: session is dead (banned or logged out)`; the other workers go on.
 - **Order.** Workers are ordered by username (`name1, name2 … name10`), in the pool and in every
   report; workers running at once still report in that order. The username is remembered in the
   `.jsession` the first time it is seen (a status check, a run, the account list).
@@ -283,7 +327,9 @@ For long-lived server use (the control bot as a daemon), the unit file is in [`d
 (so it survives crashes) and logs to journald. Five failed starts within 5 minutes (e.g. a config
 error) leave the unit failed instead of restarting forever: fix it, then
 `systemctl reset-failed teleharvester-bot`. aiogram already retries transient polling errors and
-stops gracefully on SIGTERM. The worker accounts in `sessions/` are read once at startup, so after
+stops gracefully on SIGTERM. Every start is announced to the admins in the bot ("🔄 Бот запущен"),
+and a start after a crash or an out-of-memory kill says so ("⚠️ … после сбоя"), so a silent restart
+or a crash loop doesn't go unnoticed. The worker accounts in `sessions/` are read once at startup, so after
 adding or removing a session file restart the service (`systemctl restart teleharvester-bot`) for the
 change to take effect.
 
@@ -299,9 +345,6 @@ journalctl -u teleharvester-bot -f
 teleharvester includes a full Telegram scraper and analyser: scraping Telegram channels,
 groups and chats (message content, authors, reactions, views, shares, comments) and
 analysing the result, stored as **Apache Parquet** (`.parquet`) or **Excel** (`.xlsx`).
-
-> Scraper and analysis originally by **Ergon Cugler de Moraes Silva** —
-> <https://github.com/ergoncugler/web-scraping-telegram/>. See *Citation* below.
 
 Everything runs from the terminal menu or the control bot, in the **🎯 Аудитория** section, on an
 account you pick: a worker from `sessions/` or a **personal account from `personal_sessions/`**
@@ -384,5 +427,3 @@ count added on write).
 
 If you use the scraper in research, please cite the original work:
 
-> SILVA, Ergon Cugler de Moraes. *TelegramScrap: A comprehensive tool for scraping Telegram data*.
-> (Feb) 2023. Available at: <https://doi.org/10.48550/arXiv.2412.16786>.

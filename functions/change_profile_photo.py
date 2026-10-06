@@ -15,7 +15,7 @@ class ChangeProfilePhotoFunc(TelethonFunction):
     async def set_profile_photo(self, session: TelegramClient, photo_path: str, report):
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 return
@@ -31,7 +31,7 @@ class ChangeProfilePhotoFunc(TelethonFunction):
 
     async def run(self, report, photo_path=None):
         if photo_path is not None:  # one photo for every account (sent through the bot)
-            await self.gather_in_order(
+            await self.run_sequential(
                 lambda session, report: self.set_profile_photo(session, photo_path, report),
                 report,
             )
@@ -48,7 +48,7 @@ class ChangeProfilePhotoFunc(TelethonFunction):
             await report(f"No photos in {path}")
             return
 
-        await self.gather_in_order(
+        await self.run_sequential(
             lambda session, report: self.set_profile_photo(session, os.path.join(path, random.choice(photos)), report),
             report,
         )

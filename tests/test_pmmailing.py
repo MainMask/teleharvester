@@ -8,7 +8,7 @@ import asyncio
 import json
 import types
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date
 from unittest.mock import patch
 
 from telethon.tl import types as tl_types
@@ -24,31 +24,44 @@ def _fn():
     return PmMailingFunc(storage, settings)
 
 
+def _run_campaign(n_recipients, cap=10_000):
+    """One worker mails n recipients; returns the recipients it sent to."""
+    @asynccontextmanager
+    async def ctx(session):
+        yield
+
+    async def get_me():
+        return types.SimpleNamespace(id=1, first_name="A")
+
+    async def anoop(*args, **kwargs):
+        return None
+
+    session = types.SimpleNamespace(get_me=get_me, send_message=anoop)
+    storage = types.SimpleNamespace(sessions=[session], ainitialize_session=ctx)
+    settings = types.SimpleNamespace(delay=[0], per_account_daily=cap, account_pause=[0])
+    fn = PmMailingFunc(storage, settings)
+
+    recipients = [f"user{i}" for i in range(n_recipients)]
+    asyncio.run(fn.run(recipients, RichContent(text="hi"), [0], anoop))
+    return list(fn.stats)
+
+
 class TestDailyCap:
-    def test_sent_today_zero_when_no_entry(self):
-        fn = _fn()
-        fn.limits = {}
-        assert fn.account_sent_today("111") == 0
+    """per_account_daily goes through modules.account_limits.DailyCounter (tested there)."""
 
-    def test_sent_today_resets_on_new_date(self):
-        fn = _fn()
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
-        fn.limits = {"111": {"date": yesterday, "count": 7}}
-        assert fn.account_sent_today("111") == 0
+    def test_account_stops_at_its_cap_and_it_is_saved(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm_mailing.json"))
+        monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "account_limits.json"))
 
-    def test_bump_counts_within_day_and_resets_across_days(self):
-        fn = _fn()
-        fn.limits = {}
-        with patch.object(PmMailingFunc, "save_limits"):
-            fn.bump_account("111")
-            fn.bump_account("111")
-        assert fn.account_sent_today("111") == 2
+        assert _run_campaign(3, cap=1) == ["user0"]
+        saved = json.loads((tmp_path / "account_limits.json").read_text())
+        assert saved == {"1": {"date": date.today().isoformat(), "count": 1}}
 
-        # simulate the stored day rolling over
-        fn.limits["111"]["date"] = (date.today() - timedelta(days=1)).isoformat()
-        with patch.object(PmMailingFunc, "save_limits"):
-            fn.bump_account("111")
-        assert fn.account_sent_today("111") == 1
+    def test_zero_means_unlimited(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm_mailing.json"))
+        monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "account_limits.json"))
+
+        assert len(_run_campaign(3, cap=0)) == 3
 
 
 class TestFilterUnsent:
@@ -99,25 +112,6 @@ class TestStatsSaveBatching:
     """pm_mailing.json is flushed every STATS_SAVE_EVERY successes, not per send,
     and the tail is always persisted by run()."""
 
-    def _run_campaign(self, tmp_path, n_recipients):
-        @asynccontextmanager
-        async def ctx(session):
-            yield
-
-        async def get_me():
-            return types.SimpleNamespace(id=1, first_name="A")
-
-        async def anoop(*args, **kwargs):
-            return None
-
-        session = types.SimpleNamespace(get_me=get_me, send_message=anoop)
-        storage = types.SimpleNamespace(sessions=[session], ainitialize_session=ctx)
-        settings = types.SimpleNamespace(delay=[0], per_account_daily=10_000, account_pause=[0])
-        fn = PmMailingFunc(storage, settings)
-
-        recipients = [f"user{i}" for i in range(n_recipients)]
-        asyncio.run(fn.run(recipients, RichContent(text="hi"), [0], anoop))
-
     def test_batches_saves_and_flushes_tail(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm_mailing.json"))
         monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "account_limits.json"))
@@ -130,7 +124,7 @@ class TestStatsSaveBatching:
             real_save(self)
 
         with patch.object(PmMailingFunc, "save_stats", spy):
-            self._run_campaign(tmp_path, 60)
+            _run_campaign(60)
 
         # 60 successes, STATS_SAVE_EVERY=25 -> 2 periodic flushes (at 25, 50) + 1 tail flush
         assert pm.STATS_SAVE_EVERY == 25

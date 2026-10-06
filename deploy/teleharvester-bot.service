@@ -28,6 +28,15 @@ StandardOutput=journal
 StandardError=journal
 # unbuffered: the scraper's child process prints reach the journal at once, not lost on a kill
 Environment=PYTHONUNBUFFERED=1
+# a big mailing base is loaded in a worker thread (asyncio.to_thread); glibc gives each thread its
+# own malloc arena, which keeps the freed memory resident afterwards: two arenas keep the peak down
+Environment=MALLOC_ARENA_MAX=2
+
+# hardening: the bot writes only under WorkingDirectory (sessions/, stats/, tmp/, output) and /tmp
+# (a tdata import, now private to the unit and wiped on stop); it needs no privilege escalation
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target

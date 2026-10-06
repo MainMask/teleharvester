@@ -59,9 +59,13 @@ class _Msg:
 
 
 class _Storage:
-    def __init__(self):
+    def __init__(self, phones=()):
         self.jsessions_paths = {}
         self.added = None
+        self.phones = set(phones)
+
+    def is_phone_exists(self, phone):
+        return phone in self.phones
 
     def add_jsession(self, path):
         self.added = path
@@ -132,6 +136,23 @@ def test_password_step_happy_path(monkeypatch):
     assert any("импортирован" in r.lower() for r in msg.replies)
     # the summary reports what the loaded file holds
     assert any("socks5://10.0.0.7:1080" in r and "2FA: да" in r for r in msg.replies)
+
+
+def test_password_step_account_already_loaded(monkeypatch):
+    storage = _Storage(phones=["79990001122"])  # loaded from a file not named after its phone
+    msg = _Msg(text="-")
+    manager = _Manager(free=True)
+
+    async def fake_convert(tdata_dir, proxy, password, sessions_dir):
+        return "79990001122"
+
+    monkeypatch.setattr(accounts.tdata_import, "convert", fake_convert)
+    monkeypatch.setattr(accounts.tdata_import, "load_proxies", lambda path: [])
+
+    asyncio.run(accounts.tdata_password(msg, _State({"zip": _zip_bytes()}), _Pool(storage), manager))
+
+    assert storage.added is None
+    assert any("уже есть" in r for r in msg.replies) and manager.released is True
 
 
 def test_password_step_refuses_when_busy(monkeypatch):

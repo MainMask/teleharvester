@@ -17,6 +17,7 @@ router = Router()
 PHOTO_TMP_DIR = os.path.join("tmp", "photo")  # project-local, like tmp/broadcast
 NAMES_FILE = os.path.join("assets", "names.txt")          # the CLI's lists too
 USERNAMES_FILE = os.path.join("assets", "usernames.txt")
+BIOS_FILE = os.path.join("assets", "bios.txt")
 MAX_LIST_FILE_SIZE = 1024 * 1024
 
 
@@ -58,7 +59,40 @@ async def bio_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool
     if not await ensure_workers(callback, pool):
         return
     await state.set_state(ChangeBio.text)
-    await callback.message.answer("Введите новый текст bio:")
+    await callback.message.answer(
+        "Введите новый текст bio для всех аккаунтов — или пришлите .txt со списком вариантов, "
+        "по одному на строку: каждый аккаунт получит случайный.",
+        reply_markup=_file_kb("bio_file", BIOS_FILE),
+    )
+
+
+async def _run_bios(message: Message, pool: WorkerPool, functions: dict, manager: JobManager, **kwargs):
+    instance, bot_function = resolve(functions, "bio")
+    await manager.run(
+        message.bot, message.chat.id, pool, instance, bot_function,
+        lambda f, r: f.run(r, **kwargs),
+        "Смена bio…", "Готово ✅",
+    )
+
+
+@router.callback_query(ChangeBio.text, ChoiceCB.filter(F.scope == "bio_file"))
+async def bio_from_file(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
+                        manager: JobManager):
+    await callback.answer()
+    bios = _file_lines(BIOS_FILE)
+    if not bios:
+        return
+    await state.clear()
+    await _run_bios(callback.message, pool, functions, manager, bios=bios)
+
+
+@router.message(ChangeBio.text, F.document)
+async def bio_list(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    bios = await _sent_lines(message)
+    if bios is None:
+        return
+    await state.clear()
+    await _run_bios(message, pool, functions, manager, bios=bios)
 
 
 @router.message(ChangeBio.text)
@@ -68,12 +102,7 @@ async def bio_run(message: Message, state: FSMContext, pool: WorkerPool, functio
         return
     bio = message.text
     await state.clear()
-    instance, bot_function = resolve(functions, "bio")
-    await manager.run(
-        message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(bio, r),
-        "Смена bio…", "Готово ✅",
-    )
+    await _run_bios(message, pool, functions, manager, bio=bio)
 
 
 # --- change name ---
@@ -140,7 +169,7 @@ async def username_start(callback: CallbackQuery, state: FSMContext, pool: Worke
         return
     await state.set_state(ChangeUsername.base)
     await callback.message.answer(
-        "База для username (если занят — добавится номер: base1, base2, …) — или пришлите .txt "
+        "База для username (если занята — добавится случайное число: base24, base3071, …) — или пришлите .txt "
         "со списком username, по одному на строку: аккаунты получат их по порядку.",
         reply_markup=_file_kb("username_file", USERNAMES_FILE),
     )

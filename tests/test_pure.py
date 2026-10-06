@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from functions.base.base import BaseFunction
+from functions.base.base import BaseFunction, pick_seconds
 from functions.inviting import InvitingFunc
 from functions.changename import ChangeNameFunc
 from modules.types.proxy import Proxy
@@ -23,6 +23,15 @@ class ParseDelayTest(unittest.TestCase):
 
     def test_single(self):
         self.assertEqual(BaseFunction().parse_delay("5"), [5])
+
+
+class PickSecondsTest(unittest.TestCase):
+    def test_single(self):
+        self.assertEqual(pick_seconds([7]), 7)
+
+    def test_range_and_reversed_range(self):
+        for pause in ([3, 5], [5, 3]):
+            self.assertIn(pick_seconds(pause), (3, 4, 5))
 
 
 class ParseMessageLinkTest(unittest.TestCase):

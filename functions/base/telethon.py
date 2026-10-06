@@ -1,6 +1,6 @@
 import random
 
-from functions.base.base import BaseFunction
+from functions.base.base import AccountLimited, BaseFunction
 from modules.storages.sessions_storage import SessionsStorage
 from modules.settings import Settings
 
@@ -16,11 +16,19 @@ class TelethonFunction(BaseFunction):
 
         self.sessions: List[TelegramClient] = storage.sessions
 
+    async def get_me(self, session):
+        """session.get_me(), raising for a banned / logged-out account (Telethon returns None for it),
+        so the caller's get_me error branch skips the worker instead of crashing on me.first_name."""
+        me = await session.get_me()
+        if me is None:
+            raise AccountLimited("session is dead (banned or logged out)")
+        return me
+
     async def request_each(self, session, report, request, done: str, failed: str):
         """One request on one worker, reported under its name: `done`, or `failed: <error>`."""
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 return

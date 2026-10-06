@@ -54,3 +54,52 @@ def test_setup_sessions_reasks_non_numeric_api_id(monkeypatch):
     answers = iter(["abc", "42", "hash"])
     monkeypatch.setattr("modules.settings.console.input", lambda *_: next(answers))
     assert Settings.setup_sessions() == (42, "hash")
+
+
+@pytest.mark.parametrize("extra", [
+    "[autoreply]\ninterval = 0\n",           # would poll every worker without a pause
+    "[autoreply]\ninterval = 30\n",
+    "[limits]\nprofile_pause = []\n",        # IndexError mid-job
+    "[limits]\naccount_pause = [-1, 5]\n",
+    '[autoreply]\nenabled = "false"\n',     # a non-empty string: auto-reply silently on
+    "[autoreply]\ntext = 123\n",
+    '[limits]\nper_account_daily = "30"\n',  # TypeError mid-job
+    "[limits]\ninvite_per_account_daily = -1\n",
+])
+def test_bad_pause_or_interval_exits(monkeypatch, cwd, extra):
+    (cwd / "config.toml").write_text(BROADCAST + extra)
+    monkeypatch.setenv("TG_API_ID", "42")
+    monkeypatch.setenv("TG_API_HASH", "abc")
+    with pytest.raises(SystemExit):
+        Settings()
+
+
+@pytest.mark.parametrize("old, new", [
+    ("messages_count = 0", "messages_count = -1"),
+    ("messages_count = 0", 'messages_count = "5"'),
+    ('trigger = "go"', "trigger = 1"),
+])
+def test_bad_messages_count_or_trigger_exits(monkeypatch, cwd, old, new):
+    (cwd / "config.toml").write_text(BROADCAST.replace(old, new))
+    monkeypatch.setenv("TG_API_ID", "42")
+    monkeypatch.setenv("TG_API_HASH", "abc")
+    with pytest.raises(SystemExit):
+        Settings()
+
+
+def test_bad_delay_exits(monkeypatch, cwd):
+    (cwd / "config.toml").write_text(BROADCAST.replace("delay = [1, 2]", "delay = [1, 2, 3]"))
+    monkeypatch.setenv("TG_API_ID", "42")
+    monkeypatch.setenv("TG_API_HASH", "abc")
+    with pytest.raises(SystemExit):
+        Settings()
+
+
+def test_valid_pauses_and_interval_pass(monkeypatch, cwd):
+    (cwd / "config.toml").write_text(
+        BROADCAST + "[limits]\naccount_pause = [60, 30]\nprofile_pause = [0]\n[autoreply]\ninterval = 60\n"
+    )
+    monkeypatch.setenv("TG_API_ID", "42")
+    monkeypatch.setenv("TG_API_HASH", "abc")
+    settings = Settings()
+    assert settings.profile_pause == [0] and settings.autoreply_interval == 60

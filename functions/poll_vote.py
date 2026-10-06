@@ -11,7 +11,7 @@ class PollVoteFunc(TelethonFunction):
     async def vote(self, session, channel, post_id, option_number, report):
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 return False
@@ -39,9 +39,10 @@ class PollVoteFunc(TelethonFunction):
     async def run(self, link, option_number, report):
         channel, post_id = self.parse_message_link(link)
 
-        results = await self.gather_in_order(
+        results = await self.run_sequential(
             lambda session, report: self.vote(session, channel, post_id, option_number, report),
             report,
+            pause=self.settings.delay,
         )
 
         # no ok/error keyword: the per-account lines above are what the job summary counts

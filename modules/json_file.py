@@ -12,11 +12,13 @@ def load(path: str, default):
 
 
 def save(path: str, data):
-    """Via a temp file + rename: a write that dies midway leaves the old file whole."""
+    """Via a temp file + rename: a write that dies midway (or a power cut) leaves the old file whole."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as fileobj:
         json.dump(data, fileobj, ensure_ascii=False)
+        fileobj.flush()
+        os.fsync(fileobj.fileno())  # on disk before the rename: a power cut must not leave it empty
 
     os.replace(tmp_path, path)

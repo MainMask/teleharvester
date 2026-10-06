@@ -14,7 +14,7 @@ from bot.keyboards.menu import WORKERS_BUTTON, main_menu, workers_kb
 from bot.routers._common import ensure_workers, require_text
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.states import ImportTdata, SetDelay, SetProxy
+from bot.states import ImportTdata, SetDelay, SetProfilePause, SetProxy
 from functions.base.base import BaseFunction
 from modules import tdata_import
 from modules.storages.sessions_storage import profile_order
@@ -78,6 +78,9 @@ WORKERS_HELP = (
     "<b>🩺 Проверка и статистика</b> — ограничения от @SpamBot, страны номеров, очистка\n"
     "<b>🌐 Прокси</b> — раздать прокси всем аккаунтам\n"
     "<b>⏱ Задержка</b> — пауза между действиями воркера в рассылках и вступлениях\n"
+    "<b>💬 Автоответ</b> — ответ тем, кто ответил на рассылку в ЛС, и их сообщения сюда\n"
+    "<b>📲 Добавить по номеру</b> — войти в аккаунт по номеру и коду\n"
+    "<b>🔑 Код входа</b> — коды от Telegram, пришедшие воркеру (для входа с другого устройства)\n"
     "<b>📥 Загрузить tdata</b> — добавить аккаунт из Telegram Desktop"
 )
 
@@ -193,6 +196,9 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
     if manager.active:  # a job may have started between the prompt and the reply
         await message.answer(f"⛔ Занят: {manager.label}. Дождитесь завершения задачи.")
         return
+    if pool.polling is not None:  # its old client is connected through the old proxy until the poll ends
+        await message.answer("⛔ Идёт проверка автоответа. Пришлите прокси ещё раз через минуту.")
+        return
 
     try:
         summary = pool.storage.apply_proxies(proxies)
@@ -221,13 +227,24 @@ def _delay_text(delay: list) -> str:
     return "–".join(str(part) for part in delay) + " с"
 
 
+def _parse_seconds(text: str | None) -> list | None:
+    """[sec] or [min, max] from "7" / "5-10"; None if it's no such (non-negative) range."""
+    try:
+        seconds = BaseFunction.parse_delay((text or "").replace(" ", ""))
+    except ValueError:
+        return None
+    if not seconds or len(seconds) > 2 or any(part < 0 for part in seconds):
+        return None
+    return seconds
+
+
 @router.callback_query(MenuCB.filter(F.action == MenuAction.DELAY))
 async def delay_start(callback: CallbackQuery, state: FSMContext, settings: Settings):
     await callback.answer()
     await state.set_state(SetDelay.input)
     await callback.message.answer(
         f"⏱ Сейчас между действиями воркера: <b>{_delay_text(settings.delay)}</b> "
-        "(рассылки, инвайтинг, контакты, вступления).\n\n"
+        "(рассылки, инвайтинг, контакты, вступления, реакции, опросы, жалобы).\n\n"
         "Пришлите новую задержку в секундах: <code>5-10</code> (случайная в диапазоне) "
         "или <code>7</code>.",
         parse_mode="HTML",
@@ -236,12 +253,8 @@ async def delay_start(callback: CallbackQuery, state: FSMContext, settings: Sett
 
 @router.message(SetDelay.input)
 async def delay_apply(message: Message, state: FSMContext, settings: Settings):
-    raw = (message.text or "").replace(" ", "")
-    try:
-        delay = BaseFunction().parse_delay(raw)
-    except ValueError:
-        delay = None
-    if not delay or len(delay) > 2 or any(part < 0 for part in delay):
+    delay = _parse_seconds(message.text)
+    if delay is None:
         await message.answer("Нужно число или диапазон, например 5-10 или 7. Пришлите ещё раз.")
         return
 
@@ -252,6 +265,39 @@ async def delay_apply(message: Message, state: FSMContext, settings: Settings):
         return
     await state.clear()
     await message.answer(f"✅ Задержка: {_delay_text(delay)}. Действует сразу и в CLI.", reply_markup=main_menu())
+
+
+# --- pause between accounts for profile changes ------------------------------
+
+@router.callback_query(MenuCB.filter(F.action == MenuAction.PROFILE_PAUSE))
+async def profilepause_start(callback: CallbackQuery, state: FSMContext, settings: Settings):
+    await callback.answer()
+    await state.set_state(SetProfilePause.input)
+    await callback.message.answer(
+        f"⏳ Сейчас пауза между аккаунтами при смене профиля: <b>{_delay_text(settings.profile_pause)}</b> "
+        "(имя, bio, username, 2FA, фото, канал, last seen).\n\n"
+        "Пришлите новую паузу в секундах: <code>60-180</code> (случайная в диапазоне) "
+        "или <code>120</code>.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(SetProfilePause.input)
+async def profilepause_apply(message: Message, state: FSMContext, settings: Settings):
+    pause = _parse_seconds(message.text)
+    if pause is None:
+        await message.answer("Нужно число или диапазон, например 60-180 или 120. Пришлите ещё раз.")
+        return
+
+    try:
+        settings.set_profile_pause(pause)
+    except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
+        await message.answer(f"⚠️ Не удалось сохранить config.toml: {err}")
+        return
+    await state.clear()
+    await message.answer(
+        f"✅ Пауза профиля: {_delay_text(pause)}. Действует сразу и в CLI.", reply_markup=main_menu()
+    )
 
 
 # --- tdata upload ---------------------------------------------------------
@@ -339,7 +385,8 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
             await message.answer("⚠️ Аккаунт не авторизован — импорт отменён.", reply_markup=main_menu())
             return
 
-        session = pool.storage.add_jsession(f"sessions/{phone}.jsession")
+        # an account already loaded may sit in a file not named after its phone
+        session = None if pool.storage.is_phone_exists(phone) else pool.storage.add_jsession(f"sessions/{phone}.jsession")
         if session is None:
             await message.answer(
                 f"ℹ️ Аккаунт +{phone} уже есть в sessions/ — файл не изменён.",

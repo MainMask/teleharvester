@@ -10,5 +10,16 @@ messages_count = 0   # per-chat cap for chat/comment campaigns; 0 = unlimited (s
 trigger = ""
 
 [limits]
-per_account_daily = 30
+per_account_daily = 30          # max PM-mailing messages per account per day (0 = unlimited)
 account_pause = [30, 60]
+profile_pause = [60, 180]   # pause (sec) between accounts for profile changes (name/bio/username/2FA/photo)
+invite_per_account_daily = 0    # max invites per account per day (0 = unlimited)
+contacts_per_account_daily = 0  # max contact-adds per account per day (0 = unlimited)
+
+[autoreply]
+# Bot only: answer once anyone who replies to a PM mailing, and forward their messages to the admins.
+# Off when enabled = false or the text is empty; both can also be changed in the bot (🤖 Воркеры → 💬 Автоответ).
+# Example: text = "Спасибо за ответ! Для дальнейшей связи напишите @MainMask"
+enabled = true
+text = ""
+interval = 900   # seconds between checks of the workers' unread chats (at least 60)

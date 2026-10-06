@@ -17,25 +17,25 @@ from modules.console import console
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
+from modules.account_limits import DailyCounter
+from scraper.scrape import channel_slug
 
 
 class InvitingFunc(TelethonFunction):
     """Invite users from supergroup"""
 
+    # channel_slug: the scraper's parser, which drops a trailing "/", a ?query and a post id
     @staticmethod
     def is_public(link):
-        return not ("joinchat" in link or "/+" in link or link.startswith("+"))
+        return not channel_slug(link).startswith("+")  # an invite's slug is "+<hash>"
 
     @staticmethod
     def invite_hash(link):
-        return link.split("/")[-1].replace("+", "")
+        return channel_slug(link).lstrip("+")
 
     @staticmethod
     def public_ref(link):
-        if "t.me" in link:
-            return "@" + link.split("/")[-1]
-
-        return link if link.startswith("@") else "@" + link
+        return "@" + channel_slug(link)
 
     @staticmethod
     def chunkify(lst, n):  # split list
@@ -67,7 +67,7 @@ class InvitingFunc(TelethonFunction):
 
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
                 source = await self.resolve_source(session, source_link)
                 dest = await session.get_entity(destination)
             except Exception as err:
@@ -83,11 +83,16 @@ class InvitingFunc(TelethonFunction):
             added = 0
             tried = 0
             wanted = set(target_ids)
+            aid = getattr(me, "id", None)
 
             try:
                 async for user in session.iter_participants(source):
                     if user.id not in wanted or user.bot or user.deleted or user.is_self:
                         continue
+
+                    if self._limits.reached(aid):
+                        await report(f"[{me.first_name}] дневной лимит инвайтов достигнут, стоп")
+                        break
 
                     try:
                         result = await self.safe_call(lambda: session(InviteToChannelRequest(
@@ -102,10 +107,11 @@ class InvitingFunc(TelethonFunction):
                         break
                     except (UserPrivacyRestrictedError, UserNotMutualContactError,
                             UserChannelsTooMuchError, UserBotError):
-                        pass  # the request was sent: the delay below still applies
+                        self._limits.bump(aid)  # the request was sent: counts toward the daily cap
                     except Exception as err:
                         await report(f"[{me.first_name}] skip {user.id}: {err}")
                     else:
+                        self._limits.bump(aid)  # the request reached Telegram
                         # privacy-restricted users come back in missing_invitees, not as an
                         # error: not invited, but the request was sent, so the delay still applies
                         if not getattr(result, "missing_invitees", None):
@@ -141,6 +147,9 @@ class InvitingFunc(TelethonFunction):
 
     async def run(self, source_link, destination, delay, report):
         self.delay_range = delay
+        self._limits = DailyCounter(
+            "stats/invite_limits.json", self.settings.invite_per_account_daily
+        )
         self.progress_prepare()
 
         target_ids = await self.parse_targets(source_link, report)

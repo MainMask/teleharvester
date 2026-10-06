@@ -376,7 +376,7 @@ class TestMoreJobs:
         from functions.inviting import InvitingFunc
 
         session = _InvSession(limit_after=1)
-        fn = InvitingFunc(_storage([session]), types.SimpleNamespace(delay=[0]))
+        fn = InvitingFunc(_storage([session]), types.SimpleNamespace(delay=[0], invite_per_account_daily=0))
         fn.progress = Progress()
 
         async def parse_targets(link, report):

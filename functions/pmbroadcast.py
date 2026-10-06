@@ -12,7 +12,7 @@ class PmBroadcastFunc(TelethonFunction):
     async def broadcast(self, session, peer, content, by_phone_number, report):
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 return
@@ -41,9 +41,10 @@ class PmBroadcastFunc(TelethonFunction):
                 await report(f"[{me.first_name}] sent.")
 
     async def run(self, peer, content, by_phone_number, report):
-        await self.gather_in_order(
+        await self.run_sequential(
             lambda session, report: self.broadcast(session, peer, content, by_phone_number, report),
             report,
+            pause=self.settings.delay,
         )
 
     async def execute(self):

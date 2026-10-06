@@ -880,6 +880,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
     loop = asyncio.get_running_loop()
     main_task = asyncio.current_task()
     sigterm_handled = False
+    # the bot's child process has its own (SIGTERM -> stop): handed back after the loop, as
+    # remove_signal_handler would leave SIG_DFL, killing the final file writes on a SIGTERM
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
     if threading.current_thread() is threading.main_thread():
         try:
             loop.add_signal_handler(signal.SIGTERM, main_task.cancel)
@@ -1088,6 +1091,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
         if sigterm_handled:
             try:
                 loop.remove_signal_handler(signal.SIGTERM)
+                signal.signal(signal.SIGTERM, previous_sigterm)
             except (NotImplementedError, RuntimeError, ValueError):
                 pass
         await client.disconnect()

@@ -7,6 +7,7 @@ import types
 
 import openpyxl
 import pandas as pd
+import pytest
 from git.exc import GitCommandError
 
 from functions.base.base import BaseFunction
@@ -130,7 +131,7 @@ class TestChangeNameBlankLines:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("functions.changename.console.input", lambda *_: "y")
 
-        fn = ChangeNameFunc(_Storage(), ns(delay=[0]))
+        fn = ChangeNameFunc(_Storage(), ns(delay=[0], profile_pause=[0]))
         fn.ask_accounts_count = lambda: None
         got = []
 
@@ -423,6 +424,9 @@ class TestClearChatsOffset:
         calls = []
 
         class _S:
+            async def get_me(self):
+                return ns(first_name="w")
+
             async def iter_dialogs(self):
                 yield ns(entity=ns(), id=1, title="chat")
 
@@ -458,6 +462,14 @@ class TestSetupBroadcast:
         answers = iter(["", "hi", "", "1-3", "go"])
         monkeypatch.setattr("modules.settings.console.input", lambda *_: next(answers))
         assert Settings.setup_broadcast() == (["hi"], [1, 3], "go")
+
+    def test_reasks_a_delay_of_more_than_two_parts(self, monkeypatch):
+        from modules.settings import Settings
+
+        # "1-2-3" would be written to config.toml and then rejected by Settings() on the next start
+        answers = iter(["hi", "", "1-2-3", "2-5", "go"])
+        monkeypatch.setattr("modules.settings.console.input", lambda *_: next(answers))
+        assert Settings.setup_broadcast() == (["hi"], [2, 5], "go")
 
 
 class TestUpdaterPullFailure:
@@ -677,6 +689,7 @@ class TestAddContactsUsernameFallback:
         fn = AddContactsFunc(_Storage(), ns(delay=[0]))
         msgs, fn._report = collect()
         fn.added, fn.ledger, fn._unsaved, fn._my_ids = 0, {}, 0, {}
+        fn._limits = ns(reached=lambda k: False, bump=lambda k: None, cap=0)
         asyncio.run(fn.add_one(_S(), row))
         return fn.added, added_ids, msgs
 
@@ -705,6 +718,7 @@ class TestAddContactsName:
         fn = AddContactsFunc(_Storage(), ns(delay=[0]))
         msgs, fn._report = collect()
         fn.added, fn.ledger, fn._unsaved, fn._my_ids = 0, {}, 0, {}
+        fn._limits = ns(reached=lambda k: False, bump=lambda k: None, cap=0)
         asyncio.run(fn.add_one(_S(), {"user_id": 1, "access_hash": 2, **row}))
         return sent[0].first_name
 
@@ -721,6 +735,32 @@ class TestAddContactsName:
         assert self._first_name({}) == "contact"
 
 
+class TestAddContactsDailyCap:
+    def test_second_add_is_capped(self, tmp_path):
+        from functions.add_contacts import AddContactsFunc
+        from functions.base.base import AccountLimited
+        from modules.account_limits import DailyCounter
+
+        class _S:
+            async def get_me(self):
+                return ns(id=7)
+
+            async def __call__(self, request):
+                pass  # AddContactRequest succeeds
+
+        fn = AddContactsFunc(_Storage(), ns(delay=[0]))
+        _msgs, fn._report = collect()
+        fn.added, fn.ledger, fn._unsaved, fn._my_ids = 0, {}, 0, {}
+        fn._limits = DailyCounter(str(tmp_path / "contacts_limits.json"), 1)
+
+        session, row = _S(), {"user_id": 1, "access_hash": 2}
+        asyncio.run(fn.add_one(session, row))  # first: added + bump
+        assert fn.added == 1
+
+        with pytest.raises(AccountLimited):
+            asyncio.run(fn.add_one(session, {"user_id": 2, "access_hash": 3}))  # cap 1 reached
+
+
 class TestProfilePhotoSkipsHiddenFiles:
     def test_only_regular_visible_files(self, monkeypatch, tmp_path):
         from functions.change_profile_photo import ChangeProfilePhotoFunc
@@ -731,7 +771,7 @@ class TestProfilePhotoSkipsHiddenFiles:
         (photos / "a.jpg").write_bytes(b"jpg")
         monkeypatch.chdir(tmp_path)
 
-        fn = ChangeProfilePhotoFunc(_Storage([object()] * 5), ns(delay=[0]))
+        fn = ChangeProfilePhotoFunc(_Storage([object()] * 5), ns(delay=[0], profile_pause=[0]))
         picked = []
 
         async def set_profile_photo(session, path, report):
@@ -999,7 +1039,7 @@ class TestCancelInsideForm:
         async def answer(text, **k):
             replies.append(text)
 
-        asyncio.run(menu.cancel(ns(answer=answer), _State(), ns(stop=stop, active=True, label="Рассылка")))
+        asyncio.run(menu.cancel(ns(answer=answer, chat=ns(id=1)), _State(), ns(stop=stop, active=True, label="Рассылка")))
         assert stopped == [] and replies[0].startswith("Отменено.") and "/cancel ещё раз" in replies[0]
 
 
@@ -1106,6 +1146,7 @@ class TestInvitingMissingInvitees:
 
         fn = InvitingFunc(_Storage(), ns(delay=[0]))
         fn.delay = _no_sleep
+        fn._limits = ns(reached=lambda k: False, bump=lambda k: None, cap=0)
 
         async def resolve_source(session, link):
             return "src"
@@ -1140,6 +1181,7 @@ class TestInvitingMissingInvitees:
                 raise UserPrivacyRestrictedError(request=None)
 
         fn = InvitingFunc(_Storage(), ns(delay=[0]))
+        fn._limits = ns(reached=lambda k: False, bump=lambda k: None, cap=0)
         delays = []
 
         async def count_delay():
@@ -1201,6 +1243,13 @@ class TestSessionFiles:
 
         storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False)
         assert list(storage.full_sessions) == [str(tmp_path / "v6.session")]
+
+    def test_string_session_has_entities_set(self):
+        # the bot clears this private set after each job / autoreply round to bound memory;
+        # a Telethon upgrade that renames it would silently turn that clearing into a no-op
+        from telethon.sessions import StringSession
+
+        assert isinstance(StringSession()._entities, set)
 
     def test_broken_jsession_skipped(self, tmp_path):
         from modules.storages.sessions_storage import SessionsStorage
@@ -1305,6 +1354,9 @@ class TestClearChatsChannelForbidden:
         forbidden = tl.ChannelForbidden(id=1, access_hash=2, title="x")
 
         class _S:
+            async def get_me(self):
+                return ns(first_name="w")
+
             async def iter_dialogs(self):
                 yield ns(entity=forbidden, id=-1001, title="x")
 
@@ -2024,3 +2076,179 @@ class TestReportFlowHoldsItsWorkers:
             assert pool.in_job == []
         finally:
             moderation._FLOWS.clear()
+
+
+# --- a dead worker: Telethon's get_me() returns None for a banned / logged-out account ---
+
+class _Worker:
+    def __init__(self, me):
+        self.me, self.requests = me, []
+
+    async def get_me(self):
+        return self.me
+
+    async def __call__(self, request):
+        self.requests.append(request)
+
+    async def send_message(self, *args, **kwargs):
+        self.requests.append(args)
+
+
+class TestDeadWorkerIsSkipped:
+    def _run(self, cls, call, settings):
+        dead, alive = _Worker(None), _Worker(ns(id=1, first_name="alive"))
+        fn = cls(_Storage([dead, alive]), settings)
+        msgs, report = collect()
+        asyncio.run(call(fn, report))
+        return dead, alive, msgs
+
+    def test_profile_change(self):
+        from functions.changebio import ChangeBioFunc
+
+        dead, alive, msgs = self._run(ChangeBioFunc, lambda f, r: f.run(r, bio="x"), ns(profile_pause=[0]))
+        assert not dead.requests and len(alive.requests) == 1
+        assert any("get_me failed" in m for m in msgs)
+
+    def test_reactions(self):
+        from functions.reactions import ReactionsFunc
+
+        dead, alive, msgs = self._run(ReactionsFunc, lambda f, r: f.run("https://t.me/c/1/2", "👍", r),
+                                      ns(delay=[0]))
+        assert not dead.requests and len(alive.requests) == 1
+
+    def test_comments(self):
+        from functions.broadcast_comments import CommentsBroadcastFunc
+        from modules.rich_message import RichContent
+
+        dead, alive, msgs = self._run(
+            CommentsBroadcastFunc,
+            lambda f, r: f.run("https://t.me/name/5", RichContent(text="hi"), [0], r),
+            ns(messages_count=1),
+        )
+        assert not dead.requests and len(alive.requests) == 1
+
+
+# --- inviting: link forms -----------------------------------------------------------
+
+@pytest.mark.parametrize("link, public, ref", [
+    ("https://t.me/name/", True, "@name"),
+    ("https://t.me/name?start=1", True, "@name"),
+    ("t.me/name/123", True, "@name"),
+    ("@name", True, "@name"),
+    ("https://t.me/+AbC/", False, "AbC"),
+    ("https://t.me/joinchat/AbC", False, "AbC"),
+    ("+AbC", False, "AbC"),
+])
+def test_inviting_link_forms(link, public, ref):
+    from functions.inviting import InvitingFunc
+
+    assert InvitingFunc.is_public(link) is public
+    assert (InvitingFunc.public_ref(link) if public else InvitingFunc.invite_hash(link)) == ref
+
+
+# --- stickers campaign: the set is fetched once per worker ------------------------------
+
+def test_sticker_set_fetched_once_per_worker():
+    from telethon.tl.functions.messages import GetStickerSetRequest
+    from functions.broadcast import Broadcast
+    from modules.rich_message import RichContent
+
+    class _Chat(_Worker):
+        async def __call__(self, request):
+            self.requests.append(request)
+            return ns(documents=["sticker"])
+
+        async def send_file(self, *args, **kwargs):
+            self.requests.append(args)
+
+    session = _Chat(ns(id=1, first_name="w"))
+    fn = Broadcast(_Storage([session]), ns(messages_count=3, delay=[0]))
+    fn.configure(4, sticker_set="https://t.me/addstickers/Pack", delay=[0], content=RichContent(text="hi"))
+    msgs, report = collect()
+
+    asyncio.run(fn.broadcast(session, "chat", report))
+    assert sum(isinstance(r, GetStickerSetRequest) for r in session.requests) == 1
+    assert sum("sent. COUNT" in m for m in msgs) == 3
+
+
+# --- joiner: link forms -------------------------------------------------------------
+
+@pytest.mark.parametrize("link, request_name, arg", [
+    ("https://t.me/name/", "JoinChannelRequest", "@name"),
+    ("t.me/name/123", "JoinChannelRequest", "@name"),
+    ("https://t.me/name?x=1", "JoinChannelRequest", "@name"),
+    ("@name", "JoinChannelRequest", "@name"),
+    ("https://t.me/joinchat/AbC/", "ImportChatInviteRequest", "AbC"),
+    ("https://t.me/+AbC", "ImportChatInviteRequest", "AbC"),
+])
+def test_joiner_link_forms(link, request_name, arg):
+    from functions.joiner import JoinerFunc
+
+    session = _Worker(ns(id=1, first_name="w"))
+    fn = JoinerFunc(_Storage([session]), ns(delay=[0]))
+    msgs, report = collect()
+
+    asyncio.run(fn.join(session, link, 0, "1", report))
+    request = session.requests[0]
+    assert type(request).__name__ == request_name
+    assert (request.channel if request_name == "JoinChannelRequest" else request.hash) == arg
+
+
+# --- clear dialogs: a worker whose dialog list fails doesn't end the job --------------
+
+def test_clear_dialogs_survives_a_failed_listing():
+    from functions.clear_chats import ClearDialogsFunc
+
+    class _Dialogs(_Worker):
+        def __init__(self, me, fail):
+            super().__init__(me)
+            self.fail = fail
+
+        async def iter_dialogs(self):
+            if self.fail:
+                raise ConnectionError("dropped")
+            yield ns(entity=ns(), id=5, title="chat")
+
+        async def __call__(self, request):
+            self.requests.append(request)
+            return ns(offset=0)
+
+    broken, ok = _Dialogs(ns(id=1, first_name="a"), True), _Dialogs(ns(id=2, first_name="b"), False)
+    fn = ClearDialogsFunc(_Storage([broken, ok]), ns())
+    msgs, report = collect()
+
+    asyncio.run(fn.run(report))
+    assert any("can't list dialogs" in m for m in msgs)
+    assert len(ok.requests) == 1 and any("has been deleted" in m for m in msgs)
+
+
+# --- add_session: the 2FA password typed at sign-in is kept in the .jsession -----------
+
+def test_application_session_keeps_typed_2fa_password(monkeypatch, tmp_path):
+    import json
+
+    from modules.types import json_session
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self.api_id, self.api_hash = kwargs["api_id"], kwargs["api_hash"]
+            self._init_request = ns(device_model="d", app_version="1", system_version="s",
+                                    system_lang_code="en")
+            self.session = ns(save=lambda: "KEY")
+
+        async def start(self, password):
+            assert password() == "secret"  # the account has 2FA: Telethon asks for it
+
+        async def get_me(self):
+            return ns(first_name="a", last_name=None, id=1, phone="79990001122", username=None)
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(json_session, "TelegramClient", _Client)
+    monkeypatch.setattr(json_session.getpass, "getpass", lambda prompt: "secret")
+
+    asyncio.run(json_session.JsonSession.create_application_session())
+    saved = json.loads((tmp_path / "79990001122.jsession").read_text())
+    assert saved["password"] == "secret"

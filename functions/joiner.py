@@ -15,6 +15,7 @@ from telethon.sync import TelegramClient
 from functions.broadcast import Broadcast
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
+from scraper.scrape import channel_slug
 
 CAPTCHA_WAIT = 30  # seconds a worker waits for a captcha after joining (bot mode)
 
@@ -29,13 +30,15 @@ class JoinerFunc(TelethonFunction):
             else:
                 print(msg)
 
+        # channel_slug: the scraper's parser, which drops a trailing "/", a ?query and a post id
+        slug = channel_slug(link)
+
         if mode == "1":
             try:
-                if not "joinchat" in link:
-                    updates = await self.safe_call(lambda: session(JoinChannelRequest(link)))
+                if not slug.startswith("+"):  # an invite's slug is "+<hash>"
+                    updates = await self.safe_call(lambda: session(JoinChannelRequest("@" + slug)))
                 else:
-                    invite = link.split("/")[-1]
-                    updates = await self.safe_call(lambda: session(ImportChatInviteRequest(invite)))
+                    updates = await self.safe_call(lambda: session(ImportChatInviteRequest(slug[1:])))
             except AccountLimited as error:
                 await emit(f"[!] [acc {index + 1}] limit: {error}")
                 return False
@@ -49,7 +52,7 @@ class JoinerFunc(TelethonFunction):
 
         elif mode == "2":
             try:
-                full = await self.safe_call(lambda: session(GetFullChannelRequest(link)))
+                full = await self.safe_call(lambda: session(GetFullChannelRequest("@" + slug)))
                 linked_id = full.full_chat.linked_chat_id
 
                 if not linked_id:
@@ -119,7 +122,8 @@ class JoinerFunc(TelethonFunction):
                     joined += 1
 
             self.progress_step()
-            await self.delay()
+            if index < len(self.sessions) - 1:  # no trailing wait after the last account
+                await self.delay()
 
         # no ok/error keyword: the per-account lines above are what the job summary counts
         await report(f"Done: {joined}/{len(self.sessions)} accounts")
@@ -195,45 +199,33 @@ class JoinerFunc(TelethonFunction):
 
                 start = perf_counter()
 
-                if function_index != 1:
-                    for index, session in track(
-                        enumerate(self.sessions),
-                        "[yellow]Joining[/]",
-                        total=len(self.sessions)
-                    ):
-                        await session.start()
+                # the single-account campaign broadcasts right after each join, so its
+                # lines would break a progress bar: it gets plain prints instead
+                inline = function_index == 1
+                sessions = enumerate(self.sessions)
+                if not inline:
+                    sessions = track(sessions, "[yellow]Joining[/]", total=len(self.sessions))
 
-                        if captcha:
-                            self.solve_captcha(session)
-                            captcha_sessions.append(session)
+                for index, session in sessions:
+                    await session.start()
 
-                        is_joined = await self.join(session, link, index, mode)
-                        targets.append(is_joined or link)
+                    if captcha:
+                        self.solve_captcha(session)
+                        captcha_sessions.append(session)
 
+                    is_joined = await self.join(session, link, index, mode)
+                    targets.append(is_joined or link)
+
+                    if is_joined:
+                        joined += 1
+
+                    if inline:
                         if is_joined:
-                            joined += 1
-
-                        await asyncio.sleep(delay)
-
-                elif function_index == 1:
-                    for index, session in enumerate(self.sessions):
-                        await session.start()
-
-                        if captcha:
-                            self.solve_captcha(session)
-                            captcha_sessions.append(session)
-
-                        is_joined = await self.join(session, link, index, mode)
-
-                        console.print("[bold green]Account joined[/]")
-
-                        if is_joined:
-                            joined += 1
-                    
+                            console.print("[bold green]Account joined[/]")
                         console.print("[bold white]Starting broadcast[/]")
-
                         await broadcast_func.broadcast(session, is_joined or link, console_report)
-                        await asyncio.sleep(delay)
+
+                    await asyncio.sleep(delay)
 
             if speed == "fast":
                 if not self.storage.initialize:

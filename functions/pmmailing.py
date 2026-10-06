@@ -1,8 +1,6 @@
 import asyncio
-import json
 import os
-import random
-from datetime import date, datetime
+from datetime import datetime
 
 from telethon import types
 from telethon.errors import PeerIdInvalidError
@@ -11,8 +9,9 @@ from modules.console import console
 from rich.table import Table
 
 from functions.base import TelethonFunction
-from functions.base.base import SKIPPED, AccountLimited, console_report
-from modules import contacts_ledger, parquet_db, rich_message, scraped_files
+from functions.base.base import SKIPPED, AccountLimited, console_report, pick_seconds
+from modules import contacts_ledger, json_file, parquet_db, rich_message, scraped_files
+from modules.account_limits import DailyCounter
 from modules.rich_message import RichContent
 
 
@@ -33,20 +32,10 @@ class PmMailingFunc(TelethonFunction):
     """Mailing to PM (with stats)"""
 
     def load_stats(self):
-        if os.path.exists(STATS_PATH):
-            with open(STATS_PATH, encoding="utf-8") as fileobj:
-                self.stats = json.load(fileobj)
-        else:
-            self.stats = {}
+        self.stats = json_file.load(STATS_PATH, {})
 
     def save_stats(self):
-        os.makedirs("stats", exist_ok=True)
-
-        tmp_path = STATS_PATH + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as fileobj:
-            json.dump(self.stats, fileobj, ensure_ascii=False, indent=2)
-
-        os.replace(tmp_path, STATS_PATH)
+        json_file.save(STATS_PATH, self.stats)
 
     def record_success(self, recipient):
         entry = self.stats.setdefault(recipient, {"count": 0})
@@ -62,48 +51,6 @@ class PmMailingFunc(TelethonFunction):
         if self._unsaved:
             self.save_stats()
             self._unsaved = 0
-
-    def load_limits(self):
-        if os.path.exists(LIMITS_PATH):
-            with open(LIMITS_PATH, encoding="utf-8") as fileobj:
-                self.limits = json.load(fileobj)
-        else:
-            self.limits = {}
-
-        # keep only today's counters: stale-date entries already count as 0 (see
-        # account_sent_today), so dropping them changes nothing but stops the file
-        # growing by one entry per account forever on a long-lived process.
-        today = date.today().isoformat()
-        self.limits = {key: entry for key, entry in self.limits.items()
-                       if entry.get("date") == today}
-
-    def save_limits(self):
-        os.makedirs("stats", exist_ok=True)
-
-        tmp_path = LIMITS_PATH + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as fileobj:
-            json.dump(self.limits, fileobj, ensure_ascii=False, indent=2)
-
-        os.replace(tmp_path, LIMITS_PATH)
-
-    def account_sent_today(self, account_key):
-        entry = self.limits.get(account_key)
-
-        if not entry or entry["date"] != date.today().isoformat():
-            return 0
-
-        return entry["count"]
-
-    def bump_account(self, account_key):
-        today = date.today().isoformat()
-        entry = self.limits.get(account_key)
-
-        if not entry or entry["date"] != today:
-            entry = {"date": today, "count": 0}
-            self.limits[account_key] = entry
-
-        entry["count"] += 1
-        self.save_limits()
 
     @staticmethod
     def recipient_key(recipient):  # stable string key for stats
@@ -155,8 +102,7 @@ class PmMailingFunc(TelethonFunction):
             return
 
         if self._active_accounts:  # not the first account to send
-            pause = self.settings.account_pause
-            seconds = pause[0] if len(pause) == 1 else random.randint(*sorted(pause[:2]))
+            seconds = pick_seconds(self.settings.account_pause)
 
             await self._report(f"switching to {name}, pause {seconds}s")
             await asyncio.sleep(seconds)
@@ -175,7 +121,7 @@ class PmMailingFunc(TelethonFunction):
             self._skipped += 1  # only the base's owner can reach them; left unsent for it
             return SKIPPED
 
-        if self.account_sent_today(account_key) >= self.settings.per_account_daily:
+        if self._limits.reached(account_key):
             self._capped.add(id(session))  # out for today only: its people wait for it
             raise AccountLimited(f"daily cap {self.settings.per_account_daily} reached")
 
@@ -199,7 +145,7 @@ class PmMailingFunc(TelethonFunction):
             return
 
         self.record_success(key)
-        self.bump_account(account_key)
+        self._limits.bump(account_key)
         await self._report(
             "[{name}] sent{via}. {recipient} COUNT: {count}".format(
                 name=name,
@@ -240,7 +186,7 @@ class PmMailingFunc(TelethonFunction):
         self.progress_prepare()
 
         self.load_stats()
-        self.load_limits()
+        self._limits = DailyCounter(LIMITS_PATH, self.settings.per_account_daily)  # 0: unlimited
         await self.check_workers(report)
         self.progress_total(len(recipients))
 
@@ -248,9 +194,9 @@ class PmMailingFunc(TelethonFunction):
             processed = waiting = 0
             *own, (shared_sessions, shared) = self.split_queues(recipients, contacts_ledger.load())
             for (worker,), queue in own:
-                if worker in self.on_hold:  # busy scraping: its people wait for it, as for a daily cap
+                if worker in self.on_hold:  # on hold (scraping, or left out of a CLI run): its people wait, as for a daily cap
                     waiting += len(queue)
-                    await report(f"{len(queue)} получателей ждут своего воркера: он занят скрапом.")
+                    await report(f"{len(queue)} получателей ждут своего воркера: он не участвует в этом запуске.")
                     self.progress_drop(len(queue))
                     continue
                 done = await self.run_with_rotation(queue, self.send_one, [worker])
@@ -322,7 +268,6 @@ class PmMailingFunc(TelethonFunction):
             return
 
         self.load_stats()
-        self.load_limits()
 
         if Confirm.ask("[bold red]skip already-messaged recipients?", default=True):
             before = len(recipients)

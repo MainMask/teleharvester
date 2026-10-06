@@ -193,6 +193,11 @@ class TestBotConfig:
         with pytest.raises(SystemExit):
             cfg.validate()
 
+    def test_non_numeric_admin_exits_with_a_message(self, monkeypatch):
+        monkeypatch.setenv("BOT_ADMINS", "1,abc")
+        with pytest.raises(SystemExit, match="numeric"):
+            BotConfig(path="does-not-exist.toml")
+
     def test_token_in_toml_is_rejected(self, tmp_path):
         path = tmp_path / "config.toml"
         path.write_text('[bot]\ntoken = "123:abc"\nadmins = [1]\n')
@@ -241,10 +246,27 @@ class TestFunctionCores:
         assert fn.sessions[0].requests, "join request should have been sent on the worker"
         assert any("joined" in m for m in messages)
 
+    def test_joiner_waits_between_accounts_not_after_the_last(self):
+        from functions.joiner import JoinerFunc
+
+        fn = JoinerFunc(_Storage(), types.SimpleNamespace(delay=[0]))
+        fn.sessions = [_JoinSession(), _JoinSession(), _JoinSession()]
+        delays = []
+
+        async def delay():
+            delays.append(1)
+
+        async def report(text):
+            pass
+
+        fn.delay = delay
+        asyncio.run(fn.run("1", "@channel", [0], report))
+        assert len(delays) == 2
+
     def test_inviting_run_reports_when_no_targets(self):
         from functions.inviting import InvitingFunc
 
-        fn = InvitingFunc(_Storage(), types.SimpleNamespace(delay=[0]))
+        fn = InvitingFunc(_Storage(), types.SimpleNamespace(delay=[0], invite_per_account_daily=0))
         fn.sessions = []  # nothing to parse with
 
         messages = []
@@ -255,3 +277,36 @@ class TestFunctionCores:
         asyncio.run(fn.run("@src", "@dst", [0], report))
 
         assert any("parse" in m.lower() for m in messages)
+
+
+# --- start: waiting for the Bot API -----------------------------------------
+
+class TestWaitForBotApi:
+    @staticmethod
+    def _bot(*outcomes):
+        calls = []
+
+        async def me():
+            calls.append(True)
+            outcome = outcomes[len(calls) - 1]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        return types.SimpleNamespace(me=me), calls
+
+    def test_network_error_is_retried_until_reachable(self):
+        from aiogram.exceptions import TelegramNetworkError
+        from bot.app import wait_for_bot_api
+
+        bot, calls = self._bot(TelegramNetworkError(None, "down"), "me")
+        asyncio.run(wait_for_bot_api(bot, delay=0))
+        assert len(calls) == 2
+
+    def test_bad_token_still_exits(self):
+        from aiogram.exceptions import TelegramUnauthorizedError
+        from bot.app import wait_for_bot_api
+
+        bot, _ = self._bot(TelegramUnauthorizedError(None, "Unauthorized"))
+        with pytest.raises(TelegramUnauthorizedError):
+            asyncio.run(wait_for_bot_api(bot, delay=0))

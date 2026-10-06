@@ -7,7 +7,6 @@ account) come from `assets/proxies.txt`. Converted accounts are written to
 does not reconnect it again.
 """
 
-import datetime
 import glob
 import json
 import os
@@ -20,9 +19,7 @@ from telethon.tl.types import InputChannelEmpty
 
 from modules import scraper_creds
 from modules.console import console
-from modules.types.account import Account
 from modules.types.account_settings import AccountSettings
-from modules.types.application import Application
 from modules.types.proxy import ACCOUNTS_PER_PROXY, Proxy, parse_proxies
 
 PROXIES_FILE = "assets/proxies.txt"  # the proxy pool, one `scheme://[user:pass@]ip:port` per line
@@ -123,6 +120,8 @@ def write_2fa_password(phone: str, password: str, workers_dir: str = "tdata_impo
     tmp_path = path + ".tmp"
     with os.fdopen(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fileobj:
         fileobj.write(f"{label}: {password}\n")
+        fileobj.flush()
+        os.fsync(fileobj.fileno())  # on disk before the rename: a power cut must not leave it empty
     os.replace(tmp_path, path)
 
 
@@ -138,6 +137,23 @@ def _personal_user_ids() -> set[int]:
     return ids
 
 
+def _worker_phone(user_id: int, sessions_dir: str) -> str | None:
+    """The phone of the worker already in sessions_dir with this user id (read offline), or None."""
+    if not os.path.isdir(sessions_dir):
+        return None
+    for name in os.listdir(sessions_dir):
+        if not name.endswith(".jsession"):
+            continue
+        try:
+            with open(os.path.join(sessions_dir, name), encoding="utf-8") as fileobj:
+                account = json.load(fileobj)["account"]
+            if account["user_id"] == user_id:
+                return account["phone_number"]
+        except (OSError, ValueError, KeyError, TypeError):  # a broken file is skipped by SessionsStorage too
+            continue
+    return None
+
+
 async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
                   sessions_dir: str = "sessions") -> str | None:
     """Convert one `tdata` folder to `sessions/<phone>.jsession`.
@@ -146,13 +162,17 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
     authorized. The device model, app/system version, system language and API
     credentials opentele reconnects with are stored; `lang_pack` and `lang_code`
     are not reproduced on later loads (Telethon takes no `lang_pack`, and
-    SessionsStorage reuses `system_lang_code` as `lang_code`). An existing `.jsession` for that phone is left as is,
-    keeping its stored 2FA password and proxy.
+    SessionsStorage reuses `system_lang_code` as `lang_code`). An account already in `sessions_dir` is
+    found offline and left as is (its phone is returned): it isn't connected from the pool's proxy,
+    and its file keeps its stored 2FA password and proxy.
     """
     tdesktop = TDesktop(tdata_dir)
     # read offline, before connecting: its key must not show up from a worker's proxy
     if tdesktop.mainAccount.UserId in _personal_user_ids():
         raise ValueError(f"это личный аккаунт из {scraper_creds.PERSONAL_DIR}/ — воркером он не станет")
+    # already a worker: its key must not show up from another proxy either
+    if (phone := _worker_phone(tdesktop.mainAccount.UserId, sessions_dir)) is not None:
+        return phone
 
     client = await tdesktop.ToTelethon(
         session=StringSession(),
@@ -173,30 +193,7 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
         except Exception as err:
             console.print(f"[bold yellow]WARNING:[/] couldn't clear personal channel for +{me.phone}: {err}")
 
-        init = client._init_request
-
-        account_settings = AccountSettings(
-            auth_key=client.session.save(),
-            account=Account(
-                first_name=me.first_name,
-                last_name=me.last_name,
-                user_id=me.id,
-                added_at=datetime.datetime.now().timestamp(),
-                phone_number=me.phone,
-                username=me.username,
-            ),
-            application=Application(
-                api_id=client.api_id,
-                api_hash=client.api_hash,
-                device_name=init.device_model,
-                app_version=init.app_version,
-                sdk=init.system_version,
-                lang_pack=init.lang_pack,
-                system_lang_code=init.system_lang_code,
-            ),
-            proxy=proxy,
-            password=password,
-        )
+        account_settings = AccountSettings.from_client(client, me, proxy, password, client._init_request.lang_pack)
     finally:
         await client.disconnect()
 

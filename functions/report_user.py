@@ -22,29 +22,32 @@ class ReportUserFunc(TelethonFunction):
             ("Other", types.InputReportReasonOther())
         )
 
-    async def run(self, link, reason_type, comment, report):
-        self.progress_total(len(self.sessions))
-        for session in self.sessions:
-            async with self.storage.ainitialize_session(session):
-                try:
-                    me = await session.get_me()
-                except Exception as err:
-                    await report(f"get_me failed: {err}")
-                    self.progress_step()
-                    continue
-                try:
-                    await session(
-                        functions.account.ReportPeerRequest(
-                            peer=link,
-                            reason=reason_type,
-                            message=comment
-                        )
+    async def report_one(self, session, link, reason_type, comment, report):
+        async with self.storage.ainitialize_session(session):
+            try:
+                me = await self.get_me(session)
+            except Exception as err:
+                await report(f"get_me failed: {err}")
+                return
+            try:
+                await session(
+                    functions.account.ReportPeerRequest(
+                        peer=link,
+                        reason=reason_type,
+                        message=comment
                     )
-                except Exception as err:
-                    await report(f"[{me.first_name}] error. {err}")
-                else:
-                    await report(f"[{me.first_name}] submitted.")
-                self.progress_step()
+                )
+            except Exception as err:
+                await report(f"[{me.first_name}] error. {err}")
+            else:
+                await report(f"[{me.first_name}] submitted.")
+
+    async def run(self, link, reason_type, comment, report):
+        await self.run_sequential(
+            lambda session, report: self.report_one(session, link, reason_type, comment, report),
+            report,
+            pause=self.settings.delay,
+        )
 
     async def execute(self):
         self.ask_accounts_count()

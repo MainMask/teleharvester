@@ -29,8 +29,9 @@ class _Msg:
 
 
 class _Pool:
-    def __init__(self, storage):
+    def __init__(self, storage, polling=None):
         self.storage = storage
+        self.polling = polling  # the worker autoreply is polling now (WorkerPool.polling)
 
 
 class _Storage:
@@ -89,3 +90,20 @@ def test_bad_proxy_line_reports(tmp_path, monkeypatch):
     assert storage.applied is None
     assert state.cleared is False
     assert any("разобрать" in r for r in msg.replies)
+
+
+def test_refuses_while_autoreply_polls(tmp_path, monkeypatch):
+    # the polled worker's old client stays connected through its old proxy until the poll ends
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "assets").mkdir()
+
+    storage = _Storage()
+    msg = _Msg(text="socks5://u:p@1.1.1.1:1080")
+    state = _State()
+
+    pool = _Pool(storage, polling="sessions/a.jsession")
+    asyncio.run(accounts.proxy_apply(msg, state, pool, ns(active=False, label="")))
+
+    assert storage.applied is None
+    assert state.cleared is False
+    assert any("автоответа" in r for r in msg.replies)

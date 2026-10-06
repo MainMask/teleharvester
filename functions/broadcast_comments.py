@@ -14,7 +14,7 @@ class CommentsBroadcastFunc(TelethonFunction):
     async def broadcast(self, session, channel, post_id, content, report):
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 self.progress_drop(self.settings.messages_count)

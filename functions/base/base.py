@@ -28,6 +28,11 @@ class AccountLimited(Exception):
     """The account can no longer perform the action (rate limit / restriction / too long wait)."""
 
 
+def pick_seconds(pause) -> int:
+    """Seconds to wait for a [sec] or [min, max] setting (a reversed range, e.g. "5-2", tolerated)."""
+    return pause[0] if len(pause) == 1 else random.randint(*sorted(pause[:2]))
+
+
 _END = object()  # sentinel for "no more items" (so a real None item isn't mistaken for the end)
 SKIPPED = object()  # returned by a rotation action that skipped an item without any request
 
@@ -70,7 +75,8 @@ class BaseFunction:
         """Escape a value for safe use inside Rich markup (None -> '')."""
         return escape("" if value is None else str(value))
 
-    def parse_delay(self, string: str):
+    @staticmethod
+    def parse_delay(string: str):
         return list(
             map(int, string.split("-"))
         )
@@ -202,6 +208,31 @@ class BaseFunction:
 
         return await asyncio.gather(*[one(i, s) for i, s in enumerate(sessions)])
 
+    async def run_sequential(self, work, report, sessions=None, pause=None):
+        """Run work(session, report) on each worker one at a time, pausing a random
+        `pause` ([min, max] or [sec], default settings.profile_pause) between accounts
+        (never before the first, nor after the last). Returns the results in worker order.
+
+        Firing the same action on every account within the same second (as gather_in_order
+        does) marks the accounts as one operated cluster: profile-wide edits (name, bio,
+        username, 2FA, photo) use the big profile_pause; engagement (reactions, votes) passes
+        the shorter settings.delay. Either way, spacing the actions out breaks the pattern.
+        """
+        sessions = self.sessions if sessions is None else sessions
+        pause = self.settings.profile_pause if pause is None else pause
+        self.progress_total(len(sessions))
+        results = []
+
+        for index, session in enumerate(sessions):
+            if index:
+                seconds = pick_seconds(pause)
+                await report(f"Пауза перед следующим аккаунтом: {seconds} с")
+                await asyncio.sleep(seconds)
+            results.append(await work(session, report))
+            self.progress_step()
+
+        return results
+
     def worker_id(self, session):
         """The worker's Telegram user id from its .jsession (no request); None if unknown."""
         js = self.storage.jsessions_paths.get(self.storage.get_session_path(session))
@@ -302,6 +333,7 @@ class BaseFunction:
 
     def ask_accounts_count(self):
         self.sessions = self.storage.sessions  # reset to full list (instance is reused across runs)
+        self.on_hold = []
 
         if not self.sessions:
             return  # nothing to choose from; functions guard the empty case themselves
@@ -312,14 +344,8 @@ class BaseFunction:
             min_value=1,
         )
 
-        self.sessions = self.sessions[:accounts_count]
+        # the ones left out keep their contacts' people (see split_queues), as a worker on hold
+        self.sessions, self.on_hold = self.sessions[:accounts_count], self.sessions[accounts_count:]
 
     async def delay(self):
-        delay = self.delay_range or self.settings.delay
-        if len(delay) == 1:
-            await asyncio.sleep(delay[0])
-        else:
-            lo, hi = sorted(delay[:2])  # tolerate a reversed range (e.g. "5-2")
-            await asyncio.sleep(
-                random.randint(lo, hi)
-            )
+        await asyncio.sleep(pick_seconds(self.delay_range or self.settings.delay))

@@ -25,7 +25,11 @@ class BotConfig:
             admins = env_admins.replace(",", " ").split()
 
         self.token: str = token
-        self.admins: set[int] = {int(a) for a in admins}
+        try:
+            self.admins: set[int] = {int(a) for a in admins}
+        except (TypeError, ValueError):
+            sys.exit(f"Bot admins must be numeric Telegram user IDs, not {admins!r} "
+                     "(config.toml [bot].admins / BOT_ADMINS).")
 
     def validate(self):
         if not self.token:

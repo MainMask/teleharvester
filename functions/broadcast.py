@@ -58,6 +58,7 @@ class Broadcast(TelethonFunction):
 
         self.choice = None
         self.content = None
+        self._stickers = {}  # id(session) -> the sticker set's documents, fetched once per worker
 
         # Labels only (menu display / choice numbering); all modes share one sender.
         self.modes = (
@@ -102,13 +103,16 @@ class Broadcast(TelethonFunction):
             kwargs["reply_to"] = reply_to
 
         if self.choice == 4 and getattr(self, "sticker_set", None):  # stickers first
-            stickers = await session(
-                GetStickerSetRequest(
-                    stickerset=InputStickerSetShortName(short_name=self.sticker_set),
-                    hash=0,
-                )
-            )
-            await self.safe_call(lambda: session.send_file(peer, random.choice(stickers.documents)))
+            if id(session) not in self._stickers:
+                stickers = await self.safe_call(lambda: session(
+                    GetStickerSetRequest(
+                        stickerset=InputStickerSetShortName(short_name=self.sticker_set),
+                        hash=0,
+                    )
+                ))
+                self._stickers[id(session)] = stickers.documents
+            documents = self._stickers[id(session)]
+            await self.safe_call(lambda: session.send_file(peer, random.choice(documents)))
 
         await rich_message.send(session, peer, content, self.safe_call, report=report, **kwargs)
 
@@ -132,7 +136,7 @@ class Broadcast(TelethonFunction):
         errors = 0
 
         try:
-            me = await session.get_me()
+            me = await self.get_me(session)
         except Exception as err:
             await report(f"get_me failed: {err}")
             self.progress_drop(self.settings.messages_count)
@@ -209,26 +213,38 @@ class Broadcast(TelethonFunction):
             self.progress_drop(self.settings.messages_count - count)
 
     async def handle(self, session, report):
+        # chats this worker is broadcasting to now: Telethon runs handlers concurrently, so a
+        # repeated trigger there would start a second loop and double the rate; it is ignored
+        active = set()
+        label = os.path.basename(self.storage.get_session_path(session) or "") or "worker"
+
         async def handler(message: types.Message):
             if len(session.session._entities) > LISTENER_ENTITY_LIMIT:  # workers: StringSession
                 session.session._entities.clear()
 
             # an empty trigger would match every media message without a caption
             if self.settings.trigger and message.raw_text == self.settings.trigger:
+                if message.chat_id in active:
+                    await report(f"[{label}] уже рассылаю в этот чат — повторный триггер пропущен")
+                    return
+                active.add(message.chat_id)  # before any await: a concurrent trigger sees it
+
                 # local, not shared state: concurrent per-worker listeners must not
                 # clobber each other's reply target
                 reply_to = message.reply_to.reply_to_msg_id if message.reply_to else None
 
-                await self.broadcast(
-                    session,
-                    message.chat_id,
-                    report,
-                    reply_to=reply_to,
-                )
+                try:
+                    await self.broadcast(
+                        session,
+                        message.chat_id,
+                        report,
+                        reply_to=reply_to,
+                    )
+                finally:
+                    active.discard(message.chat_id)
 
         # incoming only: a worker's own broadcast must never trigger it again
         session.add_event_handler(handler, events.NewMessage(incoming=True))
-        label = os.path.basename(self.storage.get_session_path(session) or "") or "worker"
 
         try:
             while True:

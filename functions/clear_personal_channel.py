@@ -14,7 +14,7 @@ class ClearPersonalChannelFunc(TelethonFunction):
                                 "personal channel cleared", "not cleared")
 
     async def run(self, report):
-        await self.gather_in_order(self.clear, report)
+        await self.run_sequential(self.clear, report)
 
     async def execute(self):
         self.ask_accounts_count()

@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import progress_kb
+from bot.keyboards.common import stop_kb
 from bot.keyboards.menu import main_menu
 from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
@@ -261,6 +261,7 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: Worke
     _FLOWS.pop(chat_id, None)
     manager.disarm_timeout()  # work starts now; don't let the inactivity timeout free the slot mid-replay
     manager.lock()            # ...nor a /cancel: replay_rest is driving the workers until release()
+    stop = manager.soft_stop()  # ⏹ / /cancel skip the accounts not reached yet; _free still frees the slot
     try:
         await flow["session"].disconnect()
     except Exception:
@@ -271,18 +272,19 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: Worke
     manager.progress.step()  # the first account already submitted while choosing
     instance.progress = manager.progress
 
-    # no Stop: the slot is locked; finish() drops the Progress button with the markup
+    # finish() drops the Progress / Stop buttons with the markup
     reporter = TelegramReporter(
-        bot, chat_id, header="Репорт…", reply_markup=progress_kb(),
+        bot, chat_id, header="Репорт…", reply_markup=stop_kb(),
         job_label="Репорт", workers=len(flow["rest"]) + 1, final_markup=main_menu(),
     )
     try:
         await reporter.start()
         await reporter("[первый аккаунт] submitted.")
-        await instance.replay_rest(
-            flow["rest"], flow["peer"], flow["ids"], flow["comment"], flow["selections"], reporter
+        skipped = await instance.replay_rest(
+            flow["rest"], flow["peer"], flow["ids"], flow["comment"], flow["selections"], reporter, stop
         )
-        await reporter.finish("Репорт отправлен ✅")
+        # by what replay_rest skipped, not stop.is_set(): a ⏹ after the last account stopped nothing
+        await reporter.finish("⏹ Остановлено" if skipped else "Репорт отправлен ✅")
     except Exception as err:
         try:
             if reporter.message_id is not None:  # close the status message itself, like JobManager

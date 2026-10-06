@@ -325,6 +325,8 @@ def summary(input_path: str, output_base: str, date_col: str, group_col: str, co
     """Per-group monthly counts of contents, comments and their total."""
     df = read_table(input_path)
     _require_columns(df, [date_col, group_col, comments_col], input_path)
+    if df.empty:  # a scrape that found nothing still writes its _posts file: no months to span
+        raise SystemExit(f"{input_path}: no posts.")
     df[date_col] = pd.to_datetime(df[date_col])
     df["MonthYear"] = df[date_col].dt.to_period("M")
 
@@ -379,7 +381,11 @@ def sample(input_path: str, output: str, text_col: str, category_col: str, sampl
 
 def filter_keywords(input_path: str, output: str, content_col: str, keywords: list[str], max_rows_per_file: int) -> None:
     """Keep rows containing any keyword; add one 0/1 column per keyword."""
-    keywords = list(dict.fromkeys(keywords))  # a repeated keyword would be counted twice
+    # a repeated keyword would be counted twice; in any case, as the match ignores it
+    unique = {}
+    for kw in keywords:
+        unique.setdefault(kw.lower(), kw)  # the first spelling names the column
+    keywords = list(unique.values())
     df = read_table(input_path)
     _require_columns(df, [content_col], input_path)
     if "Comments List" in df.columns:
@@ -387,8 +393,10 @@ def filter_keywords(input_path: str, output: str, content_col: str, keywords: li
     clash = [k for k in keywords if k in df.columns or k == "Keyword_Count"]
     if clash:
         raise SystemExit(f"keyword(s) {clash} match existing column names; rename or drop them")
+    # any case, as the scrape's own keyword filter: «крипта» must find «Крипта растёт»
+    content = df[content_col].fillna("").astype(str).str.lower()
     for kw in tqdm(keywords, desc="Keyword columns"):
-        df[kw] = df[content_col].fillna("").astype(str).apply(lambda x: 1 if kw in x else 0)
+        df[kw] = content.str.contains(kw.lower(), regex=False).astype(int)
     df["Keyword_Count"] = df[keywords].sum(axis=1)
     filtered = df[df["Keyword_Count"] > 0]
     print(f"Matched rows: {len(filtered)}")

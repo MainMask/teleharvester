@@ -8,8 +8,9 @@ class AlbumMiddleware(BaseMiddleware):
     """Aggregate album (media_group) messages into one handler call.
 
     Telegram sends each album item as a separate update. The first item of a group
-    waits `latency` for the rest to arrive, then runs the handler once with the whole
-    list injected as `album`; later items are swallowed. Single messages pass through
+    waits until no new item has arrived for `latency` (a slow link spreads an album
+    out), then runs the handler once with the whole list injected as `album`; later
+    items are swallowed. Single messages pass through
     with `album=None`.
     """
 
@@ -29,7 +30,10 @@ class AlbumMiddleware(BaseMiddleware):
         if len(bucket) > 1:  # not the leader; it will carry the whole group
             return
 
-        await asyncio.sleep(self.latency)
+        seen = 0
+        while seen != len(bucket):  # a new item came in meanwhile: wait for the next one
+            seen = len(bucket)
+            await asyncio.sleep(self.latency)
         album = self.albums.pop(group_id, [event])
         album.sort(key=lambda message: message.message_id)
         data["album"] = album

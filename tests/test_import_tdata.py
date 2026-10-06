@@ -321,3 +321,19 @@ def test_a_personal_account_is_never_imported_as_a_worker(tmp_path, monkeypatch)
         asyncio.run(tdata_import.convert(str(tmp_path / "tdata"), None, None, str(tmp_path / "sessions")))
     assert _FakeTDesktop.last_client is None  # refused before connecting with its key
     assert not (tmp_path / "sessions").exists()
+
+
+def test_an_existing_worker_is_not_reconnected(tmp_path, monkeypatch):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "other-name.jsession").write_text(
+        json.dumps({"account": {"user_id": _FakeMe.id, "phone_number": "79990001122"}}))
+    (sessions / "broken.jsession").write_text("{")  # skipped, as SessionsStorage does
+    monkeypatch.setattr(tdata_import, "TDesktop", _FakeTDesktop)
+    _FakeTDesktop.last_client = None
+
+    phone = asyncio.run(tdata_import.convert(str(tmp_path / "tdata"), None, None, str(sessions)))
+
+    assert phone == "79990001122"
+    assert _FakeTDesktop.last_client is None  # its key isn't connected from another proxy
+    assert sorted(p.name for p in sessions.iterdir()) == ["broken.jsession", "other-name.jsession"]

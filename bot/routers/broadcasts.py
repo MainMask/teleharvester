@@ -11,7 +11,7 @@ from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, ensure_worke
 from bot.services.delegation import WorkerPool
 from modules import scraped_files
 from bot.services.jobs import JobManager
-from bot.states import ChatBroadcast, Comments, Instant, PmMailing
+from bot.states import BroadcastOptions, ChatBroadcast, Comments, Instant, PmMailing
 from modules.settings import Settings
 
 router = Router()
@@ -77,9 +77,11 @@ async def mail_path(message: Message, state: FSMContext):
             return
         await state.update_data(recipients=recipients)
     else:
-        raw = (message.text or "").strip()
-        if raw in ("", "-"):
-            await state.update_data(path=DEFAULT_TARGETS)  # Telegram can't send ""
+        raw = await require_text(message)  # a photo / sticker must not fall back to the default list
+        if raw is None:
+            return
+        if raw == "-":
+            await state.update_data(path=DEFAULT_TARGETS)
         elif "\n" not in raw and (os.path.exists(raw) or raw.endswith((".txt", ".parquet"))):
             await state.update_data(path=raw)  # a file path (backward compatible)
         else:
@@ -193,13 +195,12 @@ async def com_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool
 
 
 @router.message(Comments.link)
-async def com_link(message: Message, state: FSMContext):
+async def com_link(message: Message, state: FSMContext, settings: Settings):
     link = await require_text(message)
     if link is None:
         return
     await state.update_data(link=link)
-    await state.set_state(Comments.message)
-    await message.answer(SEND_MESSAGE_PROMPT)
+    await _ask_count(message, state, settings, "comments")
 
 
 @router.message(Comments.message)
@@ -210,8 +211,14 @@ async def com_run(
     data = await state.get_data()
     await state.clear()
 
+    if "link" not in data or "messages_count" not in data:
+        await message.answer("Флоу устарел, начните заново.")
+        return
+
     content = await build_content(message, album)
     if content is None:
+        return
+    if not await _save_options(message, data, settings, manager, content):
         return
 
     instance, bot_function = resolve(functions, "comments")
@@ -288,29 +295,30 @@ async def ins_sticker(message: Message, state: FSMContext):
 
 
 @router.message(Instant.link)
-async def ins_link(message: Message, state: FSMContext):
+async def ins_link(message: Message, state: FSMContext, settings: Settings):
     link = await require_text(message)
     if link is None:
         return
     await state.update_data(link=link)
-    await state.set_state(Instant.message)
-    await message.answer(SEND_MESSAGE_PROMPT)
+    await _ask_count(message, state, settings, "instant")
 
 
 @router.message(Instant.message)
 async def ins_run(
     message: Message, state: FSMContext, album,
-    pool: WorkerPool, functions: dict, manager: JobManager,
+    pool: WorkerPool, functions: dict, manager: JobManager, settings: Settings,
 ):
     data = await state.get_data()
     await state.clear()
 
-    if "choice" not in data or "link" not in data:
+    if "choice" not in data or "link" not in data or "messages_count" not in data:
         await message.answer("Флоу устарел, начните заново.")
         return
 
     content = await build_content(message, album)
     if content is None:
+        return
+    if not await _save_options(message, data, settings, manager, content):
         return
 
     instance, bot_function = resolve(functions, "instant")
@@ -336,13 +344,9 @@ async def ins_run(
 # =========================== Broadcast to chat (trigger) ===========================
 
 @router.callback_query(FunctionCB.filter(F.key == "chat"))
-async def cha_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, settings: Settings):
+async def cha_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await callback.answer()
     if not await ensure_workers(callback, pool):
-        return
-    if not settings.trigger:  # an empty one would fire on every media message without a caption
-        await callback.message.answer("Триггер не задан: укажите trigger в [broadcast] config.toml "
-                                      "и перезапустите бота.")
         return
     await state.clear()
     await callback.message.answer("Режим кампании:", reply_markup=choice_kb("cha_mode", MODE_OPTIONS))
@@ -356,41 +360,39 @@ async def cha_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMC
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "cha_mention"))
-async def cha_mention(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+async def cha_mention(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, settings: Settings):
     await state.update_data(mention_all=callback_data.value == "yes")
     await callback.answer()
 
     if callback_data.value == "yes":
         await callback.message.answer("Кого упоминать?", reply_markup=choice_kb("cha_mmode", MMODE_OPTIONS))
     else:
-        await _chat_next(callback.message, state)
+        await _chat_next(callback.message, state, settings)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "cha_mmode"))
-async def cha_mmode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+async def cha_mmode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, settings: Settings):
     await state.update_data(mention_mode=callback_data.value)
     await callback.answer()
-    await _chat_next(callback.message, state)
+    await _chat_next(callback.message, state, settings)
 
 
-async def _chat_next(target, state: FSMContext):
+async def _chat_next(target, state: FSMContext, settings: Settings):
     data = await state.get_data()
     if data.get("choice") == 4 and "sticker_set" not in data:
         await state.set_state(ChatBroadcast.sticker)
         await target.answer("Ссылка на стикерсет:")
     else:
-        await state.set_state(ChatBroadcast.message)
-        await target.answer(SEND_MESSAGE_PROMPT)
+        await _ask_trigger(target, state, settings)
 
 
 @router.message(ChatBroadcast.sticker)
-async def cha_sticker(message: Message, state: FSMContext):
+async def cha_sticker(message: Message, state: FSMContext, settings: Settings):
     sticker_set = await require_text(message)
     if sticker_set is None:
         return
     await state.update_data(sticker_set=sticker_set)
-    await state.set_state(ChatBroadcast.message)
-    await message.answer(SEND_MESSAGE_PROMPT)
+    await _ask_trigger(message, state, settings)
 
 
 @router.message(ChatBroadcast.message)
@@ -401,12 +403,15 @@ async def cha_run(
     data = await state.get_data()
     await state.clear()
 
-    if "choice" not in data:
+    # no trigger: an empty one would fire on every media message without a caption
+    if "choice" not in data or not data.get("trigger") or "messages_count" not in data:
         await message.answer("Флоу устарел, начните заново.")
         return
 
     content = await build_content(message, album)
     if content is None:
+        return
+    if not await _save_options(message, data, settings, manager, content):
         return
 
     instance, bot_function = resolve(functions, "chat")
@@ -435,3 +440,102 @@ async def cha_run(
         )
     else:
         content.cleanup()
+
+
+# ================= Shared steps: the trigger and the messages count =================
+# Chosen per run, with the current config value one tap away; written to config.toml only
+# when the job really starts (_save_options), so a run refused for a busy slot changes nothing
+# and a running job — which reads settings live — is never switched mid-way.
+
+_MESSAGE_STEPS = {"chat": ChatBroadcast.message, "instant": Instant.message, "comments": Comments.message}
+
+
+def _count_text(count: int) -> str:
+    return "без лимита" if count == 0 else str(count)
+
+
+async def _ask_trigger(target, state: FSMContext, settings: Settings):
+    await state.set_state(BroadcastOptions.trigger)
+    if not settings.trigger:  # nothing to keep: an empty trigger would fire on any caption-less media
+        await target.answer("Триггер — текст, после которого воркеры начнут писать в чат. Пришлите его:")
+        return
+    await target.answer(
+        f"Триггер — текст, после которого воркеры начнут писать в чат. Сейчас: «{settings.trigger}».\n"
+        "Оставьте его или пришлите новый:",
+        reply_markup=choice_kb("bc_trigger", [(f"✅ Оставить «{settings.trigger[:40]}»", "keep")]),
+    )
+
+
+async def _ask_count(target, state: FSMContext, settings: Settings, flow: str):
+    await state.update_data(flow=flow)
+    await state.set_state(BroadcastOptions.count)
+    await target.answer(
+        f"Сколько сообщений отправит каждый воркер? Сейчас: {_count_text(settings.messages_count)}.\n"
+        "Пришлите число (0 = без лимита, до ⏹) или оставьте текущее:",
+        reply_markup=choice_kb("bc_count", [(f"✅ Оставить: {_count_text(settings.messages_count)}", "keep")]),
+    )
+
+
+async def _to_message_step(target, state: FSMContext):
+    flow = (await state.get_data()).get("flow")
+    if flow not in _MESSAGE_STEPS:  # a stale button after the state was cleared
+        await state.clear()
+        await target.answer("Флоу устарел, начните заново.")
+        return
+    await state.set_state(_MESSAGE_STEPS[flow])
+    await target.answer(SEND_MESSAGE_PROMPT)
+
+
+@router.callback_query(BroadcastOptions.trigger, ChoiceCB.filter(F.scope == "bc_trigger"))
+async def trigger_keep(callback: CallbackQuery, state: FSMContext, settings: Settings):
+    await callback.answer()
+    if not settings.trigger:
+        return
+    await state.update_data(trigger=settings.trigger)
+    await _ask_count(callback.message, state, settings, "chat")
+
+
+@router.message(BroadcastOptions.trigger)
+async def trigger_input(message: Message, state: FSMContext, settings: Settings):
+    trigger = await require_text(message)
+    if trigger is None:
+        return
+    await state.update_data(trigger=trigger)
+    await _ask_count(message, state, settings, "chat")
+
+
+@router.callback_query(BroadcastOptions.count, ChoiceCB.filter(F.scope == "bc_count"))
+async def count_keep(callback: CallbackQuery, state: FSMContext, settings: Settings):
+    await callback.answer()
+    await state.update_data(messages_count=settings.messages_count)
+    await _to_message_step(callback.message, state)
+
+
+@router.message(BroadcastOptions.count)
+async def count_input(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    if not raw.isdecimal():
+        await message.answer("Нужно целое число: сколько сообщений от каждого воркера (0 = без лимита).")
+        return
+    await state.update_data(messages_count=int(raw))
+    await _to_message_step(message, state)
+
+
+async def _save_options(message: Message, data: dict, settings: Settings, manager: JobManager, content) -> bool:
+    """Write the run's trigger / messages count to config.toml right before it starts; False
+    (content dropped, operator told) if it can't start. No await follows the busy check, so
+    the caller's manager.run takes the slot this saw free."""
+    if manager.active:
+        content.cleanup()
+        await message.answer(f"⛔ Занят: {manager.label}. Остановите текущую задачу.")
+        return False
+    try:
+        if "trigger" in data and data["trigger"] != settings.trigger:
+            settings.set_trigger(data["trigger"])
+        if data["messages_count"] != settings.messages_count:
+            settings.set_messages_count(data["messages_count"])
+    except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
+        content.cleanup()
+        await message.answer(f"⚠️ Не удалось сохранить config.toml: {err}")
+        return False
+    return True

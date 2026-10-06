@@ -48,6 +48,10 @@ def workers_kb() -> InlineKeyboardMarkup:
             *[[button(group, CategoryCB(index=index))] for index, group in enumerate(WORKER_GROUPS)],
             [button("🌐 Прокси", MenuCB(action=MenuAction.PROXY)),
              button("⏱ Задержка", MenuCB(action=MenuAction.DELAY))],
+            [button("⏳ Пауза профиля", MenuCB(action=MenuAction.PROFILE_PAUSE)),
+             button("💬 Автоответ", MenuCB(action=MenuAction.AUTOREPLY))],
+            [button("📲 Добавить по номеру", MenuCB(action=MenuAction.PHONE)),
+             button("🔑 Код входа", MenuCB(action=MenuAction.CODES))],
             [button("📥 Загрузить tdata", MenuCB(action=MenuAction.TDATA))],
         ]
     )

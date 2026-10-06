@@ -81,7 +81,7 @@ class TestDelay:
 class TestChangeUsernameFileMode:
     def _run(self, sessions, usernames):
         storage = types.SimpleNamespace(sessions=list(sessions))
-        settings = types.SimpleNamespace(delay=[1])
+        settings = types.SimpleNamespace(delay=[1], profile_pause=[0])
         fn = ChangeUsernameFunc(storage, settings)
 
         reports, changed = [], []
@@ -129,7 +129,7 @@ class TestChangeUsernameBaseMode:
 
         storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session,
                                         remember_username=lambda session, username: None)
-        fn = ChangeUsernameFunc(storage, types.SimpleNamespace(delay=[1]))
+        fn = ChangeUsernameFunc(storage, types.SimpleNamespace(delay=[1], profile_pause=[0]))
         reports = []
 
         async def report(msg):
@@ -138,21 +138,32 @@ class TestChangeUsernameBaseMode:
         asyncio.run(fn.run(report, base=base))
         return reports
 
+    @staticmethod
+    def _assert_suffixed(value, base):
+        """value is base + a random 2-4 digit suffix (not the bare base, not sequential)."""
+        assert value != base and value.startswith(base)
+        suffix = value[len(base):]
+        assert suffix.isdigit() and 2 <= len(suffix) <= 4
+
     def test_free_base_is_used_as_is(self):
         s = self._Session(taken=set())
         self._run([s], "CitadelCurator")
         assert s.set_to == "CitadelCurator"
 
-    def test_taken_base_gets_numbers(self):
-        s = self._Session(taken={"CitadelCurator", "CitadelCurator1"})
+    def test_taken_base_gets_random_suffix(self):
+        taken = {"CitadelCurator"}
+        s = self._Session(taken=taken)
         self._run([s], "CitadelCurator")
-        assert s.set_to == "CitadelCurator2"
+        self._assert_suffixed(s.set_to, "CitadelCurator")
+        assert s.set_to not in taken
 
     def test_accounts_get_distinct_names(self):
-        taken = {"CitadelCurator"}
-        sessions = [self._Session(taken) for _ in range(3)]
+        sessions = [self._Session({"CitadelCurator"}) for _ in range(3)]
         self._run(sessions, "CitadelCurator")
-        assert sorted(s.set_to for s in sessions) == ["CitadelCurator1", "CitadelCurator2", "CitadelCurator3"]
+        names = [s.set_to for s in sessions]
+        assert len(set(names)) == 3  # distinct (the shared `used` set guarantees it)
+        for name in names:
+            self._assert_suffixed(name, "CitadelCurator")
 
     def test_leading_at_is_stripped(self):
         s = self._Session(taken=set())
@@ -170,7 +181,7 @@ class TestChangeUsernameBaseMode:
 
         s = OnSale(taken=set())
         self._run([s], "CitadelCurator")
-        assert s.set_to == "CitadelCurator1"
+        self._assert_suffixed(s.set_to, "CitadelCurator")  # bare base on sale → a suffixed one
 
     def test_invalid_candidate_is_skipped(self):
         from telethon.errors import UsernameInvalidError
@@ -178,12 +189,12 @@ class TestChangeUsernameBaseMode:
         class TooShort(self._Session):
             async def __call__(self, request):
                 if isinstance(request, CheckUsernameRequest) and request.username == "abcd":
-                    raise UsernameInvalidError(request)  # under 5 characters; abcd1 is fine
+                    raise UsernameInvalidError(request)  # under 5 characters; a suffixed one is fine
                 return await super().__call__(request)
 
         s = TooShort(taken=set())
         self._run([s], "abcd")
-        assert s.set_to == "abcd1"
+        self._assert_suffixed(s.set_to, "abcd")
 
     def test_check_error_is_reported(self):
         s = self._Session(taken=set(), error=RuntimeError("USERNAME_INVALID"))
@@ -213,7 +224,7 @@ class TestClearPersonalChannel:
 
         storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
         from functions.clear_personal_channel import ClearPersonalChannelFunc
-        fn = ClearPersonalChannelFunc(storage, types.SimpleNamespace(delay=[1]))
+        fn = ClearPersonalChannelFunc(storage, types.SimpleNamespace(delay=[1], profile_pause=[0]))
         reports = []
 
         async def report(msg):
@@ -259,7 +270,7 @@ class TestPollVote:
 
         storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
         from functions.poll_vote import PollVoteFunc
-        fn = PollVoteFunc(storage, types.SimpleNamespace(delay=[1]))
+        fn = PollVoteFunc(storage, types.SimpleNamespace(delay=[0]))
         reports = []
 
         async def report(msg):
@@ -289,7 +300,7 @@ class TestHideLastSeen:
 
         storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
         from functions.hide_last_seen import HideLastSeenFunc
-        fn = HideLastSeenFunc(storage, types.SimpleNamespace(delay=[1]))
+        fn = HideLastSeenFunc(storage, types.SimpleNamespace(delay=[1], profile_pause=[0]))
         reports = []
 
         async def report(msg):

@@ -33,7 +33,7 @@ class ChangeNameFunc(TelethonFunction):
 
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 return
@@ -55,7 +55,7 @@ class ChangeNameFunc(TelethonFunction):
                 await report(f"Name changed successfully. ( {full_name} → {new_name} )")
 
     async def run(self, report, names=None, first_name=None, last_name=None):
-        await self.gather_in_order(
+        await self.run_sequential(
             lambda session, report: self.change_name(
                 session, report,
                 names=names, first_name=first_name, last_name=last_name

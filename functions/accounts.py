@@ -18,7 +18,8 @@ class AccountsFunc(TelethonFunction):
 
         if me is not None:
             name = " ".join(filter(None, [me.first_name, me.last_name])) or "—"
-            return [name, f"@{me.username}" if me.username else "—", f"+{me.phone}", proxy, "ok"]
+            phone = f"+{me.phone}" if me.phone else "—"  # get_me() may come back without it
+            return [name, f"@{me.username}" if me.username else "—", phone, proxy, "ok"]
         if js is not None:
             account = js.account.account
             name = " ".join(filter(None, [account.first_name, account.last_name])) or "—"

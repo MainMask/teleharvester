@@ -26,11 +26,6 @@ def stop_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def progress_kb() -> InlineKeyboardMarkup:
-    """The 📊 button alone, for the bot's task slot (scrape_kb has the scraper's)."""
-    return choice_kb("job_progress", [("📊 Прогресс", "show")])
-
-
 def scrape_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="📊 Прогресс", callback_data=ChoiceCB(scope="job_progress", value="scrape"))

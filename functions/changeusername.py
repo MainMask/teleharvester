@@ -1,4 +1,4 @@
-import itertools
+import random
 
 from telethon.errors import UsernameInvalidError, UsernamePurchaseAvailableError
 from telethon.tl.functions.account import UpdateUsernameRequest, CheckUsernameRequest
@@ -13,33 +13,37 @@ MAX_ATTEMPTS = 20  # candidates checked per account before giving up
 class ChangeUsernameFunc(TelethonFunction):
     """Change usernames"""
 
-    async def generate_username(self, session, base, counter):
-        """First free of base, base1, base2, ...; the counter is shared so accounts never pick the same one."""
-        for _ in range(MAX_ATTEMPTS):
-            n = next(counter)
-            candidate = base if n == 0 else f"{base}{n}"
+    async def generate_username(self, session, base, used):
+        """First free of base, then base + a random 2-4 digit suffix (e.g. CitadelCurator24); `used`
+        is shared across accounts so they never pick the same one (and the suffixes aren't a
+        tell-tale 1,2,3,…)."""
+        candidates = (base, *(f"{base}{random.randrange(10, 10000)}" for _ in range(MAX_ATTEMPTS)))
+        for candidate in candidates:
+            if candidate in used:
+                continue
 
             try:
                 if await session(CheckUsernameRequest(candidate)):
+                    used.add(candidate)
                     return candidate
             # this candidate only: on sale at Fragment, or invalid (e.g. a base under 5 characters
-            # whose base1 is fine); an account's own error (a long flood wait) still ends the search
+            # whose suffixed form is fine); an account's own error (a long flood wait) still ends the search
             except (UsernamePurchaseAvailableError, UsernameInvalidError):
                 continue
 
         return None
 
-    async def change(self, session, report, username=None, base=None, counter=None):
+    async def change(self, session, report, username=None, base=None, used=None):
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 return
 
             if base is not None:
                 try:
-                    username = await self.generate_username(session, base, counter)
+                    username = await self.generate_username(session, base, used)
                 except Exception as err:
                     await report(f"[{me.first_name}] не удалось подобрать username: {err}")
                     return
@@ -64,16 +68,16 @@ class ChangeUsernameFunc(TelethonFunction):
                     f"{len(self.sessions) - len(usernames)} аккаунт(ов) без имени будут пропущены"
                 )
             pairs = dict(zip(self.sessions, usernames))  # accounts beyond the file are skipped
-            await self.gather_in_order(
+            await self.run_sequential(
                 lambda session, report: self.change(session, report, username=pairs[session]),
                 report,
                 sessions=list(pairs),
             )
         else:
             base = base.strip().lstrip("@")
-            counter = itertools.count()
-            await self.gather_in_order(
-                lambda session, report: self.change(session, report, base=base, counter=counter),
+            used = set()
+            await self.run_sequential(
+                lambda session, report: self.change(session, report, base=base, used=used),
                 report,
             )
 

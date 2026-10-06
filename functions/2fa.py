@@ -13,7 +13,7 @@ class SetPasswordFunc(TelethonFunction):
     async def edit_2fa(self, session: TelegramClient, password: str, report):
         async with self.storage.ainitialize_session(session):
             try:
-                me = await session.get_me()
+                me = await self.get_me(session)
             except Exception as err:
                 await report(f"get_me failed: {err}")
                 return
@@ -42,7 +42,7 @@ class SetPasswordFunc(TelethonFunction):
                         await report(f"[{me.first_name}] : password not saved to tdata_import: {err}")
 
     async def run(self, password: str, report):
-        await self.gather_in_order(
+        await self.run_sequential(
             lambda session, report: self.edit_2fa(session, password, report),
             report,
         )

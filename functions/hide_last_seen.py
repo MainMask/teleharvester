@@ -15,7 +15,7 @@ class HideLastSeenFunc(TelethonFunction):
             "last seen hidden", "not hidden")
 
     async def run(self, report):
-        await self.gather_in_order(self.hide, report)
+        await self.run_sequential(self.hide, report)
 
     async def execute(self):
         self.ask_accounts_count()

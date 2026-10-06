@@ -95,12 +95,18 @@ class ReportFunc(TelethonFunction):
 
             return "done", None
 
-    async def replay_rest(self, sessions, peer, ids, comment, selections, report):
-        """Replay the recorded report path on the remaining workers."""
+    async def replay_rest(self, sessions, peer, ids, comment, selections, report, stop=None):
+        """Replay the recorded report path on the remaining workers; `stop` (the bot's ⏹, an
+        asyncio.Event) skips the ones not reached yet. True if any were skipped so."""
         for session in sessions:
+            # the first worker already reported before this call; space the rest out so the
+            # reports don't all land within the same second (a tell-tale cluster signal)
+            await self.delay()
+            if stop is not None and stop.is_set():  # checked after the wait: a ⏹ during it counts
+                return True
             async with self.storage.ainitialize_session(session):
                 try:
-                    me = await session.get_me()
+                    me = await self.get_me(session)
                 except Exception as err:
                     await report(f"get_me failed: {err}")
                     self.progress_step()
@@ -112,6 +118,7 @@ class ReportFunc(TelethonFunction):
                 else:
                     await report(f"[{me.first_name}] submitted.")
                 self.progress_step()
+        return False
 
     async def execute(self):
         self.ask_accounts_count()
@@ -131,7 +138,12 @@ class ReportFunc(TelethonFunction):
         first, rest = self.sessions[0], self.sessions[1:]
 
         async with self.storage.ainitialize_session(first):
-            me = await first.get_me()
+            try:
+                me = await self.get_me(first)
+            except Exception as err:  # a dead proxy / session: say so instead of a bare traceback
+                console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+                return
+
             try:
                 selections = await self.resolve_and_report(first, link, posts, comment)
             except Exception as err:

@@ -4,6 +4,7 @@ from bot.keyboards.common import stop_kb
 from bot.keyboards.menu import main_menu
 from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
+from modules.storages.sessions_storage import release_client
 
 
 class JobManager:
@@ -27,6 +28,7 @@ class JobManager:
         self._cancelable = True
         self._timeout_task = None
         self._cancel_requested = False
+        self._soft_stop = None       # set by stop() on a locked job that stops by itself (soft_stop)
         self.progress = None         # Progress of the active job, for the 📊 button
 
     @property
@@ -109,18 +111,7 @@ class JobManager:
                 cleanup()
             instance.progress = None  # the instance is reused by later runs
             for session in self._stop_sessions:
-                try:
-                    await session.disconnect()
-                except Exception:
-                    pass
-                # Telethon appends every RPC result's users/chats to the StringSession's
-                # in-memory _entities set, which never shrinks; on a multi-day bot run the
-                # persistent worker clients would grow unbounded. Drop it per job (functions
-                # re-resolve peers anyway), keeping memory bounded to one job's worth.
-                try:
-                    session.session._entities.clear()
-                except Exception:
-                    pass
+                await release_client(session)  # memory stays bounded to one job's worth
             self._clear()
 
     # --- interactive / threaded jobs --------------------------------------
@@ -170,6 +161,13 @@ class JobManager:
         """
         self._cancelable = False
 
+    def soft_stop(self) -> asyncio.Event:
+        """For a locked slot (see lock()) whose work can end between steps: stop() then sets
+        the returned event instead of refusing, and the work skips what is left and calls
+        release() itself. The slot stays held until then, so no job starts on its workers."""
+        self._soft_stop = asyncio.Event()
+        return self._soft_stop
+
     def release(self):
         self._clear()
 
@@ -191,6 +189,9 @@ class JobManager:
 
         # interactive
         if not self._cancelable:
+            if self._soft_stop is not None:  # the locked work stops by itself (see soft_stop)
+                self._soft_stop.set()
+                return True
             return False
 
         on_abort = self._on_abort
@@ -214,4 +215,5 @@ class JobManager:
         self._cancelable = True
         self._timeout_task = None
         self._cancel_requested = False
+        self._soft_stop = None
         self.progress = None

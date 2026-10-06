@@ -567,3 +567,21 @@ def test_participants_reads_no_post_text_and_counts_per_person(tmp_path, monkeyp
     assert (p.loc[7, "Comments"], p.loc[7, "Messages"], p.loc[7, "Total"]) == (3, 1, 4)
     assert p.loc[7, "Access Hash"] == 2**60 + 7 and p.loc[7, "Username"] == "bob"
     assert list(p.index) == [7]  # the channel's own post is no one
+
+
+def test_filter_ignores_case(tmp_path):
+    """As the scrape's own keyword filter: «крипта» finds a post that starts with «Крипта»."""
+    pd.DataFrame({"Content": ["Крипта растёт", "погода", None]}).to_parquet(tmp_path / "in.parquet")
+    filter_keywords(str(tmp_path / "in.parquet"), str(tmp_path / "f"), "Content", ["крипта"], 10)
+    out = pd.read_excel(tmp_path / "f_unique.xlsx")
+    assert out["Content"].tolist() == ["Крипта растёт"]
+    assert out["крипта"].tolist() == [1]
+
+
+def test_filter_repeated_keyword_in_another_case_counts_once(tmp_path):
+    """The match ignores case, so «Крипта» and «крипта» are one keyword (the first spelling kept)."""
+    pd.DataFrame({"Content": ["крипта растёт"]}).to_parquet(tmp_path / "in.parquet")
+    filter_keywords(str(tmp_path / "in.parquet"), str(tmp_path / "f"), "Content", ["Крипта", "крипта"], 10)
+    out = pd.read_excel(tmp_path / "f_unique.xlsx")
+    assert list(out.columns) == ["Content", "Крипта", "Keyword_Count"]
+    assert out["Keyword_Count"].tolist() == [1]

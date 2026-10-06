@@ -128,6 +128,53 @@ def test_set_delay_keeps_the_files_comments(tmp_path, monkeypatch):
     assert not (tmp_path / "config.toml.tmp").exists()
 
 
+def test_set_profile_pause_writes_limits_and_keeps_others(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, monkeypatch)
+    settings.set_profile_pause([90, 240])
+
+    config = toml.load(tmp_path / "config.toml")
+    assert config["limits"]["profile_pause"] == [90, 240] and settings.profile_pause == [90, 240]
+    assert config["limits"]["per_account_daily"] == 99  # other limits untouched
+    assert config["broadcast"]["delay"] == [5, 10]      # other sections untouched
+
+
+def test_set_profile_pause_rewrites_only_its_line(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, monkeypatch)
+    (tmp_path / "config.toml").write_text(
+        "[broadcast]\n"
+        "delay = [5, 10]  # seconds\n"
+        "messages = []\n"
+        "messages_count = 0\n"
+        'trigger = ""\n\n'
+        "[limits]\n"
+        "profile_pause = [60, 180]  # keep me\n"
+    )
+    settings.set_profile_pause([90, 240])
+
+    text = (tmp_path / "config.toml").read_text()
+    assert "profile_pause = [90, 240]  # keep me\n" in text
+    assert "delay = [5, 10]  # seconds\n" in text  # the [broadcast] delay line is left alone
+    assert not (tmp_path / "config.toml.tmp").exists()
+
+
+def test_set_trigger_and_messages_count_rewrite_their_lines(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, monkeypatch)
+    (tmp_path / "config.toml").write_text(
+        "[broadcast]\n"
+        "messages = []\n"
+        "delay = [5, 10]\n"
+        "messages_count = 0   # 0 = unlimited\n"
+        'trigger = ""\n'
+    )
+    settings.set_trigger('старт "go"')
+    settings.set_messages_count(3)
+
+    text = (tmp_path / "config.toml").read_text()
+    assert "messages_count = 3   # 0 = unlimited\n" in text
+    assert toml.loads(text)["broadcast"]["trigger"] == 'старт "go"'
+    assert (settings.trigger, settings.messages_count) == ('старт "go"', 3)
+
+
 def test_bot_delay_reports_a_broken_config(tmp_path, monkeypatch):
     from bot.routers import accounts
 
@@ -155,6 +202,22 @@ def test_bot_delay_button(tmp_path, monkeypatch):
     msg = _Msg(text="7")
     asyncio.run(accounts.delay_apply(msg, state, settings))
     assert settings.delay == [7] and toml.load(tmp_path / "config.toml")["broadcast"]["delay"] == [7]
+
+
+def test_bot_profile_pause_rejects_bad_input_and_saves_a_range(tmp_path, monkeypatch):
+    from bot.routers import accounts
+
+    settings = _settings(tmp_path, monkeypatch)
+    state = _State()
+    for bad in ("abc", "1-2-3", "", "-5"):
+        msg = _Msg(text=bad)
+        asyncio.run(accounts.profilepause_apply(msg, state, settings))
+        assert "Пришлите ещё раз" in msg.answers[0][0]
+
+    msg = _Msg(text="90 - 240")
+    asyncio.run(accounts.profilepause_apply(msg, state, settings))
+    assert settings.profile_pause == [90, 240]
+    assert toml.load(tmp_path / "config.toml")["limits"]["profile_pause"] == [90, 240]
 
 
 # --- 2. names / usernames from a list ------------------------------------------------------
