@@ -156,6 +156,13 @@ def test_tally_ignores_neutral_lines():
                   "[-] [@a] Account restricted until: 1 Nov 2026") == (0, 0)
 
 
+def test_tally_spambot_check_lines():
+    # a quoted @SpamBot reply is not a result, whatever words it has; a dead session is an error
+    assert _tally("✅ @a — без ограничений", "⛔ @b — ограничен бессрочно") == (1, 0)
+    assert _tally("💬 Ответ @SpamBot (@b):\nyou can't send messages, error") == (0, 0)
+    assert _tally("💀 x.jsession — сессия мертва") == (0, 1)
+
+
 def test_tally_counts_function_success_lines():
     assert _tally("added. user_id=1 total: 1", "[+] Account active (no restriction)",
                   "[SUCCESS] [A] : Reaction was sent", "[A] Photo uploaded successfully (p)") == (4, 0)

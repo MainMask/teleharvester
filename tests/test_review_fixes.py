@@ -32,6 +32,7 @@ class _Storage:
     def __init__(self, sessions=()):
         self.sessions = list(sessions)
         self.forgotten = []
+        self.jsessions_paths = {}
 
     @contextlib.asynccontextmanager
     async def ainitialize_session(self, session):
@@ -264,7 +265,7 @@ class TestSpamBlockMove:
         fn = SpamBlockFunc(_Storage(), ns(delay=[0]))
         msgs, report = collect()
         assert asyncio.run(fn.check(_S(), report)) is None
-        assert any("[@C1] can't unblock" in m for m in msgs)
+        assert any("⚠️ @C1 — не удалось разблокировать @SpamBot" in m for m in msgs)
 
 
 class TestSpamBlockReport:
@@ -286,7 +287,7 @@ class TestSpamBlockReport:
 
         class _S:
             async def get_me(self):
-                return ns(username=username, first_name="Acc", last_name=None)
+                return ns(id=7, username=username, first_name="Acc", last_name=None)
 
             def conversation(self, *_):
                 return _Conv()
@@ -297,17 +298,34 @@ class TestSpamBlockReport:
 
     def test_active_names_the_account(self):
         msgs, result = self._check("Good news, no limits are currently applied.")
-        assert msgs == ["[+] [@C1] Account active (no restriction)"]
+        assert msgs == ["✅ @C1 — без ограничений"]
         assert result[0] == "active"
 
     def test_restricted_until_names_the_account(self):
         msgs, result = self._check("Unfortunately...\nlimited until 12 Nov 2026, 10:00 UTC.")
-        assert msgs == ["[-] [@C1] Account restricted until: 12 Nov 2026"]
+        assert msgs == ["🚫 @C1 — ЛС ограничены до 12 Nov 2026"]
         assert result[0] == "12 Nov 2026"
 
     def test_falls_back_to_name_without_username(self):
         msgs, _ = self._check("Good news, no limits are currently applied.", username=None)
-        assert msgs == ["[+] [Acc] Account active (no restriction)"]
+        assert msgs == ["✅ Acc — без ограничений"]
+
+    def test_a_date_in_any_language_is_a_date(self):
+        # @SpamBot answers in the session's language (random for an account added by phone)
+        for reply, date in [
+            ("К сожалению...\nОграничения будут сняты 12 нояб. 2026 г., 10:00 UTC.", "12 нояб. 2026"),
+            ("很遗憾……\n您的账号将于 2026年11月12日 10:00 UTC 解除限制。", "2026年11月12日"),
+            ("Niestety...\nOgraniczenia zostaną zniesione 12.11.2026, 10:00 UTC.", "12.11.2026"),
+            ("Unfortunately...\nreleased in 2026, somehow.", "2026"),  # a year alone: still a date
+        ]:
+            msgs, result = self._check(reply)
+            assert result[0] == date, reply
+            assert msgs == [f"🚫 @C1 — ЛС ограничены до {date}"]
+
+    def test_no_year_is_permanent(self):
+        msgs, result = self._check("К сожалению...\nВаш аккаунт ограничен.")
+        assert result[0] == "permanent"
+        assert msgs == ["⛔ @C1 — ограничен бессрочно"]
 
 
 class TestSpamBlockUnusableWorkers:
@@ -359,14 +377,46 @@ class TestSpamBlockUnusableWorkers:
             storage.full_sessions[s.path] = s
         return storage
 
-    def _run(self, storage):
+    def _run(self, storage, replies=False):
         from functions.spamblock import SpamBlockFunc
 
         fn = SpamBlockFunc(storage, ns(delay=[0]))
         fn.sessions = storage.sessions
         msgs, report = collect()
-        asyncio.run(fn.run(report))
+        asyncio.run(fn.run(report, replies=replies))
         return msgs
+
+    def test_spambot_replies_are_shown_once_each(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        forever = "Unfortunately...\nyou are limited forever."
+        workers = [self._S(f"sessions/{n}.jsession", reply=forever) for n in "ab"]
+        workers.append(self._S("sessions/c.jsession", reply="Good news, no limits are currently applied."))
+        storage = self._storage(tmp_path, workers)
+
+        assert not any(m.startswith("💬") for m in self._run(storage))  # only when asked
+
+        quotes = [m for m in self._run(storage, replies=True) if m.startswith("💬")]
+        assert quotes == [f"💬 Ответ @SpamBot (@C1, @C1):\n{forever}"]  # the clean one: no quote
+
+    def test_spambot_reply_is_cut_to_700(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        storage = self._storage(tmp_path, [self._S("sessions/a.jsession", reply="x\n" + "y" * 2000)])
+
+        quote = [m for m in self._run(storage, replies=True) if m.startswith("💬")][0]
+        assert quote.endswith("…") and len(quote.split(":\n", 1)[1]) == 701
+
+    def test_entries_of_gone_sessions_are_dropped(self, monkeypatch, tmp_path):
+        from modules import restricted_workers
+
+        monkeypatch.chdir(tmp_path)
+        restricted_workers.save(["sessions/gone.jsession"])
+        restricted_workers.save_status({"sessions/gone2.jsession": "active"})
+        s = self._S("sessions/a.jsession", reply="Good news, no limits are currently applied.")
+
+        self._run(self._storage(tmp_path, [s]))
+
+        assert restricted_workers.load() == []
+        assert restricted_workers.load_status() == {"sessions/a.jsession": "active"}
 
     def test_dead_session_moves_to_inactive(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
@@ -378,7 +428,7 @@ class TestSpamBlockUnusableWorkers:
 
         assert (tmp_path / "sessions" / "inactive" / "d.jsession").exists()
         assert storage.sessions == [alive]
-        assert any("[d.jsession] Session is dead" in m for m in msgs)
+        assert any(m.startswith("💀 d.jsession — сессия мертва") for m in msgs)
 
     def test_permanent_is_excluded_until_clean(self, monkeypatch, tmp_path):
         from modules import contacts_ledger, restricted_workers
@@ -391,7 +441,7 @@ class TestSpamBlockUnusableWorkers:
         msgs = self._run(storage)
         assert restricted_workers.load() == ["sessions/a.jsession"]
         assert storage.sessions == [s]  # stays in sessions/
-        assert any("its 2 people go to other workers" in m for m in msgs)
+        assert "⛔ @C1 — ограничен бессрочно, его контакты (2) переданы другим воркерам" in msgs  # no .jsession: shared
 
         s.me = RuntimeError("network")  # a failed check keeps the entry
         self._run(storage)
@@ -400,6 +450,46 @@ class TestSpamBlockUnusableWorkers:
         s.me, s.reply = True, "Good news, no limits are currently applied."
         self._run(storage)
         assert restricted_workers.load() == []
+
+    def test_report_is_grouped_working_first(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        workers = [  # every group out of place
+            self._S("sessions/e.jsession", me=RuntimeError("network")),
+            self._S("sessions/d.jsession", me=None),
+            self._S("sessions/c.jsession", reply="Unfortunately...\nyou are limited forever."),
+            self._S("sessions/b.jsession", reply="Unfortunately...\nyou are limited until 12 Nov 2026."),
+            self._S("sessions/a.jsession", reply="Good news, no limits are currently applied."),
+        ]
+        msgs = self._run(self._storage(tmp_path, workers))
+
+        assert [m.split()[0] for m in msgs] == ["✅", "🚫", "⛔", "💀", "⚠️"]
+        assert msgs[-1] == "⚠️ e.jsession — не удалось опросить: network"
+        assert msgs[2] == "⛔ @C1 — ограничен бессрочно"  # no contacts: no tail
+
+    def test_check_result_is_kept_for_the_accounts_list(self, monkeypatch, tmp_path):
+        from modules import restricted_workers
+
+        monkeypatch.chdir(tmp_path)
+        s = self._S("sessions/a.jsession", reply="Unfortunately...\nyou are limited until 12 Nov 2026.")
+        storage = self._storage(tmp_path, [s])
+
+        self._run(storage)
+        assert restricted_workers.load_status() == {"sessions/a.jsession": "12 Nov 2026"}
+        assert storage.sessions == [s]  # stays in sessions/
+
+        s.me = RuntimeError("network")  # a failed check keeps the entry
+        self._run(storage)
+        assert restricted_workers.load_status() == {"sessions/a.jsession": "12 Nov 2026"}
+
+        s.me, s.reply = True, "Unfortunately...\nyou are limited forever."  # permanent: no date
+        self._run(storage)
+        assert restricted_workers.load_status() == {}
+
+        s.reply = "Unfortunately...\nyou are limited until 12 Nov 2026."
+        self._run(storage)
+        s.reply = "Good news, no limits are currently applied."
+        self._run(storage)
+        assert restricted_workers.load_status() == {"sessions/a.jsession": "active"}
 
 
 class TestPmMailingPause:

@@ -7,7 +7,7 @@ from aiogram.exceptions import TelegramRetryAfter
 # Best-effort classification of a progress line for the end-of-job summary.
 # Whole words only, so "unlimited" / "present" don't count as "limit" / "sent".
 _ERROR_RE = re.compile(
-    r"⚠️|❌|\[!\]|\bfailed\b|\berrors?\b|\bnot (?:sent|changed|cleared|hidden|saved|voted)\b"
+    r"⚠️|❌|💀|\[!\]|\bfailed\b|\berrors?\b|\bnot (?:sent|changed|cleared|hidden|saved|voted)\b"
     r"|\blimit\b|\bcan't\b|\bcouldn't\b|\bskip\b|\bbanned\b|\bno invite rights\b|\bnot a supergroup\b"
     r"|не удал|не отправ|ошибк",
     re.IGNORECASE,
@@ -58,6 +58,8 @@ class TelegramReporter:
         self.message_id = message.message_id
 
     def _tally(self, text: str):
+        if text.startswith("💬"):  # a quote (a @SpamBot reply), not a result
+            return
         if _ERROR_RE.search(text):
             self._errors += 1
         elif _OK_RE.search(text):

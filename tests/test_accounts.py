@@ -93,7 +93,7 @@ def test_lists_each_account(tmp_path):
     assert "всего: <b>2</b>" in joined
     assert "<b>1. Meggan Page</b>\n👤 @meg · 🆔 <code>111</code>" in joined
     assert "<b>2. Ivan</b>\n👤 — · 🆔 <code>222</code>" in joined
-    assert "🆔 <code>111</code>\n\n<b>2." in joined  # blank line between cards
+    assert "🆔 <code>111</code>\n❔ не проверялся\n\n<b>2." in joined  # blank line between cards
     assert manager.released is True
 
 
@@ -228,3 +228,54 @@ def test_polled_workers_are_busy_meanwhile(tmp_path):
     pool.in_job = []
     asyncio.run(accounts.accounts(_Msg(), pool, _Manager(free=True)))
     assert seen == [workers] and pool.in_job == []
+
+
+def test_restrictions_are_shown(tmp_path):
+    from modules import restricted_workers
+
+    until = _Client(ns(first_name="Until", last_name=None, id=1, username="until"))
+    until.path = "sessions/until.jsession"
+    forever = _Client(fail=True)  # a stored card gets the mark too
+    forever.path = "sessions/forever.jsession"
+    stored = ns(account=ns(account=ns(first_name="Forever", last_name=None,
+                                       phone_number="79990003344", user_id=2)))
+    clean = _Client(ns(first_name="Clean", last_name=None, id=3, username="clean"))
+    clean.path = "sessions/clean.jsession"
+    new = _Client(ns(first_name="New", last_name=None, id=4, username="new"))
+    new.path = "sessions/new.jsession"
+    restricted_workers.save_status({until.path: "12 Nov 2026", clean.path: "active"})
+    restricted_workers.save([forever.path])
+    pool = _Pool([until, forever, clean, new], _Storage({forever.path: stored}))
+    msg = _Msg()
+
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+
+    joined = "\n".join(msg.replies)
+    assert "👤 @until · 🆔 <code>1</code>\n🚫 ЛС ограничены до 12 Nov 2026" in joined
+    assert "не удалось опросить\n⛔ ограничен бессрочно" in joined
+    assert "👤 @clean · 🆔 <code>3</code>\n✅ без ограничений" in joined
+    assert "👤 @new · 🆔 <code>4</code>\n❔ не проверялся" in joined  # never checked
+
+
+def test_restricted_go_to_the_bottom(tmp_path):
+    from modules import restricted_workers
+
+    def client(name, uid):
+        c = _Client(ns(first_name=name, last_name=None, id=uid, username=name))
+        c.path = f"sessions/{name}.jsession"
+        return c
+
+    # by username alone they would stay a, b, c
+    forever, until, clean = client("a", 1), client("b", 2), client("c", 3)
+    restricted_workers.save([forever.path])
+    restricted_workers.save_status({until.path: "12 Nov 2026", clean.path: "active"})
+    pool = _Pool([forever, until, clean], _Storage())
+    msg = _Msg()
+
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+
+    joined = "\n".join(msg.replies)
+    assert "всего: <b>3</b> · ограничены: <b>2</b>" in joined
+    order = ["<b>1. c</b>", "<b>2. b</b>", "<b>3. a</b>"]
+    positions = [joined.index(marker) for marker in order]
+    assert positions == sorted(positions)

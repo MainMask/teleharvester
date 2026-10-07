@@ -30,3 +30,7 @@ class FunctionCB(CallbackData, prefix="fn"):
 class ChoiceCB(CallbackData, prefix="ch"):
     scope: str  # which step the choice belongs to, e.g. "pm_mode", "pm_media", "join_mode"
     value: str
+
+
+class ReleaseCB(CallbackData, prefix="release"):
+    user_id: int  # the permanently restricted worker whose contacts go to the other workers

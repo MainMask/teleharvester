@@ -365,7 +365,7 @@ def test_a_limited_worker_s_contacts_wait_for_it(monkeypatch, tmp_path):
     assert not any("аккаунты исчерпаны" in m for m in msgs)  # waiting for tomorrow, not lost
 
 
-def test_a_permanently_restricted_worker_s_contacts_go_to_others(monkeypatch, tmp_path):
+def test_a_permanently_restricted_worker_s_contacts_wait_for_the_admin(monkeypatch, tmp_path):
     from modules import contacts_ledger, restricted_workers
 
     a, b = _Session(1, "a"), _Session(2, "b")
@@ -375,19 +375,39 @@ def test_a_permanently_restricted_worker_s_contacts_go_to_others(monkeypatch, tm
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
     msgs, _ = _mailing([a, b], rows, monkeypatch, tmp_path)
 
-    assert a.sent and b.sent == []
+    assert a.sent == [] and b.sent == []  # a misread @SpamBot reply must not hand them to a stranger
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
+    assert "1 получателей ждут своего воркера: он не участвует в этом запуске." in msgs
 
 
-def test_a_permanently_restricted_worker_s_contacts_are_added_again(monkeypatch, tmp_path):
+def test_a_permanently_restricted_worker_s_contacts_go_to_others_once_released(monkeypatch, tmp_path):
     from modules import contacts_ledger, restricted_workers
 
     a, b = _Session(1, "a"), _Session(2, "b")
     monkeypatch.chdir(tmp_path)
     contacts_ledger.save({"10": 2})
     restricted_workers.save(["b"])
-    _contacts([a, b], [{"ID": 10, "Access Hash": 1, "Username": "z"}], tmp_path)
+    restricted_workers.save_released(["b"])
+    rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
+    msgs, _ = _mailing([a, b], rows, monkeypatch, tmp_path)
 
+    assert a.sent and b.sent == []
+    assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
+
+
+def test_a_permanently_restricted_worker_s_contacts_are_not_added_again_until_released(monkeypatch, tmp_path):
+    from modules import contacts_ledger, restricted_workers
+
+    a, b = _Session(1, "a"), _Session(2, "b")
+    monkeypatch.chdir(tmp_path)
+    contacts_ledger.save({"10": 2})
+    restricted_workers.save(["b"])
+    rows = [{"ID": 10, "Access Hash": 1, "Username": "z"}]
+    _contacts([a, b], rows, tmp_path)
+    assert a.added == [] and contacts_ledger.load() == {"10": 2}
+
+    restricted_workers.save_released(["b"])
+    _contacts([a, b], rows, tmp_path)
     assert len(a.added) == 1 and b.added == [] and contacts_ledger.load() == {"10": 1}
 
 
@@ -410,6 +430,7 @@ def test_stats_are_keyed_by_id_but_reports_show_username(monkeypatch, tmp_path):
 
 CLEAN = "Good news, no limits are currently applied."
 FOREVER = "Unfortunately...\nyou are limited forever."
+UNTIL = "Unfortunately...\nyou are limited until 1 Nov 2026."
 
 
 class _CheckedSession(_Session):
@@ -474,10 +495,28 @@ def test_preflight_excludes_a_permanently_restricted_worker(monkeypatch, tmp_pat
     storage = _checked_storage(monkeypatch, tmp_path, [a, b])
     msgs, _ = _mailing([a, b], rows, monkeypatch, tmp_path, storage)
 
-    assert a.sent and b.sent == []
+    assert a.sent == [] and b.sent == []  # b's contact waits for the admin's decision
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
-    assert any("its 1 people go to other workers" in m for m in msgs)
-    assert not any(m.startswith("[+]") for m in msgs)
+    assert any("его контакты (1) ждут решения" in m for m in msgs)
+    assert ("Контакты бессрочно ограниченных воркеров ждут решения (1 чел.): "
+            "🤖 Воркеры → 🩺 Проверка и статистика → Проверка статуса") in msgs
+    assert not any(m.startswith("✅") for m in msgs)
+
+
+def test_preflight_holds_a_worker_restricted_until_a_date(monkeypatch, tmp_path):
+    from modules import contacts_ledger, restricted_workers
+
+    a, b = _CheckedSession(1, tmp_path), _CheckedSession(2, tmp_path, reply=UNTIL)
+    contacts_ledger.save({"10": 2})
+    rows = [{"user_id": 10, "access_hash": 1, "username": "zed"},
+            {"user_id": 11, "access_hash": 1, "username": "yan"}]
+    storage = _checked_storage(monkeypatch, tmp_path, [a, b])
+    msgs, _ = _mailing([b, a], rows, monkeypatch, tmp_path, storage)  # b would go first
+
+    assert b.sent == [] and len(a.sent) == 1  # 11 from a; 10 waits for b
+    assert "Пропущено воркеров, ограниченных до даты: 1" in msgs
+    assert "1 получателей ждут своего воркера: он не участвует в этом запуске." in msgs
+    assert restricted_workers.load() == []  # checked again next run
 
 
 def test_preflight_moves_a_dead_worker_out(monkeypatch, tmp_path):
@@ -514,7 +553,7 @@ def test_preflight_before_adding_to_contacts(monkeypatch, tmp_path):
     storage = _checked_storage(monkeypatch, tmp_path, [a, b])
     _contacts([a, b], [{"ID": 10, "Access Hash": 1, "Username": "z"}], tmp_path, storage)
 
-    assert len(a.added) == 1 and b.added == [] and contacts_ledger.load() == {"10": 1}
+    assert a.added == [] and b.added == [] and contacts_ledger.load() == {"10": 2}  # waits
 
 
 # --- verify: pick a posts file by button; the scrape's window makes it one click ------------
@@ -850,12 +889,12 @@ def test_worker_gone_asks_spambot(monkeypatch, tmp_path):
     async def report(text):
         msgs.append(text)
 
-    assert asyncio.run(fn.worker_gone(forever, report)) is True
+    assert asyncio.run(fn.worker_gone(forever, report)) is False  # its people wait for the admin
     assert restricted_workers.load() == [forever.path]
     assert asyncio.run(fn.worker_gone(dead, report)) is True
     assert (tmp_path / "sessions" / "inactive" / "w2.jsession").exists()
     assert asyncio.run(fn.worker_gone(clean, report)) is False
-    assert not any(m.startswith("[+]") for m in msgs)
+    assert not any(m.startswith("✅") for m in msgs)
 
 
 # --- 📊 progress: what won't be done this run leaves the total, so the bar can reach 100% ------
@@ -939,15 +978,27 @@ def test_mailing_leaves_a_worker_on_hold_its_people(monkeypatch, tmp_path):
     assert not any("база другого аккаунта" in m or "Внимание" in m for m in msgs)
 
 
-def test_a_restricted_worker_on_hold_is_out_for_good(monkeypatch, tmp_path):
+def test_a_released_restricted_worker_on_hold_is_out_for_good(monkeypatch, tmp_path):
+    from modules import restricted_workers
+
+    w, v, storage = _w_scraping()
+    restricted_workers.save(["sessions/w.jsession"])
+    restricted_workers.save_released(["sessions/w.jsession"])
+    msgs, _ = _mailing([v], ROWS, monkeypatch, tmp_path, storage=storage, on_hold=[w])
+
+    assert v.sent == ["alice"]  # W's people go to the others; the no-username one only W could reach
+    assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
+
+
+def test_an_unreleased_restricted_worker_on_hold_keeps_its_people(monkeypatch, tmp_path):
     from modules import restricted_workers
 
     w, v, storage = _w_scraping()
     restricted_workers.save(["sessions/w.jsession"])
     msgs, _ = _mailing([v], ROWS, monkeypatch, tmp_path, storage=storage, on_hold=[w])
 
-    assert v.sent == ["alice"]  # W's people go to the others; the no-username one only W could reach
-    assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
+    assert v.sent == []  # alice is W's contact: she waits for the admin's decision
+    assert any("ждут своего воркера" in m for m in msgs)
 
 
 # --- the owner in the shared queue; a worker that ran out ------------------------------------

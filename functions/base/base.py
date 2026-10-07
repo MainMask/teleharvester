@@ -38,9 +38,9 @@ SKIPPED = object()  # returned by a rotation action that skipped an item without
 
 
 def _problems_only(report):
-    """report for a @SpamBot check inside a run: "[+] active" × N would bury the run's own report."""
+    """report for a @SpamBot check inside a run: "✅ active" × N would bury the run's own report."""
     async def problems(text):
-        if not text.startswith("[+]"):
+        if not text.startswith("✅"):
             await report(text)
     return problems
 
@@ -239,45 +239,60 @@ class BaseFunction:
         return js.account.account.user_id if js is not None else None
 
     def drop_restricted(self) -> int:
-        """Leave out of self.sessions (and on_hold) the workers the last status check found
-        permanently restricted; returns how many were left out."""
+        """Leave out of self.sessions the workers the last status check found permanently
+        restricted; returns how many were left out. Until the admin releases its contacts
+        (stats/released.json) one goes on hold: its people wait. A released one is out for
+        good, on hold too: its people go to the other workers."""
         excluded = set(restricted_workers.load())
         if not excluded:
             return 0
-        kept = [s for s in self.sessions if self.storage.get_session_path(s) not in excluded]
-        # one on hold is out for good too: its people go to the other workers
-        on_hold = [s for s in self.on_hold if self.storage.get_session_path(s) not in excluded]
-        dropped = len(self.sessions) - len(kept) + len(self.on_hold) - len(on_hold)
-        self.sessions, self.on_hold = kept, on_hold
-        return dropped
+        released = set(restricted_workers.load_released())
+        path = self.storage.get_session_path
+        out = [s for s in self.sessions if path(s) in excluded]
+        gone = [s for s in self.on_hold if path(s) in excluded and path(s) in released]
+        self.sessions = [s for s in self.sessions if path(s) not in excluded]
+        self.on_hold = [s for s in self.on_hold if s not in gone] + [s for s in out if path(s) not in released]
+        return len(out) + len(gone)
 
     async def check_workers(self, report):
         """Ask @SpamBot about self.sessions before a run: dead sessions leave the pool,
-        permanently restricted ones are left out (see functions/spamblock.py)."""
+        permanently restricted ones are left out (see functions/spamblock.py), ones
+        restricted until a date sit this run out on hold."""
         from functions.spamblock import SpamBlockFunc  # spamblock imports this module
 
         await report("Проверяю воркеров у @SpamBot…")
         checker = SpamBlockFunc(self.storage, self.settings)
         checker.sessions = self.sessions
 
-        await checker.run(_problems_only(report))
+        blocks = await checker.run(_problems_only(report))
         # a dead session was moved to sessions/inactive and forgotten by the storage
         self.sessions = [s for s in self.sessions if self.storage.get_session_path(s) is not None]
 
+        # restricted until a date: can't write to strangers, so not this run; its people wait for it
+        until = [s for date, sessions in blocks.items() if date != "permanent" for s in sessions]
+        if until:
+            self.sessions = [s for s in self.sessions if s not in until]
+            self.on_hold = self.on_hold + until  # a new list: on_hold defaults to a class attribute
+            await report(f"Пропущено воркеров, ограниченных до даты: {len(until)}")
+
         if dropped := self.drop_restricted():
             await report(f"Пропущено бессрочно ограниченных воркеров: {dropped}")
+        if waiting := checker.waiting():
+            await report(f"Контакты бессрочно ограниченных воркеров ждут решения "
+                         f"({sum(people for *_, people in waiting)} чел.): "
+                         "🤖 Воркеры → 🩺 Проверка и статистика → Проверка статуса")
 
     async def worker_gone(self, session, report) -> bool:
-        """Ask @SpamBot about a worker that stopped mid-run: True if it is out for good —
-        permanently restricted (now excluded) or dead (moved to sessions/inactive)."""
+        """Ask @SpamBot about a worker that stopped mid-run: True if it is out for good, i.e.
+        dead (moved to sessions/inactive). A permanently restricted one is not: its people wait
+        for the admin's decision (see drop_restricted)."""
         from functions.spamblock import SpamBlockFunc  # spamblock imports this module
 
         checker = SpamBlockFunc(self.storage, self.settings)
         checker.sessions = [session]
 
         blocks = await checker.scan(_problems_only(report))
-        dead = await checker.drop_dead(blocks)
-        return bool(dead or blocks.get("permanent"))
+        return bool(await checker.drop_dead(blocks))
 
     def split_queues(self, rows, assigned=None):
         """[(sessions, rows), ...]: which workers may take which people of a scraped base.

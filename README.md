@@ -46,8 +46,11 @@ titles and a one-line description under each (the prompts inside a function stay
 - **Clear all dialogs** — wipe dialogs / leave channels.
 - **Terminate other authorized sessions** — reset other logins on each account.
 - **Check accounts status** — check each account against @SpamBot: permanently restricted
-  workers are left out of mailing/contacts until they are clean again, dead sessions are moved
-  to `sessions/inactive/`.
+  workers are left out of mailing/contacts until they are clean again, ones restricted until a
+  date sit each run out (their people wait for them), dead sessions are moved to
+  `sessions/inactive/`. The report is grouped (clean first) and quotes each distinct @SpamBot
+  reply of the restricted ones. A restriction with a date is told by the year in the reply, so
+  it is recognized in any language the session uses.
 - **Accounts list** — name, username, phone, proxy and status of every worker, by username.
 - **Set proxies** — distribute the proxies from a file across all accounts (3 per proxy) and
   reconnect them through the new proxies.
@@ -208,6 +211,11 @@ change it later even when a password is already set.
   written by **Add users to contacts** and read by the mailing (git-ignored).
 - `stats/restricted.json` — session files the last @SpamBot check found permanently
   restricted; rewritten on every check (git-ignored).
+- `stats/spambot_status.json` — the last @SpamBot check of the other workers
+  (`{session file: "active" | date}`), shown in the bot's accounts list; rewritten on every
+  check (git-ignored).
+- `stats/released.json` — permanently restricted workers whose contacts the admin gave to the
+  other workers (the **Передать контакты** button); a worker clean again leaves it (git-ignored).
 - `stats/auto_replies.json` — who the `[autoreply]` already answered (per worker), so no
   one is answered twice (git-ignored).
 
@@ -304,14 +312,17 @@ The same rules apply in the terminal menu and in the bot.
 - **@SpamBot check before every run.** The mailing and *Add users to contacts* first ask @SpamBot
   about their workers (a few seconds). A dead session (banned or logged out) is moved to
   `sessions/inactive/`; a permanently restricted one is left out (`stats/restricted.json`). The
-  people of a worker that is out become shared: other workers take them in the mailing, and the
-  next *Add users to contacts* re-adds them to live workers. Each check rewrites the list, so a
-  worker that is clean again is back in the next run. **Check accounts status** does the same on
-  demand.
-- **Mid-run.** If a worker stops during a mailing, it is asked about at once: out for good
-  (permanent restriction or dead) → its remaining people are handed to the other workers in the
-  same run; a daily cap or a temporary limit → they wait for it until the next run (another
-  worker would be writing to a stranger).
+  people of a dead worker become shared: other workers take them in the mailing, and the next
+  *Add users to contacts* re-adds them to live workers. A permanently restricted worker's people
+  wait instead, until the admin releases them: after **Check accounts status** the bot sends a
+  message with the worker's contact count and a **Передать контакты** button (the terminal menu
+  asks the same), so a misread @SpamBot reply never hands them to strangers. Each check rewrites
+  the list, so a worker that is clean again is back in the next run (and a release is forgotten).
+  **Check accounts status** does the same on demand.
+- **Mid-run.** If a worker stops during a mailing, it is asked about at once: dead → its
+  remaining people are handed to the other workers in the same run; a restriction (permanent
+  ones until released), a daily cap or a temporary limit → they wait for it until the next run
+  (another worker would be writing to a stranger).
 - **Dead workers in other functions.** A worker whose session is dead is skipped with
   `get_me failed: session is dead (banned or logged out)`; the other workers go on.
 - **Order.** Workers are ordered by username (`name1, name2 … name10`), in the pool and in every

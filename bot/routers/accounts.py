@@ -16,7 +16,7 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import ImportTdata, SetDelay, SetProfilePause, SetProxy
 from functions.base.base import BaseFunction
-from modules import tdata_import
+from modules import restricted_workers, tdata_import
 from modules.storages.sessions_storage import profile_order
 from modules.settings import Settings
 from modules.types.proxy import ACCOUNTS_PER_PROXY, parse_proxies
@@ -36,7 +36,19 @@ PROXY_PROMPT = (
 )
 
 
-def _worker_line(storage, client, me, index: int, busy: bool = False) -> str:
+def _classify(path, forever: set, status: dict) -> tuple[int, str]:
+    """The last @SpamBot check's result: (group, "\\n<mark for the card>"); the list goes
+    working first (0), then restricted until a date (1), permanently restricted last (2)."""
+    if path in forever:
+        return 2, "\n⛔ ограничен бессрочно"
+    if path not in status:
+        return 0, "\n❔ не проверялся"
+    if status[path] == "active":
+        return 0, "\n✅ без ограничений"
+    return 1, f"\n🚫 ЛС ограничены до {html.escape(status[path])}"
+
+
+def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str = "") -> str:
     """One account's card for the list; falls back to stored data when get_me() failed
     or was not asked (busy: the scraper runs on it)."""
     if me is None:
@@ -48,13 +60,13 @@ def _worker_line(storage, client, me, index: int, busy: bool = False) -> str:
             return (f"<b>{index}. {html.escape(name)}</b>\n"
                     f"📱 <code>+{html.escape(str(account.phone_number))}</code> · "
                     f"🆔 <code>{account.user_id}</code>\n"
-                    f"{status}")
-        return f"<b>{index}.</b> {status} (StringSession)"
+                    f"{status}{mark}")
+        return f"<b>{index}.</b> {status} (StringSession){mark}"
 
     name = " ".join(filter(None, [me.first_name, me.last_name])) or "—"
     username = f"@{html.escape(me.username)}" if me.username else "—"  # plain: Telegram links it
     return (f"<b>{index}. {html.escape(name)}</b>\n"
-            f"👤 {username} · 🆔 <code>{me.id}</code>")
+            f"👤 {username} · 🆔 <code>{me.id}</code>{mark}")
 
 
 async def _send_chunked(message: Message, header: str, lines: list[str]):
@@ -72,7 +84,7 @@ async def _send_chunked(message: Message, header: str, lines: list[str]):
 
 
 WORKERS_HELP = (
-    "<b>📋 Список аккаунтов</b> — имя, username и номер каждого воркера\n"
+    "<b>📋 Список аккаунтов</b> — имя, username и номер каждого воркера, ограничения от @SpamBot\n"
     "<b>👤 Профиль</b> — имя, username, bio, фото, видимость\n"
     "<b>🔐 Безопасность</b> — 2FA и сброс чужих сессий\n"
     "<b>🩺 Проверка и статистика</b> — ограничения от @SpamBot, страны номеров, очистка\n"
@@ -149,11 +161,16 @@ async def accounts(message: Message, pool: WorkerPool, manager: JobManager):
         pool.in_job = []
         manager.release()
 
-    ordered = sorted(zip(workers, profiles), key=lambda pair: profile_order(pair[1]))
-    lines = [_worker_line(pool.storage, client, me, i + 1, busy(client))
+    forever, status = set(restricted_workers.load()), restricted_workers.load_status()
+    checks = {id(client): _classify(pool.storage.get_session_path(client), forever, status) for client in workers}
+
+    ordered = sorted(zip(workers, profiles), key=lambda pair: (checks[id(pair[0])][0], profile_order(pair[1])))
+    lines = [_worker_line(pool.storage, client, me, i + 1, busy(client), checks[id(client)][1])
              for i, (client, me) in enumerate(ordered)]
 
     header = f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>"
+    if restricted := sum(1 for group, _ in checks.values() if group):
+        header += f" · ограничены: <b>{restricted}</b>"
     await _send_chunked(message, header, lines)
 
 

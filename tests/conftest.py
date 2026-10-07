@@ -11,10 +11,12 @@ def _isolated_contacts_ledger(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _isolated_restricted_workers(monkeypatch, tmp_path):
-    """No test may read or write the real stats/restricted.json."""
+    """No test may read or write the real stats/restricted.json, spambot_status.json or released.json."""
     from modules import restricted_workers
 
     monkeypatch.setattr(restricted_workers, "RESTRICTED_PATH", str(tmp_path / "restricted.json"))
+    monkeypatch.setattr(restricted_workers, "STATUS_PATH", str(tmp_path / "spambot_status.json"))
+    monkeypatch.setattr(restricted_workers, "RELEASED_PATH", str(tmp_path / "released.json"))
 
 
 @pytest.fixture(autouse=True)

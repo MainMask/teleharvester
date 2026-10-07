@@ -236,7 +236,7 @@ def test_status_check_reports_in_username_order(tmp_path, monkeypatch):
 
     asyncio.run(fn.scan(report))
 
-    assert msgs == [f"[+] [@CitadelCurator{n}] Account active (no restriction)" for n in range(1, 6)]
+    assert msgs == [f"✅ @CitadelCurator{n} — без ограничений" for n in range(1, 6)]
     assert names == [("C", None)] * 5  # each worker's live name is kept for the account pickers
 
 
