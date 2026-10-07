@@ -214,3 +214,18 @@ def test_password_step_rejects_non_text(monkeypatch):
     assert storage.added is None
     assert state.cleared is False  # still waiting for the password
     assert any("Ожидается текст" in r for r in msg.replies)
+
+
+def test_password_step_frees_the_slot_when_no_temp_dir(monkeypatch):
+    # the slot is non-cancelable: a full disk at mkdtemp must not hold it until a restart
+    def full_disk(prefix):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(accounts.tempfile, "mkdtemp", full_disk)
+    msg = _Msg(text="-")
+    manager = _Manager(free=True)
+
+    asyncio.run(accounts.tdata_password(msg, _State({"zip": _zip_bytes()}), _Pool(_Storage()), manager))
+
+    assert manager.released is True
+    assert any("Ошибка импорта" in r for r in msg.replies)

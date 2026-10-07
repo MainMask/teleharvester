@@ -132,3 +132,16 @@ class TestStatsSaveBatching:
 
         data = json.loads((tmp_path / "pm_mailing.json").read_text())
         assert len(data) == 60  # tail flushed: every success persisted
+
+
+def test_recipients_with_rich_markup_are_printed_as_is(monkeypatch):
+    # a .txt line is the operator's text: "[/]" in it must not be a MarkupError
+    from rich.console import Console
+
+    console = Console(width=120)
+    monkeypatch.setattr(pm, "console", console)
+    fn = _fn()
+    fn.stats = {"[/]user": {"count": 1, "last_date": "2026-01-01 00:00:00"}}
+    with console.capture() as capture:
+        fn.print_stats()
+    assert "[/]user" in capture.get()

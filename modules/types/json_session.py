@@ -45,7 +45,7 @@ class JsonSession:
         typed = {}
 
         def ask_password():  # Telethon's own prompt, but what is typed is kept: the .jsession stores it
-            typed["password"] = getpass.getpass("Please enter your password: ")
+            typed["password"] = getpass.getpass("Введите пароль 2FA: ")
             return typed["password"]
 
         client = TelegramClient(

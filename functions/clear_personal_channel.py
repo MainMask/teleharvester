@@ -10,13 +10,14 @@ class ClearPersonalChannelFunc(TelethonFunction):
     """Clear personal channel"""
 
     async def clear(self, session, report):
-        await self.request_each(session, report, UpdatePersonalChannelRequest(InputChannelEmpty()),
-                                "personal channel cleared", "not cleared")
+        if await self.request_each(session, report, UpdatePersonalChannelRequest(InputChannelEmpty()),
+                                   "канал убран из профиля", "не удалось убрать канал"):
+            self.mark_done(session)
 
     async def run(self, report):
         await self.run_sequential(self.clear, report)
 
     async def execute(self):
-        self.ask_accounts_count()
+        self.ask_workers()
 
         await self.run(console_report)

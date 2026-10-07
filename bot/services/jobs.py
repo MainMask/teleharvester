@@ -42,7 +42,7 @@ class JobManager:
     # --- coro jobs ---------------------------------------------------------
 
     async def run(self, bot, chat_id, pool, instance, bot_function, factory, header, done, stop_sessions=None,
-                  cleanup=None) -> bool:
+                  cleanup=None, only=None) -> bool:
         # Take the slot synchronously (before any await) to avoid a race between tasks.
         if self._active:
             await bot.send_message(chat_id, f"⛔ Занят: {self._label}. Остановите текущую задачу.")
@@ -56,7 +56,7 @@ class JobManager:
 
         reporter = TelegramReporter(
             bot, chat_id, header=header, reply_markup=stop_kb(),
-            job_label=header, workers=len(pool.workers), final_markup=main_menu(),
+            job_label=header, workers=len(pool.workers), final_markup=main_menu(), progress=self.progress,
         )
         try:
             await reporter.start()
@@ -77,14 +77,14 @@ class JobManager:
 
         self._stop_sessions = list(stop_sessions) if stop_sessions is not None else list(pool.workers)
         task = asyncio.create_task(
-            self._wrap(pool, instance, bot_function, factory, reporter, done, cleanup)
+            self._wrap(pool, instance, bot_function, factory, reporter, done, cleanup, only)
         )
         self._task = task
         # backstop: a cancel before _wrap starts, or during its finally, skips its _clear()
         task.add_done_callback(lambda t: self._clear() if self._task is t else None)
         return True
 
-    async def _wrap(self, pool, instance, bot_function, factory, reporter, done, cleanup):
+    async def _wrap(self, pool, instance, bot_function, factory, reporter, done, cleanup, only):
         instance.progress = self.progress  # the function steps it (see BaseFunction.progress)
         entered = False
 
@@ -95,7 +95,7 @@ class JobManager:
             return factory(func, reporter)
 
         try:
-            ran = await pool.run(instance, bot_function, start, reporter)
+            ran = await pool.run(instance, bot_function, start, reporter, only=only)
             # done: a Stop during finish() must not relabel the job as stopped
             self._cancelable = False
             await reporter.finish("⚠️ Не выполнено" if ran is False else done)

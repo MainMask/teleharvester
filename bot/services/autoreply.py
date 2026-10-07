@@ -21,7 +21,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from telethon import types
 
 from modules import json_file
-from modules.storages.sessions_storage import release_client
+from modules.storages.sessions_storage import connect_client, release_client
 
 # logging, not the Rich console: under systemd Rich wraps a line at 80 columns into several
 # journald entries; bot/__main__.py routes logging to journald one line per event
@@ -95,11 +95,18 @@ async def _handle_dialog(client, dialog, path: str, label: str, text: str, repli
         checked = f"{key}:{dialog.message.id}"
         if checked in _not_mailing:
             return 0
-        if not await client.get_messages(dialog.entity, limit=1, from_user="me"):
+        mine = await client.get_messages(dialog.entity, limit=1, from_user="me")
+        if not mine:
             if len(_not_mailing) >= NOT_MAILING_LIMIT:  # a new entry per stranger's message: bounded over weeks
                 _not_mailing.clear()
             _not_mailing.add(checked)
             return 0
+        if (mine[0].message or "").strip() == text.strip():
+            # answered in a round whose connection dropped (a job released the worker) before
+            # the reply was recorded: record it now instead of answering twice
+            replied[key] = datetime.now().strftime(TIME_FORMAT)
+            save_replied(replied)
+            first = False
 
     incoming = await _unread_texts(client, dialog)  # before our reply lands among them
 
@@ -158,7 +165,7 @@ async def poll_once(pool, text: str, replied: dict, notify):
         label = pool.storage.usernames.get(path) or os.path.basename(path or "")
         pool.polling = path  # before any await: a scrape must not start on it meanwhile
         async def connect_and_poll():
-            await client.connect()  # a no-op if a job already has it connected
+            await connect_client(client)  # a no-op if a job already has it connected
             await poll_worker(client, path, label, text, replied, notify)
 
         try:
@@ -166,6 +173,12 @@ async def poll_once(pool, text: str, replied: dict, notify):
             await asyncio.wait_for(connect_and_poll(), WORKER_TIMEOUT)
         except Exception as err:  # this worker only: banned, logged out, a job dropped it
             log.warning("autoreply: %s: %s", label, err or type(err).__name__)  # a timeout has no text
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():  # the bot is stopping: stop() / shutdown
+                raise
+            # a job released this worker mid-request: Telethon cancels a disconnected client's
+            # pending requests, which would otherwise end the whole loop silently
+            log.warning("autoreply: %s: disconnected mid-poll", label)
         finally:
             pool.polling = None  # before the busy check, or it would see this poll itself
             if not pool.busy(path):  # a job's worker stays connected: the job disconnects it

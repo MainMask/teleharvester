@@ -93,3 +93,11 @@ def _no_spambot_mid_run(monkeypatch):
         return False
 
     monkeypatch.setattr(BaseFunction, "worker_gone", never)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_profile_done(monkeypatch, tmp_path):
+    """No test may read or write the real stats/profile_done.json."""
+    from modules import profile_done
+
+    monkeypatch.setattr(profile_done, "PATH", str(tmp_path / "profile_done.json"))

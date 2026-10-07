@@ -263,6 +263,26 @@ def test_scrape_stores_its_window_for_verify(fake_client, tmp_path):
         "date_min": "2024-01-01", "date_max": "2024-12-31"}
 
 
+def test_scrape_stores_its_channels_and_keyword_for_verify(fake_client, tmp_path):
+    attrs = pd.read_parquet(scrape.run(Credentials(1, "h", ""), _params(tmp_path)), columns=["Group"]).attrs
+    assert attrs["channels"] == ["https://t.me/SomeChannel/"] and "keyword" not in attrs
+
+
+def test_verify_presets_take_the_channels_as_given(tmp_path):
+    # "@c12345" is a username, but rebuilt from its Group it reads as the channel id -10012345
+    from modules.scraped_files import verify_presets
+
+    path = tmp_path / "x_posts.parquet"
+    df = pd.DataFrame({"Group": ["@c12345"], "Message ID": ["1"]})
+    df.attrs["channels"] = ["@c12345"]
+    df.to_parquet(path, index=False)
+    assert verify_presets(str(path))[0] == ["@c12345"]
+
+    df.attrs.pop("channels")  # a file from before the channels were stored: rebuilt from Group
+    df.to_parquet(path, index=False)
+    assert verify_presets(str(path))[0] == ["-10012345"]
+
+
 def test_rebuilt_participants_keep_the_owner_id(fake_client, tmp_path, capsys):
     from scraper import analysis
 
@@ -301,7 +321,7 @@ def test_summary_of_an_empty_posts_file_says_so(tmp_path):
     pd.DataFrame({"Group": pd.Series([], dtype=str), "Date": pd.Series([], dtype="datetime64[us]"),
                   "Comments": pd.Series([], dtype=int)}).to_parquet(path)
 
-    with pytest.raises(SystemExit, match="no posts"):
+    with pytest.raises(SystemExit, match="нет постов"):
         analysis.summary(str(path), str(tmp_path / "S"), "Date", "Group", "Comments")
 
 
@@ -803,7 +823,7 @@ def test_resume_flag_param_mismatch(monkeypatch, tmp_path):
     monkeypatch.setattr(scrape, "TelegramClient", FakeClient)
     _seed_checkpoint(tmp_path, [_CK_ROW_30], _resume_meta(tmp_path, channels=["@old"]))
 
-    with pytest.raises(SystemExit, match="does not match"):
+    with pytest.raises(SystemExit, match="не совпадает"):
         scrape.run(Credentials(1, "h", ""), _params(tmp_path, resume=True))
 
 
@@ -1627,6 +1647,7 @@ def test_topic_keyword_is_matched_locally(monkeypatch, tmp_path):
     df = _forum_run(monkeypatch, tmp_path, "https://t.me/forum/42", keyword="bye")
     assert list(df.index) == ["43"]
     assert ForumClient.iter_calls == [(42, None)]
+    assert df.attrs["keyword"] == "bye"  # verify refuses a keyword scrape (see scraper/verify.py)
 
 
 def test_general_topic_filters_the_whole_chat(monkeypatch, tmp_path):
@@ -1673,7 +1694,7 @@ class LoggedOutClient(FakeClient):
 
 def test_a_logged_out_worker_is_a_clear_error_not_a_phone_prompt(monkeypatch, tmp_path):
     monkeypatch.setattr(scrape, "TelegramClient", LoggedOutClient)
-    with pytest.raises(SystemExit, match="no longer authorized"):
+    with pytest.raises(SystemExit, match="больше не авторизована"):
         scrape.run(Credentials(1, "h", ""), _params(tmp_path))
     assert LoggedOutClient.disconnected
 

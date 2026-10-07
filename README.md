@@ -16,7 +16,7 @@ and session management.
 
 Functions are auto-discovered from [`functions/`](functions/) and shown as a numbered
 menu on startup, grouped into the same sections as the control bot, with the same Russian
-titles and a one-line description under each (the prompts inside a function stay in English):
+titles and a one-line description under each; the prompts and messages are in Russian too:
 
 - **Mailing to PM (with stats)** — broadcast a message (text or media) to a list of
   recipients and keep persistent per-recipient success counts with dates. Each person in a
@@ -51,10 +51,12 @@ titles and a one-line description under each (the prompts inside a function stay
   `sessions/inactive/`. The report is grouped (clean first) and quotes each distinct @SpamBot
   reply of the restricted ones. A restriction with a date is told by the year in the reply, so
   it is recognized in any language the session uses.
-- **Accounts list** — name, username, phone, proxy and status of every worker, by username.
+- **Accounts list** — name, username, phone, proxy and status of every worker, and its last
+  @SpamBot check; by username, the restricted ones last.
 - **Set proxies** — distribute the proxies from a file across all accounts (3 per proxy) and
   reconnect them through the new proxies.
-- **Statistics (phone numbers)** — breakdown of accounts by country code.
+- **Statistics (phone numbers)** — breakdown of accounts by country (one code can be several:
+  +1 is the USA and Canada, +7 Russia and Kazakhstan).
 - **Scrape channel/group** — collect messages, their authors, comments, reactions and
   participants from channels and groups into `.parquet` (see below).
 - **Group members** — a group's whole member list, the silent members too, as a mailing base.
@@ -212,7 +214,7 @@ change it later even when a password is already set.
 - `stats/restricted.json` — session files the last @SpamBot check found permanently
   restricted; rewritten on every check (git-ignored).
 - `stats/spambot_status.json` — the last @SpamBot check of the other workers
-  (`{session file: "active" | date}`), shown in the bot's accounts list; rewritten on every
+  (`{session file: "active" | date}`), shown in the accounts list (bot and CLI); rewritten on every
   check (git-ignored).
 - `stats/released.json` — permanently restricted workers whose contacts the admin gave to the
   other workers (the **Передать контакты** button); a worker clean again leaves it (git-ignored).
@@ -307,7 +309,7 @@ The same rules apply in the terminal menu and in the bot.
   own contact, not to a stranger, which is what keeps it out of the spam filter. People without a
   username in a scraped base go to the account that scraped it (only its access hashes are valid,
   see `Owner ID` below); everyone else is a shared queue for all workers. In the terminal menu,
-  the workers left out by *how many accounts to use?* keep their people too: those wait for them,
+  the workers left out by *сколько аккаунтов использовать?* keep their people too: those wait for them,
   they don't go to the workers picked for the run (*Add users to contacts* doesn't re-add them either).
 - **@SpamBot check before every run.** The mailing and *Add users to contacts* first ask @SpamBot
   about their workers (a few seconds). A dead session (banned or logged out) is moved to
@@ -324,7 +326,7 @@ The same rules apply in the terminal menu and in the bot.
   ones until released), a daily cap or a temporary limit → they wait for it until the next run
   (another worker would be writing to a stranger).
 - **Dead workers in other functions.** A worker whose session is dead is skipped with
-  `get_me failed: session is dead (banned or logged out)`; the other workers go on.
+  `не удалось опросить аккаунт: сессия мертва (бан или выход)`; the other workers go on.
 - **Order.** Workers are ordered by username (`name1, name2 … name10`), in the pool and in every
   report; workers running at once still report in that order. The username is remembered in the
   `.jsession` the first time it is seen (a status check, a run, the account list).
@@ -338,11 +340,15 @@ For long-lived server use (the control bot as a daemon), the unit file is in [`d
 (so it survives crashes) and logs to journald. Five failed starts within 5 minutes (e.g. a config
 error) leave the unit failed instead of restarting forever: fix it, then
 `systemctl reset-failed teleharvester-bot`. aiogram already retries transient polling errors and
-stops gracefully on SIGTERM. Every start is announced to the admins in the bot ("🔄 Бот запущен"),
+stops gracefully on SIGTERM. A hang is restarted too: the bot pings systemd's watchdog from its
+event loop (`WatchdogSec=120`), so a loop stuck for 2 minutes gets the process killed and restarted
+like a crash. Every start is announced to the admins in the bot ("🔄 Бот запущен"),
 and a start after a crash or an out-of-memory kill says so ("⚠️ … после сбоя"), so a silent restart
 or a crash loop doesn't go unnoticed. The worker accounts in `sessions/` are read once at startup, so after
 adding or removing a session file restart the service (`systemctl restart teleharvester-bot`) for the
-change to take effect.
+change to take effect. Only one teleharvester process runs per folder (a lock in `tmp/`): the
+terminal menu or a second bot refuses to start while the service runs, as they would use the same
+worker sessions and overwrite each other's `stats/`; stop the service first.
 
 ```bash
 sudo cp deploy/teleharvester-bot.service /etc/systemd/system/
@@ -393,7 +399,7 @@ the input.
   group: a forum's members are shared by its topics.
 - **Верификация скрапа** — the scrape walks a channel with `iter_messages`; verify cross-checks with
   `get_messages(ids=…)` and lists any real message inside the date window the scrape missed. It
-  assumes a full scrape: for a keyword scrape every non-matching post is reported as missed.
+  needs a full scrape: a keyword scrape is refused, as every non-matching post would come back as missed.
 - **Анализ данных** — combine posts files, flatten comments, rebuild participants, monthly
   summaries, samples, keyword filters, `t.me` links (all of them in the menu and in the bot).
 

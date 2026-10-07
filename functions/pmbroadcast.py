@@ -14,7 +14,8 @@ class PmBroadcastFunc(TelethonFunction):
             try:
                 me = await self.get_me(session)
             except Exception as err:
-                await report(f"get_me failed: {err}")
+                self.progress_failed()
+                await report(f"не удалось опросить аккаунт: {err}")
                 return
 
             if by_phone_number:
@@ -22,11 +23,13 @@ class PmBroadcastFunc(TelethonFunction):
                     users = await self.import_phone_contact(session, peer)
                 except Exception as err:
                     # one account's failure must not abort the gather for the others
-                    await report(f"[{me.first_name}] couldn't resolve phone {peer}: {err}")
+                    self.progress_failed()
+                    await report(f"[{me.first_name}] не удалось найти номер {peer}: {err}")
                     return
 
                 if not users:
-                    await report(f"[{me.first_name}] couldn't resolve phone {peer}")
+                    self.progress_failed()
+                    await report(f"[{me.first_name}] не удалось найти номер {peer}")
                     return
 
                 peer = users[0]
@@ -34,11 +37,14 @@ class PmBroadcastFunc(TelethonFunction):
             try:
                 await rich_message.send(session, peer, content, self.safe_call, report=report)
             except AccountLimited as err:
-                await report(f"[{me.first_name}] limit. {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] лимит: {err}")
             except Exception as err:
-                await report(f"[{me.first_name}] not sent. {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] не отправлено: {err}")
             else:
-                await report(f"[{me.first_name}] sent.")
+                self.progress_ok()
+                await report(f"[{me.first_name}] отправлено.")
 
     async def run(self, peer, content, by_phone_number, report):
         await self.run_sequential(
@@ -51,22 +57,22 @@ class PmBroadcastFunc(TelethonFunction):
         self.ask_accounts_count()
 
         console.print()
-        console.print("[bold white][1] Broadcast by username")
-        console.print("[bold white][2] Broadcast by phone number")
+        console.print("[bold white][1] По username")
+        console.print("[bold white][2] По номеру телефона")
         choice = console.input("\n[bold white]>> ")
         
         by_phone_number = False
         
         if choice == "1":
-            peer = console.input("[bold red]enter username> [/]")
+            peer = console.input("[bold red]username> [/]")
         elif choice == "2":
             by_phone_number = True
-            peer = console.input("[bold red]enter phone number> [/]")
+            peer = console.input("[bold red]номер телефона> [/]")
         else:
-            console.print("[bold red]Invalid input!")
+            console.print("[bold red]Неверный выбор!")
             return
 
-        text = console.input("[bold red]text> [/]")
+        text = console.input("[bold red]текст> [/]")
 
         # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
         await self.run(peer, RichContent(text=text), by_phone_number, console_report)

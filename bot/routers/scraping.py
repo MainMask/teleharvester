@@ -237,8 +237,10 @@ async def scrape_name(message: Message, state: FSMContext):
 @router.message(Scrape.out_dir)
 async def scrape_out(message: Message, state: FSMContext, pool: WorkerPool, personal,
                      scrapes: JobManager):
-    raw = (message.text or "").strip()
-    out_dir = DEFAULT_OUT if raw in ("", "-") else raw  # Telegram can't send ""
+    raw = await require_text(message)  # a sticker / photo must not fall back to the default folder
+    if raw is None:
+        return
+    out_dir = DEFAULT_OUT if raw == "-" else raw
     await state.update_data(out_dir=out_dir)
 
     meta = pending_resume(out_dir, (await state.get_data())["name"])
@@ -309,7 +311,7 @@ async def scrape_channels(message: Message, state: FSMContext):
         return
     await state.update_data(channels=channels)
     await state.set_state(Scrape.date_min)
-    await message.answer("Дата с (DD.MM.YYYY или YYYY-MM-DD):")
+    await message.answer("Дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):")
 
 
 @router.message(Scrape.date_min)
@@ -319,7 +321,7 @@ async def scrape_dmin(message: Message, state: FSMContext):
         return
     await state.update_data(date_min=date_min)
     await state.set_state(Scrape.date_max)
-    await message.answer("Дата по (DD.MM.YYYY или YYYY-MM-DD):")
+    await message.answer("Дата по (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):")
 
 
 def _scrape_params(data: dict) -> ScrapeParams:
@@ -697,7 +699,7 @@ async def _ask_channel(message: Message, state: FSMContext, input_: str):
     await state.set_state(Verify.channel)
 
     if not channels:
-        await message.answer("Канал (@name / t.me / numeric id):")
+        await message.answer("Канал (@name / t.me / числовой id):")
         return
 
     if window:
@@ -706,7 +708,7 @@ async def _ask_channel(message: Message, state: FSMContext, input_: str):
                 "Другой канал или другие даты — введите канал текстом:")
         labels = [f"▶️ {channel} · {span}" for channel in channels]
     else:
-        text = "Канал из файла — или введите другой (@name / t.me / numeric id):"
+        text = "Канал из файла — или введите другой (@name / t.me / числовой id):"
         labels = channels
     await message.answer(
         text, reply_markup=choice_kb("verify_channel", [(label, str(i)) for i, label in enumerate(labels)])

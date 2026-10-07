@@ -10,7 +10,7 @@ from git import Repo
 
 # Never git-init + force-checkout a non-git install dir: that silently replaces the
 # local code (e.g. an rsync/tarball deploy) with GitHub's master.
-NOT_A_CHECKOUT = "Not a git checkout — update check skipped."
+NOT_A_CHECKOUT = "Не git-репозиторий — проверка обновлений пропущена."
 
 
 def get_current_commit() -> typing.Union[bool, str]:
@@ -23,7 +23,7 @@ def get_current_commit() -> typing.Union[bool, str]:
         return False
 
 
-def check_update() -> dict:
+def check_update(retried: bool = False) -> dict:
     """Check update for teleharvester"""
 
     try:
@@ -40,18 +40,19 @@ def check_update() -> dict:
 
         upcoming_commit = repo.remotes.origin.refs.master.commit
     except GitCommandError as err:
-        if "detected dubious ownership" in (err.stderr or ""):
+        # once: if git still refuses, each retry would only repeat the line in ~/.gitconfig
+        if "detected dubious ownership" in (err.stderr or "") and not retried:
             subprocess.run(
                 ["git", "config", "--global", "--add", "safe.directory", os.getcwd()],
                 check=True,
             )
-            return check_update()
+            return check_update(retried=True)
 
         else:
-            print(f"Warning: could not check for updates: {err}")
+            print(f"Внимание: не удалось проверить обновления: {err}")
             return {"has_update": False}
     except Exception as err:
-        print(f"Warning: could not check for updates: {err}")
+        print(f"Внимание: не удалось проверить обновления: {err}")
         return {"has_update": False}
 
     current_commit = get_current_commit()
@@ -84,10 +85,10 @@ def update_requirements(console):
     if sys.prefix == sys.base_prefix:  # pip refuses --user inside a venv
         args.append("--user")
 
-    with console.status("Installing new requirements..."):
+    with console.status("Установка зависимостей..."):
         subprocess.run(args, check=True)
 
-    console.print("[bold green]New requirements installed successfully.")
+    console.print("[bold green]Зависимости установлены.")
 
 
 def on_exit():
@@ -105,13 +106,13 @@ def restart_app():
 
 def update(console):
     try:
-        with console.status("Updating..."):
+        with console.status("Обновление..."):
             repo = Repo(os.getcwd())
             old_commit = repo.head.commit
             origin = repo.remote("origin")
             origin.pull()
         
-        console.print("[bold green]Updated successfully!")
+        console.print("[bold green]Обновлено!")
 
         # diff the HEAD move itself: check_update() already fetched, so pull()'s own
         # FetchInfo reports origin as up to date and carries no old_commit
@@ -122,9 +123,9 @@ def update(console):
     except git.exc.InvalidGitRepositoryError:
         console.print(NOT_A_CHECKOUT)
     except GitCommandError as err:  # local changes / diverged branch: keep running the current code
-        console.print(f"[bold red]Update failed:[/] {err}")
+        console.print(f"[bold red]Обновление не удалось:[/] {err}")
     except subprocess.CalledProcessError as err:  # no restart: the new code would miss its deps
         console.print(
-            f"[bold red]Requirements install failed:[/] {err}. "
-            "Run `pip install -r requirements.txt`, then restart."
+            f"[bold red]Не удалось установить зависимости:[/] {err}. "
+            "Выполните `pip install -r requirements.txt` и перезапустите."
         )

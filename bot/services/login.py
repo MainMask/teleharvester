@@ -17,7 +17,7 @@ from telethon.sessions import StringSession
 
 from modules.generators.linux import LinuxAPI
 from modules.generators.telegram_android import TelegramAppAPI
-from modules.storages.sessions_storage import release_client
+from modules.storages.sessions_storage import connect_client, release_client
 from modules.types.account_settings import AccountSettings
 
 SERVICE_ID = 777000           # Telegram's service account: it sends the login codes
@@ -54,7 +54,7 @@ def recent_codes(messages, now: datetime) -> list[tuple[str, datetime]]:
 async def fetch_codes(pool, client, path: str) -> list[tuple[str, datetime]]:
     """The worker's recent login codes. A worker a job or the auto-reply uses stays connected."""
     async def fetch():
-        await client.connect()  # a no-op if a job already has it connected
+        await connect_client(client)  # a no-op if a job already has it connected
         # through the dialogs: a fresh session doesn't know the service account's access hash
         async for dialog in client.iter_dialogs(limit=DIALOGS_LIMIT):
             if dialog.entity.id == SERVICE_ID:

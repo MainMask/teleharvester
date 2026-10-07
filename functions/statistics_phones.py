@@ -22,9 +22,9 @@ class PhoneNumbersStatsFunc(TelethonFunction):
             return
 
     def tally(self, phones):
-        """Reduce a list of phone numbers to [(country_code, country_name, count)]."""
-        countries = []
-        countries_by_country_code = {}
+        """Reduce a list of phone numbers to [(country_code, country_name, count)], a row per
+        country: one code can be several (+1: the USA and Canada, +7: Russia and Kazakhstan)."""
+        countries = Counter()
 
         for phone in phones:
             if phone is not None:
@@ -33,17 +33,10 @@ class PhoneNumbersStatsFunc(TelethonFunction):
                 except Exception:
                     continue
 
-                country = geocoder.description_for_number(parsed_phone, "en")
+                # the country, not description_for_number's region (a US number's is its city)
+                countries[parsed_phone.country_code, geocoder.country_name_for_number(parsed_phone, "ru")] += 1
 
-                if not countries_by_country_code.get(parsed_phone.country_code):
-                    countries_by_country_code[parsed_phone.country_code] = country
-
-                countries.append(parsed_phone.country_code)
-
-        return [
-            (code, countries_by_country_code[code] or "N/A", count)
-            for code, count in Counter(countries).items()
-        ]
+        return [(code, name or "—", count) for (code, name), count in countries.items()]
 
     async def run(self, report):
         phones = await asyncio.gather(*[
@@ -58,7 +51,8 @@ class PhoneNumbersStatsFunc(TelethonFunction):
         rows = self.tally(phones)
 
         if not rows:
-            await report("No phone numbers resolved.")
+            self.progress_failed()
+            await report("Ни один номер не определён.")
             return
 
         for code, name, count in rows:
@@ -67,7 +61,7 @@ class PhoneNumbersStatsFunc(TelethonFunction):
     async def execute(self):
         self.ask_accounts_count()
 
-        with console.status("Wait..."):
+        with console.status("Подождите..."):
             phones = await asyncio.gather(*[
                 self.get_phone_number(session)
                 for session in self.sessions
@@ -75,9 +69,9 @@ class PhoneNumbersStatsFunc(TelethonFunction):
 
         table = Table()
 
-        table.add_column("Phone country code", justify="left", style="white")
-        table.add_column("Country", style="white")
-        table.add_column("Count", justify="center", style="white")
+        table.add_column("Код страны", justify="left", style="white")
+        table.add_column("Страна", style="white")
+        table.add_column("Кол-во", justify="center", style="white")
 
         for code, name, count in self.tally(phones):
             table.add_row(str(code), name, str(count))

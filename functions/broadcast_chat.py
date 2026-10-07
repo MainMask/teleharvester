@@ -25,5 +25,6 @@ class BroadcastChatFunc(TelethonFunction):
     async def execute(self):
         broadcast = Broadcast(self.storage, self.settings)
 
+        broadcast.ask_accounts_count()
         broadcast.ask()
         await broadcast.start_campaign(console_report)

@@ -36,18 +36,6 @@ PROXY_PROMPT = (
 )
 
 
-def _classify(path, forever: set, status: dict) -> tuple[int, str]:
-    """The last @SpamBot check's result: (group, "\\n<mark for the card>"); the list goes
-    working first (0), then restricted until a date (1), permanently restricted last (2)."""
-    if path in forever:
-        return 2, "\n⛔ ограничен бессрочно"
-    if path not in status:
-        return 0, "\n❔ не проверялся"
-    if status[path] == "active":
-        return 0, "\n✅ без ограничений"
-    return 1, f"\n🚫 ЛС ограничены до {html.escape(status[path])}"
-
-
 def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str = "") -> str:
     """One account's card for the list; falls back to stored data when get_me() failed
     or was not asked (busy: the scraper runs on it)."""
@@ -69,14 +57,14 @@ def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str 
             f"👤 {username} · 🆔 <code>{me.id}</code>{mark}")
 
 
-async def _send_chunked(message: Message, header: str, lines: list[str]):
-    """Send header + cards (blank line between) in message-sized chunks."""
+async def _send_chunked(message: Message, header: str, lines: list[str], sep: str = "\n\n"):
+    """Send header + cards (blank line between, or `sep`) in message-sized chunks."""
     chunks, current = [], header
     for line in lines:
-        if len(current) + len(line) + 2 > MAX_MESSAGE:
+        if len(current) + len(line) + len(sep) > MAX_MESSAGE:
             chunks.append(current)
             current = ""
-        current += ("\n\n" if current else "") + line
+        current += (sep if current else "") + line
     chunks.append(current)
 
     for chunk in chunks:
@@ -162,10 +150,12 @@ async def accounts(message: Message, pool: WorkerPool, manager: JobManager):
         manager.release()
 
     forever, status = set(restricted_workers.load()), restricted_workers.load_status()
-    checks = {id(client): _classify(pool.storage.get_session_path(client), forever, status) for client in workers}
+    # the last @SpamBot check: (group, label); restricted ones go last
+    checks = {id(client): restricted_workers.classify(pool.storage.get_session_path(client), forever, status)
+              for client in workers}
 
     ordered = sorted(zip(workers, profiles), key=lambda pair: (checks[id(pair[0])][0], profile_order(pair[1])))
-    lines = [_worker_line(pool.storage, client, me, i + 1, busy(client), checks[id(client)][1])
+    lines = [_worker_line(pool.storage, client, me, i + 1, busy(client), "\n" + html.escape(checks[id(client)][1]))
              for i, (client, me) in enumerate(ordered)]
 
     header = f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>"
@@ -377,9 +367,10 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
         return
 
     await state.clear()
-    tmp_dir = tempfile.mkdtemp(prefix="tdata_")
+    tmp_dir = None
 
     try:
+        tmp_dir = tempfile.mkdtemp(prefix="tdata_")  # inside try: a full disk must not hold the slot
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
             archive.extractall(tmp_dir)
 
@@ -427,4 +418,5 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
         await message.answer(f"⚠️ Ошибка импорта: {err}", reply_markup=main_menu())
     finally:
         manager.release()
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -40,11 +40,14 @@ class JoinerFunc(TelethonFunction):
                 else:
                     updates = await self.safe_call(lambda: session(ImportChatInviteRequest(slug[1:])))
             except AccountLimited as error:
-                await emit(f"[!] [acc {index + 1}] limit: {error}")
+                await emit(f"[!] [аккаунт {index + 1}] лимит: {error}")
                 return False
             except Exception as error:
-                await emit(f"[!] [acc {index + 1}] {error}")
+                await emit(f"[!] [аккаунт {index + 1}] {error}")
             else:
+                if isinstance(updates, types.messages.ChatInviteJoinResultWebView):
+                    await emit(f"[!] [аккаунт {index + 1}] чат требует подтверждения вступления в web-app бота")
+                    return False
                 # the joined chat for the follow-up broadcast (a joinchat link is no peer);
                 # the result wraps the Updates on this layer, UpdatesTooLong has no chats
                 chats = getattr(getattr(updates, "updates", updates), "chats", None)
@@ -56,21 +59,21 @@ class JoinerFunc(TelethonFunction):
                 linked_id = full.full_chat.linked_chat_id
 
                 if not linked_id:
-                    await emit(f"[!] [acc {index + 1}] no linked chat")
+                    await emit(f"[!] [аккаунт {index + 1}] у канала нет привязанного чата")
                     return False
 
                 chat = next((c for c in full.chats if c.id == linked_id), None)
 
                 if chat is None:
-                    await emit(f"[!] [acc {index + 1}] linked chat not found")
+                    await emit(f"[!] [аккаунт {index + 1}] привязанный чат не найден")
                     return False
 
                 await self.safe_call(lambda: session(JoinChannelRequest(chat)))
             except AccountLimited as error:
-                await emit(f"[!] [acc {index + 1}] limit: {error}")
+                await emit(f"[!] [аккаунт {index + 1}] лимит: {error}")
                 return False
             except Exception as error:
-                await emit(f"[!] [acc {index + 1}] {error}")
+                await emit(f"[!] [аккаунт {index + 1}] {error}")
             else:
                 return chat  # the linked chat, not the channel `link` points to
 
@@ -89,13 +92,13 @@ class JoinerFunc(TelethonFunction):
             joined = await self.join(session, link, index, mode, report)
 
             if joined:
-                await report(f"[acc {index + 1}] joined")
+                await report(f"[аккаунт {index + 1}] вступил")
                 try:
                     await asyncio.wait_for(clicked.wait(), CAPTCHA_WAIT)
                 except asyncio.TimeoutError:
-                    await report(f"[acc {index + 1}] no captcha in {CAPTCHA_WAIT}s")
+                    await report(f"[аккаунт {index + 1}] капчи не было {CAPTCHA_WAIT} с")
                 else:
-                    await report(f"[acc {index + 1}] captcha solved")
+                    await report(f"[аккаунт {index + 1}] капча пройдена")
 
             return joined
         finally:
@@ -116,17 +119,19 @@ class JoinerFunc(TelethonFunction):
                 else:
                     is_joined = await self.join(session, link, index, mode, report)
                     if is_joined:
-                        await report(f"[acc {index + 1}] joined")
+                        await report(f"[аккаунт {index + 1}] вступил")
 
                 if is_joined:
                     joined += 1
+                    self.progress_ok()
+                else:  # join() reported why
+                    self.progress_failed()
 
             self.progress_step()
             if index < len(self.sessions) - 1:  # no trailing wait after the last account
                 await self.delay()
 
-        # no ok/error keyword: the per-account lines above are what the job summary counts
-        await report(f"Done: {joined}/{len(self.sessions)} accounts")
+        await report(f"Итого: {joined}/{len(self.sessions)} аккаунтов")
 
     def solve_captcha(self, session: TelegramClient):
         # just a handler on the already-connected client: run_until_disconnected() here
@@ -155,29 +160,29 @@ class JoinerFunc(TelethonFunction):
         print()
 
         console.print(
-            "[1] Just join chat/channel",
-            "[2] Join linked to channel chat",
+            "[1] Просто вступить в чат/канал",
+            "[2] Вступить в чат, привязанный к каналу",
             sep="\n",
             style="bold white"
         )
 
         print()
 
-        mode = console.input("[bold red]mode> [/]")
+        mode = console.input("[bold red]режим> [/]")
 
         while mode not in ("1", "2"):
-            mode = console.input("[bold red]mode> [/]")
+            mode = console.input("[bold red]режим> [/]")
 
-        link = console.input("[bold red]link> [/]")
+        link = console.input("[bold red]ссылка> [/]")
         
         link = link.replace("+", "joinchat/")
 
         speed = Prompt.ask(
-            "[bold red]speed>[/]",
+            "[bold red]скорость (normal — по очереди, fast — все сразу)>[/]",
             choices=["normal", "fast"]
         )
 
-        broadcast = Confirm.ask("[bold red]broadcast instantly?[/]")
+        broadcast = Confirm.ask("[bold red]сразу разослать сообщения?[/]")
 
         if broadcast:
             broadcast_func = Broadcast(self.storage, self.settings)
@@ -194,8 +199,8 @@ class JoinerFunc(TelethonFunction):
         # (initialize=True clients stay alive for the next menu functions)
         try:
             if speed == "normal":
-                delay = self.ask_int("[bold red]delay[/]", default=0, min_value=0)
-                captcha = Confirm.ask("[bold red]captcha[/]")
+                delay = self.ask_int("[bold red]задержка[/]", default=0, min_value=0)
+                captcha = Confirm.ask("[bold red]проходить капчу?[/]")
 
                 start = perf_counter()
 
@@ -204,7 +209,7 @@ class JoinerFunc(TelethonFunction):
                 inline = function_index == 1
                 sessions = enumerate(self.sessions)
                 if not inline:
-                    sessions = track(sessions, "[yellow]Joining[/]", total=len(self.sessions))
+                    sessions = track(sessions, "[yellow]Вступление[/]", total=len(self.sessions))
 
                 for index, session in sessions:
                     await session.start()
@@ -221,8 +226,8 @@ class JoinerFunc(TelethonFunction):
 
                     if inline:
                         if is_joined:
-                            console.print("[bold green]Account joined[/]")
-                        console.print("[bold white]Starting broadcast[/]")
+                            console.print("[bold green]Аккаунт вступил[/]")
+                        console.print("[bold white]Начинаю рассылку[/]")
                         await broadcast_func.broadcast(session, is_joined or link, console_report)
 
                     await asyncio.sleep(delay)
@@ -231,12 +236,12 @@ class JoinerFunc(TelethonFunction):
                 if not self.storage.initialize:
                     for session in track(
                         self.sessions,
-                        "[yellow]Initializing sessions[/]",
+                        "[yellow]Подключение сессий[/]",
                         total=len(self.sessions)
                     ):
                         await session.connect()
 
-                with console.status("Joining"):
+                with console.status("Вступление"):
                     start = perf_counter()
 
                     results = await asyncio.gather(*[
@@ -256,7 +261,7 @@ class JoinerFunc(TelethonFunction):
 
 
             joined_time = round(perf_counter() - start, 2)
-            console.print(f"[+] {joined} accounts joined in [yellow]{joined_time}[/]s")
+            console.print(f"[+] Вступило аккаунтов: {joined} за [yellow]{joined_time}[/] с")
 
             if broadcast and function_index != 1:
                 await asyncio.gather(*[

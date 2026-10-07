@@ -42,10 +42,13 @@ class WorkerPool:
         """The worker (session path) is in the job run() is running, or autoreply polls it."""
         return path == self.polling or any(self.storage.get_session_path(worker) == path for worker in self.in_job)
 
-    def delegate(self, func_instance) -> list:
+    def delegate(self, func_instance, only=None) -> list:
         """Point a function at the workers (never the host) but the one the scraper runs
-        on, which is put on hold; returns the worker list."""
+        on, which is put on hold; returns the worker list. `only` (session paths) narrows
+        it to the workers the operator picked."""
         workers, on_hold = self.workers, []
+        if only is not None:
+            workers = [w for w in workers if self.storage.get_session_path(w) in only]
         if self.scraping is not None:
             on_hold = [w for w in workers if self.storage.get_session_path(w) == self.scraping.path]
             workers = [w for w in workers if w not in on_hold]
@@ -54,13 +57,21 @@ class WorkerPool:
         func_instance.on_hold = on_hold  # a mailing keeps its people for it (see split_queues)
         return workers
 
-    async def run(self, func_instance, bot_function: BotFunction, coro_factory, report) -> bool:
-        """Delegate a job to the workers; False if it was not run at all.
+    async def run(self, func_instance, bot_function: BotFunction, coro_factory, report, only=None) -> bool:
+        """Delegate a job to the workers (`only`: the picked ones, see delegate); False if it
+        was not run at all.
 
         coro_factory(func_instance) returns the awaitable to run (the function's run()).
         """
-        workers = self.delegate(func_instance)
-        scraping = self.scraping if len(workers) < self.count() else None  # the worker left out
+        workers = self.delegate(func_instance, only)
+        scraping = self.scraping if func_instance.on_hold else None  # the worker left out
+
+        if only is not None and not workers:
+            await report(
+                "⚠️ Выбранный воркер занят скрапом — дождитесь его окончания." if scraping else
+                "⚠️ Выбранные воркеры недоступны. Начните заново."
+            )
+            return False
 
         if bot_function.risk == RISKY and not workers:
             await report(

@@ -12,6 +12,7 @@ from bot.services.jobs import JobManager
 from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
 from bot.states import ReportMessage, ReportUser
+from modules.storages.sessions_storage import connect_client, release_client
 
 router = Router()
 
@@ -91,10 +92,7 @@ async def _abort(chat_id: int, pool: WorkerPool):
     pool.in_job = []  # the manager already freed the slot
     entry = _FLOWS.pop(chat_id, None)
     if entry is not None:
-        try:
-            await entry[1]["session"].disconnect()
-        except Exception:
-            pass
+        await release_client(entry[1]["session"])
 
 
 @router.callback_query(FunctionCB.filter(F.key == "report"))
@@ -103,7 +101,7 @@ async def rm_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool)
     if not await ensure_workers(callback, pool):
         return
     await state.set_state(ReportMessage.link)
-    await callback.message.answer("Ссылка/peer поста:")
+    await callback.message.answer("Ссылка на пост или на канал/чат:")
 
 
 @router.message(ReportMessage.link)
@@ -168,12 +166,9 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
     _FLOWS[chat_id] = entry
 
     try:
-        await first.connect()
+        await connect_client(first)
         if _FLOWS.get(chat_id) is not entry:  # cancelled during connect: send no report
-            try:
-                await first.disconnect()
-            except Exception:
-                pass
+            await release_client(first)
             return
         status, options = await instance.step(flow, b"")
     except Exception as err:
@@ -181,10 +176,7 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
             return
         _FLOWS.pop(chat_id, None)
         _free(manager, pool)  # before any await: a /cancel meanwhile must not free a foreign slot
-        try:
-            await first.disconnect()
-        except Exception:
-            pass
+        await release_client(first)
         await message.answer(f"Ошибка: {err}")
         return
 
@@ -230,10 +222,7 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
             return
         _FLOWS.pop(chat_id, None)
         _free(manager, pool)  # before any await: a /cancel meanwhile must not free a foreign slot
-        try:
-            await flow["session"].disconnect()
-        except Exception:
-            pass
+        await release_client(flow["session"])
         await callback.message.answer(f"Ошибка: {err}")
         return
 
@@ -262,24 +251,23 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: Worke
     manager.disarm_timeout()  # work starts now; don't let the inactivity timeout free the slot mid-replay
     manager.lock()            # ...nor a /cancel: replay_rest is driving the workers until release()
     stop = manager.soft_stop()  # ⏹ / /cancel skip the accounts not reached yet; _free still frees the slot
-    try:
-        await flow["session"].disconnect()
-    except Exception:
-        pass
+    await release_client(flow["session"])
 
     manager.progress = Progress()
     manager.progress.start(len(flow["rest"]) + 1)
     manager.progress.step()  # the first account already submitted while choosing
+    manager.progress.ok = 1
     instance.progress = manager.progress
 
     # finish() drops the Progress / Stop buttons with the markup
     reporter = TelegramReporter(
         bot, chat_id, header="Репорт…", reply_markup=stop_kb(),
         job_label="Репорт", workers=len(flow["rest"]) + 1, final_markup=main_menu(),
+        progress=manager.progress,
     )
     try:
         await reporter.start()
-        await reporter("[первый аккаунт] submitted.")
+        await reporter("[первый аккаунт] жалоба отправлена.")
         skipped = await instance.replay_rest(
             flow["rest"], flow["peer"], flow["ids"], flow["comment"], flow["selections"], reporter, stop
         )

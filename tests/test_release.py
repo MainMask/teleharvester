@@ -171,7 +171,7 @@ def test_moving_restricted_sessions_keeps_the_ones_whose_people_wait(monkeypatch
     restricted_workers.save_released([released.path])
 
     fn, _, blocks = _run(storage, [waiting, dated, released, alone])
-    kept = fn.move_restricted(blocks)
+    kept = asyncio.run(fn.move_restricted(blocks))
 
     assert kept == ["@w1", "@w2"]
     assert (tmp_path / "sessions" / "w1.jsession").exists() and (tmp_path / "sessions" / "w2.jsession").exists()

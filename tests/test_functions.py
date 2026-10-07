@@ -79,8 +79,8 @@ class TestDelay:
 
 
 class TestChangeUsernameFileMode:
-    def _run(self, sessions, usernames):
-        storage = types.SimpleNamespace(sessions=list(sessions))
+    def _run(self, sessions, usernames, held=None):
+        storage = types.SimpleNamespace(sessions=list(sessions), usernames=held or {})
         settings = types.SimpleNamespace(delay=[1], profile_pause=[0])
         fn = ChangeUsernameFunc(storage, settings)
 
@@ -103,8 +103,36 @@ class TestChangeUsernameFileMode:
 
     def test_no_warning_when_counts_match(self):
         reports, changed = self._run(["s1", "s2"], ["a", "b"])
-        assert not any("пропущены" in m for m in reports)
+        assert not any("пропущен" in m for m in reports)
         assert changed == ["a", "b"]
+
+    def test_usernames_the_workers_hold_are_skipped(self):
+        # the list sent again for new workers: the old ones hold its first lines (any case)
+        reports, changed = self._run(["s1", "s2"], ["one", "TWO", "three", "four"],
+                                     {"sessions/a": "One", "sessions/x": "two"})
+        assert changed == ["three", "four"]
+        assert "[i] пропущено username, уже занятых вашими воркерами: 2" in reports
+
+
+class TestChangeUsernameCliFile:
+    def test_at_sign_is_dropped_as_in_the_bot(self, tmp_path, monkeypatch):
+        import functions.changeusername as module
+
+        (tmp_path / "assets").mkdir()
+        (tmp_path / "assets" / "usernames.txt").write_text("@alice\nbob\n\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(module.console, "input", lambda prompt="": "y")
+
+        fn = ChangeUsernameFunc(types.SimpleNamespace(sessions=[]), types.SimpleNamespace(delay=[1]))
+        fn.ask_accounts_count = lambda: None
+        got = []
+
+        async def fake_run(report, usernames=None, base=None):
+            got.append(usernames)
+
+        fn.run = fake_run
+        asyncio.run(fn.execute())
+        assert got == [["alice", "bob"]]
 
 
 class TestChangeUsernameBaseMode:
@@ -128,7 +156,8 @@ class TestChangeUsernameBaseMode:
             yield
 
         storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session,
-                                        remember_username=lambda session, username: None)
+                                        remember_username=lambda session, username: None,
+                                        get_session_path=lambda session: None)
         fn = ChangeUsernameFunc(storage, types.SimpleNamespace(delay=[1], profile_pause=[0]))
         reports = []
 
@@ -222,7 +251,8 @@ class TestClearPersonalChannel:
         async def ainitialize_session(session):
             yield
 
-        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
+        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session,
+                                        get_session_path=lambda session: None)
         from functions.clear_personal_channel import ClearPersonalChannelFunc
         fn = ClearPersonalChannelFunc(storage, types.SimpleNamespace(delay=[1], profile_pause=[0]))
         reports = []
@@ -239,11 +269,11 @@ class TestClearPersonalChannel:
         reports = self._run(sessions)
 
         assert all(isinstance(s.requests[0], UpdatePersonalChannelRequest) for s in sessions)
-        assert sum("cleared" in m for m in reports) == 2
+        assert sum("канал убран из профиля" in m for m in reports) == 2
 
     def test_error_is_reported(self):
         reports = self._run([self._Session(error=RuntimeError("boom"))])
-        assert any("not cleared: boom" in m for m in reports)
+        assert any("не удалось убрать канал: boom" in m for m in reports)
 
 
 class TestPollVote:
@@ -268,7 +298,8 @@ class TestPollVote:
         async def ainitialize_session(session):
             yield
 
-        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
+        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session,
+                                        get_session_path=lambda session: None)
         from functions.poll_vote import PollVoteFunc
         fn = PollVoteFunc(storage, types.SimpleNamespace(delay=[0]))
         reports = []
@@ -281,13 +312,13 @@ class TestPollVote:
 
     def test_success_is_reported(self):
         reports = self._run([self._Session(), self._Session()])
-        assert sum(m == "[Acc] voted" for m in reports) == 2
-        assert "Done: 2/2 accounts" in reports
+        assert sum(m == "[Acc] проголосовал" for m in reports) == 2
+        assert "Итого: 2/2 аккаунтов" in reports
 
     def test_error_is_reported(self):
         reports = self._run([self._Session(error=RuntimeError("boom"))])
-        assert "[Acc] not voted: boom" in reports
-        assert "Done: 0/1 accounts" in reports
+        assert "[Acc] не проголосовал: boom" in reports
+        assert "Итого: 0/1 аккаунтов" in reports
 
 
 class TestHideLastSeen:
@@ -298,7 +329,8 @@ class TestHideLastSeen:
         async def ainitialize_session(session):
             yield
 
-        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session)
+        storage = types.SimpleNamespace(sessions=list(sessions), ainitialize_session=ainitialize_session,
+                                        get_session_path=lambda session: None)
         from functions.hide_last_seen import HideLastSeenFunc
         fn = HideLastSeenFunc(storage, types.SimpleNamespace(delay=[1], profile_pause=[0]))
         reports = []
@@ -320,8 +352,8 @@ class TestHideLastSeen:
             assert isinstance(request, SetPrivacyRequest)
             assert isinstance(request.key, InputPrivacyKeyStatusTimestamp)
             assert [type(rule) for rule in request.rules] == [InputPrivacyValueDisallowAll]
-        assert sum("last seen hidden" in m for m in reports) == 2
+        assert sum("последний визит скрыт" in m for m in reports) == 2
 
     def test_error_is_reported(self):
         reports = self._run([self._Session(error=RuntimeError("boom"))])
-        assert any("not hidden: boom" in m for m in reports)
+        assert any("не удалось скрыть: boom" in m for m in reports)

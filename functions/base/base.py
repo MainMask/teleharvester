@@ -70,6 +70,16 @@ class BaseFunction:
         if self.progress is not None:
             self.progress.drop(n)
 
+    # The job summary's counts: called next to the line reporting an item's or a worker's
+    # outcome; totals, pauses and notes count nothing, whatever their wording.
+    def progress_ok(self):
+        if self.progress is not None:
+            self.progress.ok += 1
+
+    def progress_failed(self):
+        if self.progress is not None:
+            self.progress.failed += 1
+
     @staticmethod
     def safe(value) -> str:
         """Escape a value for safe use inside Rich markup (None -> '')."""
@@ -126,7 +136,7 @@ class BaseFunction:
                     await asyncio.sleep(err.seconds + 1)
                     continue
 
-                raise AccountLimited(f"rate limit {err.seconds}s")
+                raise AccountLimited(f"флуд-лимит {err.seconds} с")
             # UserBannedInChannel: the account is spam-restricted from all groups/channels
             except (PeerLimitError, AccountDeactivatedError, AccountRestrictedError,
                     UserBannedInChannelError) as err:
@@ -337,7 +347,7 @@ class BaseFunction:
         for index, (_, caption) in enumerate(files, 1):
             _report_console.print(f"  [{index}] {caption}", markup=False, highlight=False)
         if files:
-            _report_console.print("[bold white]enter a number, or a path to a file[/]")
+            _report_console.print("[bold white]введите номер или путь к файлу[/]")
 
         while True:
             raw = (Prompt.ask(label, default=default or None) or "").strip() or default
@@ -354,7 +364,7 @@ class BaseFunction:
             return  # nothing to choose from; functions guard the empty case themselves
 
         accounts_count = self.ask_int(
-            "[bold magenta]how many accounts to use? [/]",
+            "[bold magenta]сколько аккаунтов использовать? [/]",
             default=len(self.sessions),
             min_value=1,
         )

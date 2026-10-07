@@ -242,11 +242,19 @@ class TestSpamBlockMove:
 
         storage = _Storage()
         storage.get_session_path = lambda s: path
+        class _S:
+            disconnected = False
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        session = _S()
         fn = SpamBlockFunc(storage, ns(delay=[0]))
-        fn.move_restricted({"permanent": [object()]})
+        asyncio.run(fn.move_restricted({"permanent": [session]}))
 
         assert (tmp_path / "sessions" / "restricted" / "permanent" / "a.session").exists()
         assert storage.forgotten == [path]
+        assert session.disconnected  # CLI clients stay connected: a forgotten one would run on
 
     def test_unblock_failure_is_reported(self):
         from telethon.errors import YouBlockedUserError
@@ -503,7 +511,7 @@ class TestPmMailingPause:
 
         asyncio.run(fn.pause_between_accounts("second", "B"))  # randint(60, 30) used to raise
 
-        assert any("pause" in m for m in msgs)
+        assert any("пауза" in m for m in msgs)
 
 
 class TestClearChatsOffset:
@@ -543,6 +551,31 @@ class TestParseMessageLink:
         assert (peer.channel_id, message_id) == (1234567890, 89)
 
 
+class TestReportPeer:
+    """Telethon can't resolve a post link as a peer: the report takes the post's chat from it."""
+
+    @staticmethod
+    def _peer(link):
+        from functions.report import ReportFunc
+
+        sent = []
+
+        async def session(request):
+            sent.append(request.peer)
+            return None
+
+        asyncio.run(ReportFunc(_Storage(), ns(delay=[0])).report_step(session, link, [1], "", b""))
+        return sent[0]
+
+    def test_a_post_link_reports_in_its_chat(self):
+        assert self._peer("https://t.me/chan/123") == "chan"
+        assert self._peer("t.me/c/123/45").channel_id == 123
+
+    def test_a_chat_link_name_or_id_goes_as_is(self):
+        for peer in ("https://t.me/chan", "@chan", "-100123"):
+            assert self._peer(peer) == peer
+
+
 # --- modules/ ----------------------------------------------------------------
 
 class TestSetupBroadcast:
@@ -577,7 +610,7 @@ class TestUpdaterPullFailure:
 
         updater.update(console)  # must not crash main before the menu
 
-        assert any("Update failed" in p for p in printed)
+        assert any("Обновление не удалось" in p for p in printed)
 
 
 # --- bot/ --------------------------------------------------------------------
@@ -756,6 +789,13 @@ class TestJoinReturnsTarget:
 
         assert self._join("@channel", "2", reply) is linked
 
+    def test_webview_join_is_not_counted(self):
+        # the join waits for a confirmation in the chat's bot web app: not joined
+        from telethon.tl.types.messages import ChatInviteJoinResultWebView
+
+        webview = ChatInviteJoinResultWebView(bot_id=1, query_id=2, users=[])
+        assert self._join("@chan", "1", lambda r: webview) is False
+
 
 class TestAddContactsUsernameFallback:
     def _add(self, row):
@@ -789,7 +829,7 @@ class TestAddContactsUsernameFallback:
 
     def test_no_username_is_skipped(self):
         added, _, msgs = self._add({"user_id": 1, "access_hash": 2})
-        assert added == 0 and any("skip user_id=1" in m for m in msgs)
+        assert added == 0 and any("пропуск user_id=1" in m for m in msgs)
 
 
 class TestAddContactsName:
@@ -1210,7 +1250,7 @@ class TestScrapeFuncSwappedDates:
         f.ask_int = lambda *a, **k: 100
         f.execute()
 
-        assert ran == [] and any("is after" in p for p in printed)
+        assert ran == [] and any("позже даты конца" in p for p in printed)
 
 
 class TestInvitingMissingInvitees:
@@ -1245,8 +1285,8 @@ class TestInvitingMissingInvitees:
         msgs, report = collect()
         asyncio.run(fn.invite(_S(), "src", "dest", [1, 2], report))
 
-        invited = [m for m in msgs if "invited" in m]
-        assert invited == ["[A] invited 2 total: 1"]
+        invited = [m for m in msgs if "приглашён" in m]
+        assert invited == ["[A] приглашён 2, всего: 1"]
 
     def test_delay_after_privacy_error(self):
         # the invite request was sent even when it errors: the delay must still apply
@@ -1383,6 +1423,18 @@ class TestInviteJoinResult:
         fn = InvitingFunc(_Storage(), ns(delay=[0]))
         assert asyncio.run(fn.resolve_source(_S(), "https://t.me/+abcdef")) is chat
 
+    def test_inviting_webview_join_is_refused(self):
+        from telethon.tl.types.messages import ChatInviteJoinResultWebView
+        from functions.inviting import InvitingFunc
+
+        class _S:
+            async def __call__(self, request):
+                return ChatInviteJoinResultWebView(bot_id=1, query_id=2, users=[])
+
+        fn = InvitingFunc(_Storage(), ns(delay=[0]))
+        with pytest.raises(ValueError, match="web-app"):
+            asyncio.run(fn.resolve_source(_S(), "https://t.me/+abcdef"))
+
     def test_joiner_reads_chat_from_wrapped_updates(self):
         chat = ns(id=5)
         got = TestJoinReturnsTarget()._join("https://t.me/joinchat/abc", "1",
@@ -1490,7 +1542,7 @@ class TestVerifyFuncSwappedDates:
         f.ask_int = lambda *a, **k: 0
         f.execute()
 
-        assert ran == [] and any("is after" in p for p in printed)
+        assert ran == [] and any("позже даты конца" in p for p in printed)
 
 
 class TestExcelErrorStrings:
@@ -1704,7 +1756,7 @@ class TestJobNotRunLabel:
             async def finish(self, text):
                 finished.append(text)
 
-        async def pool_run(*a):
+        async def pool_run(*a, only=None):
             return False  # RISKY job, no workers
 
         async def scenario():
@@ -1732,7 +1784,7 @@ class TestJobNotRunLabel:
             async def finish(self, text):
                 pass
 
-        async def pool_run(*a):
+        async def pool_run(*a, only=None):
             return False  # RISKY job, the only worker is scraping
 
         async def scenario():
@@ -1772,6 +1824,27 @@ class TestInvitingPublicSource:
         fn = InvitingFunc(_Storage(), ns(delay=[0]))
         assert asyncio.run(fn.resolve_source(_S(), "@public_chat")) is chat
 
+    def test_join_result_without_chats_falls_back_to_a_lookup(self):
+        from telethon.tl.functions.messages import CheckChatInviteRequest
+        from telethon.tl.types import UpdatesTooLong
+        from functions.inviting import InvitingFunc
+
+        public, private = ns(id=4), ns(id=5)
+
+        class _S:  # joined, but the result is UpdatesTooLong: no chats in it (as the joiner handles)
+            async def __call__(self, request):
+                if isinstance(request, CheckChatInviteRequest):
+                    return ns(chat=private)  # ChatInviteAlready
+                return ns(updates=UpdatesTooLong())
+
+            async def get_entity(self, ref):
+                assert ref == "@public_chat"
+                return public
+
+        fn = InvitingFunc(_Storage(), ns(delay=[0]))
+        assert asyncio.run(fn.resolve_source(_S(), "@public_chat")) is public
+        assert asyncio.run(fn.resolve_source(_S(), "https://t.me/+abcdef")) is private
+
     def test_basic_group_destination_stops_once(self):
         from functions.inviting import InvitingFunc
 
@@ -1804,7 +1877,7 @@ class TestInvitingPublicSource:
         fn.resolve_source = resolve_source
         msgs, report = collect()
         asyncio.run(fn.invite(_S(), "src", "dest", [1, 2, 3], report))
-        assert msgs == ["[A] destination is not a supergroup/channel"] and calls == []
+        assert msgs == ["[!] [A] чат назначения — не супергруппа и не канал"] and calls == []
 
 
 class TestBasicGroupAdmins:
@@ -1825,7 +1898,7 @@ class TestBasicGroupAdmins:
                 return members  # a basic group: Telethon ignores the filter
 
         fn = Broadcast(_Storage(), ns(delay=[0], messages_count=1, messages=["hi"]))
-        fn.configure(choice=0, mention_all=True, mention_mode="admins", content=ns(text="hi", entities=[], media=[]))
+        fn.configure(choice=0, mention_all=True, mention_mode="admins", content=ns(text="hi", entities=[], media=[], sent_media={}))
         fn.delay = _no_sleep
 
         async def send(session, peer, content, report, reply_to=None):
@@ -1945,15 +2018,15 @@ class TestJoinerBotCaptcha:
         s = self._S(captcha=True)
         msgs = self._run(monkeypatch, s, captcha=True)
         assert s.clicked == [b"ok"]
-        assert any("captcha solved" in m for m in msgs)
-        assert "Done: 1/1 accounts" in msgs and "[acc 1] joined" in msgs
+        assert any("капча пройдена" in m for m in msgs)
+        assert "Итого: 1/1 аккаунтов" in msgs and "[аккаунт 1] вступил" in msgs
         assert s.handlers == []  # removed before the session is released
 
     def test_no_captcha_times_out(self, monkeypatch):
         s = self._S(captcha=False)
         msgs = self._run(monkeypatch, s, captcha=True)
-        assert any("no captcha" in m for m in msgs)
-        assert "Done: 1/1 accounts" in msgs and "[acc 1] joined" in msgs
+        assert any("капчи не было" in m for m in msgs)
+        assert "Итого: 1/1 аккаунтов" in msgs and "[аккаунт 1] вступил" in msgs
         assert s.handlers == []
 
     def test_disabled_registers_no_handler(self, monkeypatch):
@@ -1983,7 +2056,7 @@ class TestUpdaterPipFailure:
         console = ns(status=lambda *_: contextlib.nullcontext(), print=lambda *a: printed.append(a[0]))
 
         updater.update(console)
-        assert restarted == [] and any("Requirements install failed" in p for p in printed)
+        assert restarted == [] and any("Не удалось установить зависимости" in p for p in printed)
 
 
 class TestReporterFloodRetries:
@@ -2109,7 +2182,7 @@ class TestStopWhileFinishing:
 
         stopped = []
 
-        async def pool_run(inst, bf, fac, rep):
+        async def pool_run(inst, bf, fac, rep, only=None):
             return True
 
         async def scenario():
@@ -2197,7 +2270,7 @@ class TestDeadWorkerIsSkipped:
 
         dead, alive, msgs = self._run(ChangeBioFunc, lambda f, r: f.run(r, bio="x"), ns(profile_pause=[0]))
         assert not dead.requests and len(alive.requests) == 1
-        assert any("get_me failed" in m for m in msgs)
+        assert any("не удалось опросить аккаунт" in m for m in msgs)
 
     def test_reactions(self):
         from functions.reactions import ReactionsFunc
@@ -2258,7 +2331,7 @@ def test_sticker_set_fetched_once_per_worker():
 
     asyncio.run(fn.broadcast(session, "chat", report))
     assert sum(isinstance(r, GetStickerSetRequest) for r in session.requests) == 1
-    assert sum("sent. COUNT" in m for m in msgs) == 3
+    assert sum("отправлено, всего" in m for m in msgs) == 3
 
 
 # --- joiner: link forms -------------------------------------------------------------
@@ -2308,8 +2381,8 @@ def test_clear_dialogs_survives_a_failed_listing():
     msgs, report = collect()
 
     asyncio.run(fn.run(report))
-    assert any("can't list dialogs" in m for m in msgs)
-    assert len(ok.requests) == 1 and any("has been deleted" in m for m in msgs)
+    assert any("не удалось получить список диалогов" in m for m in msgs)
+    assert len(ok.requests) == 1 and any("удалён" in m for m in msgs)
 
 
 # --- add_session: the 2FA password typed at sign-in is kept in the .jsession -----------

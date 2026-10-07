@@ -26,8 +26,9 @@ class InstantBroadcastFunc(TelethonFunction):
         ])
 
     async def execute(self):
-        link = console.input("[bold red]link> [/]")
+        link = console.input("[bold red]ссылка> [/]")
         broadcast = Broadcast(self.storage, self.settings)
+        broadcast.ask_accounts_count()
         broadcast.ask()
 
         await asyncio.gather(*[

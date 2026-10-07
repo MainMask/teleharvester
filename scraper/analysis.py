@@ -29,7 +29,7 @@ def _require_columns(df: pd.DataFrame, columns, source: str) -> None:
     missing = [c for c in columns if c not in df.columns]
     if missing:
         raise SystemExit(
-            f"{source}: missing column(s) {missing}. Available: {list(df.columns)}"
+            f"{source}: нет столбцов {missing}. Есть: {list(df.columns)}"
         )
 
 
@@ -109,7 +109,7 @@ def combine(inputs: str | list[str], output: str, dedup_cols: list[str]) -> Path
             continue
         frames.append(df)
     if not frames:
-        raise SystemExit(f"No non-empty posts files found in: {inputs}")
+        raise SystemExit(f"Не найдено непустых файлов постов: {inputs}")
     combined = normalize_posts(pd.concat(frames, ignore_index=True), dedup_cols, source=inputs)
 
     n_comments = int(combined["Comments"].sum())
@@ -176,7 +176,7 @@ def explode_comments(input_path: str, output: str, fmt: str = "parquet") -> Path
             "Comment Url": c.get("Comment Url", ""),
         })
     if not rows:
-        raise SystemExit(f"{input_path}: no comments in 'Comments List'.")
+        raise SystemExit(f"{input_path}: в 'Comments List' нет комментариев.")
     out = pd.DataFrame(rows)
     # int64 + None would become float64 and corrupt the hash; rebuild from the raw values
     out["Comment Author Access Hash"] = pd.array(
@@ -310,7 +310,7 @@ def participants(input_path: str, output: str, reactors: str | None = None,
     })
     agg = agg[agg["Access Hash"].notna()]  # no access_hash -> skip the user
     if agg.empty:  # an empty base would still be offered for the mailing
-        raise SystemExit(f"{input_path}: no authors, commenters or reactors with an access hash found.")
+        raise SystemExit(f"{input_path}: не найдено ни авторов, ни комментаторов, ни реакций с access hash.")
     agg["Total"] = agg["Comments"] + agg["Reactions"] + agg["Messages"]
     agg = agg.sort_values("Total", ascending=False, ignore_index=True)
     if owner_id is not None:
@@ -326,7 +326,7 @@ def summary(input_path: str, output_base: str, date_col: str, group_col: str, co
     df = read_table(input_path)
     _require_columns(df, [date_col, group_col, comments_col], input_path)
     if df.empty:  # a scrape that found nothing still writes its _posts file: no months to span
-        raise SystemExit(f"{input_path}: no posts.")
+        raise SystemExit(f"{input_path}: нет постов.")
     df[date_col] = pd.to_datetime(df[date_col])
     df["MonthYear"] = df[date_col].dt.to_period("M")
 
@@ -369,7 +369,7 @@ def sample(input_path: str, output: str, text_col: str, category_col: str, sampl
     _require_columns(df, [text_col, category_col], input_path)
     df = df[df[text_col].str.len() > min_length].copy()
     if df.empty:
-        raise SystemExit(f"{input_path}: no rows with '{text_col}' longer than --min-length {min_length}.")
+        raise SystemExit(f"{input_path}: нет строк, где '{text_col}' длиннее {min_length} символов.")
     df[text_col] = df[text_col].apply(lambda t: _URL_RE.sub("", str(t)))
     if "Comments List" in df.columns:
         df["Comments List"] = df["Comments List"].apply(_parse_comments_list)
@@ -392,7 +392,7 @@ def filter_keywords(input_path: str, output: str, content_col: str, keywords: li
         df["Comments List"] = df["Comments List"].apply(_parse_comments_list)
     clash = [k for k in keywords if k in df.columns or k == "Keyword_Count"]
     if clash:
-        raise SystemExit(f"keyword(s) {clash} match existing column names; rename or drop them")
+        raise SystemExit(f"слова {clash} совпадают с названиями столбцов файла — замените или уберите их")
     # any case, as the scrape's own keyword filter: «крипта» must find «Крипта растёт»
     content = df[content_col].fillna("").astype(str).str.lower()
     for kw in tqdm(keywords, desc="Keyword columns"):

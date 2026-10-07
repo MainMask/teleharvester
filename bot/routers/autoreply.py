@@ -15,6 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.menu import main_menu
 from bot.routers._common import require_text
+from bot.routers.accounts import _send_chunked
 from bot.services import autoreply
 from bot.services.delegation import WorkerPool
 from bot.states import SetAutoreplyText
@@ -22,15 +23,31 @@ from modules.settings import Settings
 
 router = Router()
 
+TOP_WORKERS = 10  # per-worker lines on the screen: a message holds 4096 characters
 
-def _screen(settings: Settings, pool: WorkerPool) -> str:
+
+def _worker_lines(stats: dict, pool: WorkerPool) -> list[str]:
+    """• @worker — N for every worker with replies, most replies first."""
+    lines = []
+    for path, count in stats["per_worker"].most_common():
+        label = pool.storage.usernames.get(path)
+        label = f"@{label}" if label else os.path.basename(path)
+        lines.append(f"• {html.escape(label)} — {count}")
+    return lines
+
+
+def _view(settings: Settings, pool: WorkerPool) -> tuple[str, InlineKeyboardMarkup]:
+    stats = autoreply.reply_stats(autoreply.load_replied(), datetime.now())
+    return _screen(settings, stats, pool), _kb(settings, len(stats["per_worker"]) > TOP_WORKERS)
+
+
+def _screen(settings: Settings, stats: dict, pool: WorkerPool) -> str:
     on = settings.autoreply_enabled and settings.autoreply_text
     status = "✅ включён" if on else "⏸ выключен"
     if settings.autoreply_enabled and not settings.autoreply_text:
         status += " (нет текста)"
     text = settings.autoreply_text and f"<blockquote>{html.escape(settings.autoreply_text)}</blockquote>"
 
-    stats = autoreply.reply_stats(autoreply.load_replied(), datetime.now())
     lines = [
         f"💬 <b>Автоответ</b>: {status}",
         f"Проверка воркеров: раз в {max(1, settings.autoreply_interval // 60)} мин.",
@@ -44,14 +61,14 @@ def _screen(settings: Settings, pool: WorkerPool) -> str:
         f"📊 <b>Ответили на рассылку</b>: всего {stats['total']} · за сутки {stats['day']} · "
         f"за 7 дней {stats['week']}",
     ]
-    for path, count in stats["per_worker"].most_common():
-        label = pool.storage.usernames.get(path)
-        label = f"@{label}" if label else os.path.basename(path)
-        lines.append(f"• {html.escape(label)} — {count}")
+    lines += _worker_lines(stats, pool)[:TOP_WORKERS]
+    rest = stats["per_worker"].most_common()[TOP_WORKERS:]  # the 📋 button lists them
+    if rest:
+        lines.append(f"…и ещё воркеров: {len(rest)}, ответов у них: {sum(count for _, count in rest)}")
     return "\n".join(lines)
 
 
-def _kb(settings: Settings) -> InlineKeyboardMarkup:
+def _kb(settings: Settings, all_workers: bool) -> InlineKeyboardMarkup:
     def button(text, callback_data):
         return InlineKeyboardButton(text=text, callback_data=callback_data.pack())
 
@@ -59,6 +76,7 @@ def _kb(settings: Settings) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [button(toggle, ChoiceCB(scope="autoreply", value="toggle"))],
         [button("✏️ Изменить текст", ChoiceCB(scope="autoreply", value="text"))],
+        *([[button("📋 Все воркеры", ChoiceCB(scope="autoreply", value="workers"))]] if all_workers else []),
         [button("⬅️ Назад", MenuCB(action=MenuAction.WORKERS))],
     ])
 
@@ -67,7 +85,8 @@ def _kb(settings: Settings) -> InlineKeyboardMarkup:
 async def autoreply_screen(callback: CallbackQuery, state: FSMContext, settings: Settings, pool: WorkerPool):
     await state.clear()
     # navigation edits the workers screen in place, as the worker groups do
-    await callback.message.edit_text(_screen(settings, pool), parse_mode="HTML", reply_markup=_kb(settings))
+    text, markup = _view(settings, pool)
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
 
 
@@ -83,8 +102,18 @@ async def autoreply_toggle(callback: CallbackQuery, settings: Settings, pool: Wo
     except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
         await callback.answer(f"Не удалось сохранить config.toml: {err}", show_alert=True)
         return
-    await callback.message.edit_text(_screen(settings, pool), parse_mode="HTML", reply_markup=_kb(settings))
+    text, markup = _view(settings, pool)
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
     await callback.answer("Включён" if enabled else "Выключен")
+
+
+@router.callback_query(ChoiceCB.filter((F.scope == "autoreply") & (F.value == "workers")))
+async def autoreply_workers(callback: CallbackQuery, pool: WorkerPool):
+    """The full per-worker list (the screen shows the top TOP_WORKERS), in message-sized chunks."""
+    await callback.answer()
+    stats = autoreply.reply_stats(autoreply.load_replied(), datetime.now())
+    await _send_chunked(callback.message, "📊 <b>Ответили на рассылку — по воркерам</b>",
+                        _worker_lines(stats, pool), sep="\n")
 
 
 @router.callback_query(ChoiceCB.filter((F.scope == "autoreply") & (F.value == "text")))

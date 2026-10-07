@@ -323,6 +323,20 @@ def test_a_personal_account_is_never_imported_as_a_worker(tmp_path, monkeypatch)
     assert not (tmp_path / "sessions").exists()
 
 
+def test_a_broken_personal_file_does_not_block_the_import(tmp_path, monkeypatch):
+    from modules import scraper_creds
+
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / "broken.jsession").write_text("{")  # skipped, as SessionsStorage does
+    (personal / "79131332002.jsession").write_text(json.dumps({"account": {"user_id": 555}}))
+    monkeypatch.setattr(scraper_creds, "PERSONAL_DIR", str(personal))
+    monkeypatch.setattr(tdata_import, "TDesktop", _FakeTDesktop)
+
+    assert tdata_import._personal_user_ids() == {555}
+    phone = asyncio.run(tdata_import.convert(str(tmp_path / "tdata"), None, None, str(tmp_path / "sessions")))
+    assert phone == "79990001122"
+
 def test_an_existing_worker_is_not_reconnected(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions"
     sessions.mkdir()

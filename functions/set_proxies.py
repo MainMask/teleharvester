@@ -11,17 +11,17 @@ class SetProxiesFunc(TelethonFunction):
 
     async def execute(self):
         path = Prompt.ask(
-            f"[bold red]proxies file (one scheme://user:pass@ip:port per line; "
-            f"{ACCOUNTS_PER_PROXY} accounts per proxy)[/]",
+            f"[bold red]файл прокси (по одному scheme://user:pass@ip:port на строку; "
+            f"{ACCOUNTS_PER_PROXY} аккаунта на прокси)[/]",
             default=tdata_import.PROXIES_FILE,
         )
         try:
             proxies = tdata_import.load_proxies(path)
         except ValueError as err:
-            console.print(f"[bold red]Bad proxy line:[/] {err}")
+            console.print(f"[bold red]Ошибка в строке прокси:[/] {err}")
             return
         if not proxies:
-            console.print(f"[bold red]No proxies in {path}[/]")
+            console.print(f"[bold red]В {path} нет прокси[/]")
             return
 
         # the CLI keeps clients connected: drop the old ones, connect the rebuilt ones
@@ -39,8 +39,8 @@ class SetProxiesFunc(TelethonFunction):
                     await self.storage.check_session(self.storage.full_sessions[path_], path_)
 
         console.print(
-            f"[bold green]Proxies set for {summary['accounts']} account(s)[/] "
-            f"(proxies used: {summary['proxies_used']})"
+            f"[bold green]Прокси назначены аккаунтам: {summary['accounts']}[/] "
+            f"(использовано прокси: {summary['proxies_used']})"
         )
         if summary["string_sessions_skipped"]:
-            console.print(f"[yellow].session accounts skipped (no metadata): {summary['string_sessions_skipped']}[/]")
+            console.print(f"[yellow]Пропущено .session-аккаунтов (без метаданных): {summary['string_sessions_skipped']}[/]")

@@ -84,13 +84,13 @@ class Settings:
             # Not interactive here: the terminal menu runs ensure_config() first, so
             # only non-CLI entry points (the bot) reach this, and they get a clear
             # message instead of a setup wizard.
-            console.print("[bold red]config.toml not found. Run `python main.py` once to create it.[/]")
+            console.print("[bold red]config.toml не найден. Запустите `python main.py` один раз, чтобы создать его.[/]")
             raise SystemExit(1)
 
         if "sessions" in config:
             console.print(
-                "[bold red]API credentials moved to .env: put \\[sessions] api_id/api_hash into "
-                "TG_API_ID/TG_API_HASH and delete the \\[sessions] section from config.toml.[/]"
+                "[bold red]Ключи API переехали в .env: перенесите \\[sessions] api_id/api_hash в "
+                "TG_API_ID/TG_API_HASH и удалите секцию \\[sessions] из config.toml.[/]"
             )
             raise SystemExit(1)
 
@@ -98,7 +98,7 @@ class Settings:
         self.api_hash: str = os.environ.get("TG_API_HASH", "")
 
         if not api_id.isdigit() or not self.api_hash:
-            console.print("[bold red]Set TG_API_ID and TG_API_HASH in .env (see .env.example).[/]")
+            console.print("[bold red]Укажите TG_API_ID и TG_API_HASH в .env (см. .env.example).[/]")
             raise SystemExit(1)
 
         self.api_id: int = int(api_id)
@@ -110,8 +110,8 @@ class Settings:
             self.delay: List[int] = config["broadcast"]["delay"]
         except KeyError as err:
             console.print(
-                f"[bold red]config.toml is missing {err}. "
-                "Delete it and run `python main.py` once to recreate it.[/]"
+                f"[bold red]В config.toml нет {err}. "
+                "Удалите его и запустите `python main.py`, чтобы создать заново.[/]"
             )
             raise SystemExit(1)
 
@@ -137,28 +137,28 @@ class Settings:
         for name, pause in (("[broadcast] delay", self.delay), ("[limits] account_pause", self.account_pause),
                             ("[limits] profile_pause", self.profile_pause)):
             if not _is_pause(pause):
-                console.print(f"[bold red]config.toml {name} must be [sec] or [min, max] "
-                              f"(non-negative whole seconds), not {pause!r}.[/]")
+                console.print(f"[bold red]config.toml {name}: нужно [сек] или [мин, макс] "
+                              f"(целые секунды, не меньше 0), а не {pause!r}.[/]")
                 raise SystemExit(1)
         for name, cap in (("[broadcast] messages_count", self.messages_count),
                           ("[limits] per_account_daily", self.per_account_daily),
                           ("[limits] invite_per_account_daily", self.invite_per_account_daily),
                           ("[limits] contacts_per_account_daily", self.contacts_per_account_daily)):
             if not _is_int(cap) or cap < 0:
-                console.print(f"[bold red]config.toml {name} must be a whole number, 0 = unlimited, "
-                              f"not {cap!r}.[/]")
+                console.print(f"[bold red]config.toml {name}: нужно целое число, 0 — без лимита, "
+                              f"а не {cap!r}.[/]")
                 raise SystemExit(1)
         if not isinstance(self.trigger, str):
-            console.print("[bold red]config.toml [broadcast] trigger must be a quoted string.[/]")
+            console.print("[bold red]config.toml [broadcast] trigger должен быть строкой в кавычках.[/]")
             raise SystemExit(1)
         # a quoted enabled = "false" is a non-empty string, i.e. true: the auto-reply would run
         if not isinstance(self.autoreply_enabled, bool) or not isinstance(self.autoreply_text, str):
-            console.print("[bold red]config.toml [autoreply] enabled must be true/false (no quotes) "
-                          "and text a quoted string.[/]")
+            console.print("[bold red]config.toml [autoreply] enabled должен быть true/false (без кавычек), "
+                          "а text — строкой в кавычках.[/]")
             raise SystemExit(1)
         if not _is_int(self.autoreply_interval) or self.autoreply_interval < MIN_AUTOREPLY_INTERVAL:
-            console.print(f"[bold red]config.toml [autoreply] interval must be at least "
-                          f"{MIN_AUTOREPLY_INTERVAL} seconds, not {self.autoreply_interval!r}.[/]")
+            console.print(f"[bold red]config.toml [autoreply] interval должен быть не меньше "
+                          f"{MIN_AUTOREPLY_INTERVAL} секунд, а не {self.autoreply_interval!r}.[/]")
             raise SystemExit(1)
 
     @staticmethod
@@ -255,7 +255,7 @@ class Settings:
     @staticmethod
     def initial_setup():
         console.print(
-            "[bold yellow]Initial setup[/]",
+            "[bold yellow]Первичная настройка[/]",
             justify="center"
         )
 
@@ -263,7 +263,7 @@ class Settings:
 
         if not os.environ.get("TG_API_ID") or not os.environ.get("TG_API_HASH"):
             console.print(
-                "[bold blue]Sessions[/]",
+                "[bold blue]Сессии[/]",
                 justify="center"
             )
 
@@ -275,7 +275,7 @@ class Settings:
             set_key(".env", "TG_API_HASH", api_hash)
 
         console.print(
-            "[bold blue]Broadcast[/]",
+            "[bold blue]Рассылка[/]",
             justify="center"
         )
 
@@ -291,18 +291,18 @@ class Settings:
 
     @staticmethod
     def setup_sessions() -> Tuple[int, str]:
-        api_id = console.input("[bold white]Enter API ID: [/]")
+        api_id = console.input("[bold white]Введите API ID: [/]")
 
         while not api_id.isdigit():
-            api_id = console.input("[bold white]API ID must be a number: [/]")
+            api_id = console.input("[bold white]API ID должен быть числом: [/]")
 
-        api_hash = console.input("[bold white]Enter API hash: [/]")
+        api_hash = console.input("[bold white]Введите API hash: [/]")
 
         return int(api_id), api_hash
 
     @staticmethod
     def setup_broadcast() -> Tuple[List[str], List[int], str]:
-        console.print("[bold white]Enter messages[/]")
+        console.print("[bold white]Введите сообщения (пустая строка — конец)[/]")
 
         messages = []
 
@@ -313,13 +313,13 @@ class Settings:
         print()
 
         while True:
-            parts = console.input("[bold white]Sending delay (e.g. 1-3): [/]").split("-")
+            parts = console.input("[bold white]Задержка между отправками (например 1-3): [/]").split("-")
             # [sec] or [min, max] only: Settings() rejects any other delay at the next start
             if 1 <= len(parts) <= 2 and all(part.strip().isdigit() for part in parts):
                 delay = [int(part) for part in parts]
                 break
 
-        trigger = console.input("[bold white]Enter the trigger text after which accounts start the broadcast: [/]")
+        trigger = console.input("[bold white]Триггер — текст, после которого аккаунты начнут рассылку: [/]")
 
         return messages, delay, trigger
 

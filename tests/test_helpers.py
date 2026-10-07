@@ -168,7 +168,7 @@ def test_combine_folder_skips_non_post_files(tmp_path, capsys):
 
 def test_combine_only_non_post_files_says_so(tmp_path):
     pd.DataFrame([{"ID": 8, "Total": 1}]).to_parquet(tmp_path / "T_participants.parquet")
-    with pytest.raises(SystemExit, match="No non-empty posts files"):
+    with pytest.raises(SystemExit, match="Не найдено непустых файлов постов"):
         combine(str(tmp_path / "T_participants.parquet"), str(tmp_path / "u.parquet"),
                 ["Group", "Message ID"])
 
@@ -416,7 +416,7 @@ def test_parse_date_converts_offset_to_utc():
 
 
 def test_read_table_rejects_xls(tmp_path):
-    with pytest.raises(ValueError, match="Unsupported file type"):
+    with pytest.raises(ValueError, match="Неподдерживаемый тип файла"):
         read_table(tmp_path / "old.xls")
 
 
@@ -434,7 +434,7 @@ def test_sample_larger_than_data_returns_all_rows(tmp_path, capsys):
 
 def test_sample_nothing_left_after_min_length(tmp_path):
     pd.DataFrame({"Content": ["short"], "Group": ["@a"]}).to_parquet(tmp_path / "in.parquet")
-    with pytest.raises(SystemExit, match="min-length"):
+    with pytest.raises(SystemExit, match="длиннее"):
         sample(str(tmp_path / "in.parquet"), str(tmp_path / "s"), "Content", "Group", 10, 20)
 
 
@@ -475,7 +475,7 @@ def test_resolve_inputs_rejects_folder_without_parquet(tmp_path):
     from scraper.datafiles import resolve_inputs
 
     (tmp_path / "x.xlsx").write_bytes(b"")
-    with pytest.raises(SystemExit, match="No .parquet files"):
+    with pytest.raises(SystemExit, match="Нет .parquet-файлов"):
         resolve_inputs(str(tmp_path))
 
 
@@ -526,7 +526,7 @@ def test_links_and_filter_handle_empty_content_after_xlsx(tmp_path):
 def test_check_date_range_rejects_a_reversed_range():
     from scraper.scrape import check_date_range
 
-    with pytest.raises(SystemExit, match="is after"):
+    with pytest.raises(SystemExit, match="позже даты конца"):
         check_date_range(parse_date("02.01.2024"), parse_date("01.01.2024", end_of_day=True),
                          "02.01.2024", "01.01.2024")
 

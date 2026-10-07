@@ -9,9 +9,19 @@ from functions.base.base import console_report
 class ReportFunc(TelethonFunction):
     """Moderation report (message/post)"""
 
+    def report_peer(self, peer):
+        """The chat of a post link (t.me/<name>/<id>, t.me/c/<id>/<id>): Telethon resolves a chat's
+        link, @name or id, but not a post link. Anything else is passed on as is."""
+        if isinstance(peer, str):
+            try:
+                return self.parse_message_link(peer)[0]
+            except (ValueError, IndexError):  # a chat link, @name, -100… id
+                pass
+        return peer
+
     async def report_step(self, session, peer, ids, comment, option):
         return await session(functions.messages.ReportRequest(
-            peer=peer,
+            peer=self.report_peer(peer),
             id=ids,
             option=option,
             message=comment
@@ -108,15 +118,18 @@ class ReportFunc(TelethonFunction):
                 try:
                     me = await self.get_me(session)
                 except Exception as err:
-                    await report(f"get_me failed: {err}")
+                    self.progress_failed()
+                    await report(f"не удалось опросить аккаунт: {err}")
                     self.progress_step()
                     continue
                 try:
                     await self.replay(session, peer, ids, comment, selections)
                 except Exception as err:
-                    await report(f"[{me.first_name}] error. {err}")
+                    self.progress_failed()
+                    await report(f"[{me.first_name}] ошибка: {err}")
                 else:
-                    await report(f"[{me.first_name}] submitted.")
+                    self.progress_ok()
+                    await report(f"[{me.first_name}] жалоба отправлена.")
                 self.progress_step()
         return False
 
@@ -126,14 +139,14 @@ class ReportFunc(TelethonFunction):
         if not self.sessions:
             return
 
-        link = Prompt.ask("[bold red]link[/]")
+        link = Prompt.ask("[bold red]ссылка на пост или канал[/]")
         while True:
-            parts = [p.strip() for p in Prompt.ask("[bold red]enter the post ids[/]").split(",") if p.strip()]
+            parts = [p.strip() for p in Prompt.ask("[bold red]id постов через запятую[/]").split(",") if p.strip()]
             if parts and all(p.isdigit() for p in parts):
                 posts = [int(p) for p in parts]
                 break
 
-        comment = console.input("[bold red]comment> [/]")
+        comment = console.input("[bold red]комментарий> [/]")
 
         first, rest = self.sessions[0], self.sessions[1:]
 
@@ -141,18 +154,18 @@ class ReportFunc(TelethonFunction):
             try:
                 me = await self.get_me(first)
             except Exception as err:  # a dead proxy / session: say so instead of a bare traceback
-                console.print(f"[bold red]get_me failed:[/] {self.safe(err)}")
+                console.print(f"[bold red]не удалось опросить аккаунт:[/] {self.safe(err)}")
                 return
 
             try:
                 selections = await self.resolve_and_report(first, link, posts, comment)
             except Exception as err:
                 console.print(
-                    "[{name}] [bold red]error.[/] {error}"
+                    "[{name}] [bold red]ошибка:[/] {error}"
                     .format(name=self.safe(me.first_name), error=self.safe(err))
                 )
                 return
 
-            console.print(f"[{self.safe(me.first_name)}] [bold green]submitted.[/]")
+            console.print(f"[{self.safe(me.first_name)}] [bold green]жалоба отправлена.[/]")
 
         await self.replay_rest(rest, link, posts, comment, selections, console_report)

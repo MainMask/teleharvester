@@ -11,4 +11,4 @@ from modules.tdata_import import import_all
 
 if __name__ == "__main__":
     count = asyncio.run(import_all())
-    console.print(f"[bold white]Imported {count} account(s)[/]")
+    console.print(f"[bold white]Импортировано аккаунтов: {count}[/]")

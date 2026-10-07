@@ -153,6 +153,7 @@ async def mail_run(
             await message.answer(f"Статистика не прочитана: {err}")
             return
         recipients = instance.filter_unsent(recipients)
+        instance.stats = {}  # run() reloads it; the singleton must not keep the ledger if the job never starts
 
     if data.get("limit"):
         recipients = recipients[: data["limit"]]

@@ -13,13 +13,13 @@ class ReportUserFunc(TelethonFunction):
         super().__init__(storage, settings)
 
         self.reasons = (
-            ("Child abuse", types.InputReportReasonChildAbuse()),
-            ("Copyright", types.InputReportReasonCopyright()),
-            ("Fake channel/account", types.InputReportReasonFake()),
-            ("Pornography", types.InputReportReasonPornography()),
-            ("Spam", types.InputReportReasonSpam()),
-            ("Violence", types.InputReportReasonViolence()),
-            ("Other", types.InputReportReasonOther())
+            ("Насилие над детьми", types.InputReportReasonChildAbuse()),
+            ("Авторские права", types.InputReportReasonCopyright()),
+            ("Фейковый канал/аккаунт", types.InputReportReasonFake()),
+            ("Порнография", types.InputReportReasonPornography()),
+            ("Спам", types.InputReportReasonSpam()),
+            ("Насилие", types.InputReportReasonViolence()),
+            ("Другое", types.InputReportReasonOther())
         )
 
     async def report_one(self, session, link, reason_type, comment, report):
@@ -27,7 +27,8 @@ class ReportUserFunc(TelethonFunction):
             try:
                 me = await self.get_me(session)
             except Exception as err:
-                await report(f"get_me failed: {err}")
+                self.progress_failed()
+                await report(f"не удалось опросить аккаунт: {err}")
                 return
             try:
                 await session(
@@ -38,9 +39,11 @@ class ReportUserFunc(TelethonFunction):
                     )
                 )
             except Exception as err:
-                await report(f"[{me.first_name}] error. {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] ошибка: {err}")
             else:
-                await report(f"[{me.first_name}] submitted.")
+                self.progress_ok()
+                await report(f"[{me.first_name}] жалоба отправлена.")
 
     async def run(self, link, reason_type, comment, report):
         await self.run_sequential(
@@ -52,7 +55,7 @@ class ReportUserFunc(TelethonFunction):
     async def execute(self):
         self.ask_accounts_count()
 
-        link = Prompt.ask("[bold red]username>[/]")
+        link = Prompt.ask("[bold red]username или ссылка>[/]")
 
         print()
 
@@ -73,6 +76,6 @@ class ReportUserFunc(TelethonFunction):
 
         reason_type = self.reasons[int(choice) - 1][1]
 
-        comment = console.input("[bold red]comment> [/]")
+        comment = console.input("[bold red]комментарий> [/]")
 
         await self.run(link, reason_type, comment, console_report)

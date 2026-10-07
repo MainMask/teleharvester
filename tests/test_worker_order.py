@@ -126,7 +126,8 @@ def test_changename_remembers_the_new_name():
 
     remembered = []
     storage = ns(sessions=[], ainitialize_session=ainitialize_session,
-                 remember_name=lambda session, first, last: remembered.append((first, last)))
+                 remember_name=lambda session, first, last: remembered.append((first, last)),
+                 get_session_path=lambda session: None)
     fn = ChangeNameFunc(storage, ns(delay=[0]))
 
     async def report(text):

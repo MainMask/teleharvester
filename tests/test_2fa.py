@@ -90,7 +90,7 @@ def test_edit_2fa_uses_stored_password_and_persists(tmp_path, monkeypatch):
     asyncio.run(func.edit_2fa(session, "new_pw", report))
 
     assert session.called_with == ("old_pw", "new_pw")
-    assert any("Successfully" in r for r in reports)
+    assert any("пароль изменён" in r for r in reports)
     # new password persisted to disk
     assert json.loads(Path.read_text())["password"] == "new_pw"
     # and next to the account's tdata

@@ -170,6 +170,27 @@ def test_mail_run_drops_the_stats_ledger_after_the_job(monkeypatch):
     assert instance.stats == {}
 
 
+def test_mail_run_drops_the_stats_ledger_when_the_job_never_starts(monkeypatch):
+    # "skip already sent" loads the ledger to filter; everyone sent already -> no job runs,
+    # and the singleton must not keep the ledger until the next mailing
+    instance = ns(stats=None)
+
+    def load_stats():
+        instance.stats = {"@a": {"count": 1}}
+
+    instance.load_stats = load_stats
+    instance.filter_unsent = lambda recipients: [r for r in recipients if r not in instance.stats]
+
+    monkeypatch.setattr(broadcasts, "resolve", lambda functions, key: (instance, ns(risk="risky")))
+
+    state = _State({"recipients": ["@a"], "skip": True, "limit": None})
+    msg = _Msg()
+    asyncio.run(broadcasts.mail_run(msg, state, None, ns(), {}, ns(active=False, label=""), ns(delay=[0])))
+
+    assert msg.replies == ["Список получателей пуст."]
+    assert instance.stats == {}
+
+
 async def _fake_content(obj):
     return obj
 

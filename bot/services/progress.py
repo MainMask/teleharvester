@@ -20,6 +20,8 @@ class Progress:
         self.counting = False  # started without a total: show a counter and a rate only
         self.preparing = False  # the job will start counting once its prep is done
         self.note = None  # an extra line from set(), e.g. the scraper's post count
+        self.ok = 0      # items / workers the job did: the summary's "✅ Успешно" (see BaseFunction.progress_ok)
+        self.failed = 0  # ...and the ones it didn't: "⚠️ Ошибок"
         self._samples = deque([(self.started, 0)], maxlen=WINDOW + 1)  # (monotonic, done)
 
     def prepare(self):

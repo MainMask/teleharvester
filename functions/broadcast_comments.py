@@ -16,7 +16,8 @@ class CommentsBroadcastFunc(TelethonFunction):
             try:
                 me = await self.get_me(session)
             except Exception as err:
-                await report(f"get_me failed: {err}")
+                self.progress_failed()
+                await report(f"не удалось опросить аккаунт: {err}")
                 self.progress_drop(self.settings.messages_count)
                 return
 
@@ -31,10 +32,12 @@ class CommentsBroadcastFunc(TelethonFunction):
                         report=report, comment_to=post_id,
                     )
                 except AccountLimited as err:
-                    await report(f"[{me.first_name}] limit, stopping. {err}")
+                    self.progress_failed()
+                    await report(f"[{me.first_name}] лимит, остановка. {err}")
                     break
                 except Exception as err:
-                    await report(f"[{me.first_name}] not sent. {err}")
+                    self.progress_failed()
+                    await report(f"[{me.first_name}] не отправлено: {err}")
 
                     errors += 1
 
@@ -44,7 +47,8 @@ class CommentsBroadcastFunc(TelethonFunction):
                     errors = 0
                     count += 1
                     self.progress_step()
-                    await report(f"[{me.first_name}] sent. COUNT: {count}")
+                    self.progress_ok()
+                    await report(f"[{me.first_name}] отправлено, всего: {count}")
 
                 # delay between sends only; a break (limit / 5 errors) skips it, as does the last send
                 if not (self.settings.messages_count and count >= self.settings.messages_count):
@@ -68,14 +72,14 @@ class CommentsBroadcastFunc(TelethonFunction):
     async def execute(self):
         self.ask_accounts_count()
 
-        link = console.input("[bold red]link to post> [/]")
+        link = console.input("[bold red]ссылка на пост> [/]")
 
         delay = Prompt.ask(
-            "[bold red]delay[/]",
+            "[bold red]задержка[/]",
             default="-".join(str(x) for x in self.settings.delay)
         )
 
-        text = console.input("[bold red]message: [/]")
+        text = console.input("[bold red]сообщение: [/]")
 
         # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
         await self.run(link, RichContent(text=text), self.parse_delay(delay), console_report)

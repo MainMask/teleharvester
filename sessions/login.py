@@ -9,7 +9,7 @@ from modules.storages.sessions_storage import SessionsStorage
 from modules.types.json_session import JsonSession
 
 if len(sys.argv) != 2:
-    print("Usage: python login.py <session_file>")
+    print("Использование: python login.py <файл_сессии>")
     sys.exit(1)
 
 name = sys.argv[1]
@@ -22,7 +22,7 @@ session = JsonSession(dict_settings=session_settings)
 client = SessionsStorage.build_jsession_client(session)
 
 with client:
-    print("Mobile phone:", client.get_me().phone)
+    print("Телефон:", client.get_me().phone)
 
 
 @client.on(events.NewMessage)

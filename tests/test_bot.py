@@ -195,7 +195,7 @@ class TestBotConfig:
 
     def test_non_numeric_admin_exits_with_a_message(self, monkeypatch):
         monkeypatch.setenv("BOT_ADMINS", "1,abc")
-        with pytest.raises(SystemExit, match="numeric"):
+        with pytest.raises(SystemExit, match="числовыми"):
             BotConfig(path="does-not-exist.toml")
 
     def test_token_in_toml_is_rejected(self, tmp_path):
@@ -244,7 +244,7 @@ class TestFunctionCores:
         asyncio.run(fn.run("1", "@channel", [0], report))
 
         assert fn.sessions[0].requests, "join request should have been sent on the worker"
-        assert any("joined" in m for m in messages)
+        assert any("вступил" in m for m in messages)
 
     def test_joiner_waits_between_accounts_not_after_the_last(self):
         from functions.joiner import JoinerFunc
@@ -276,7 +276,7 @@ class TestFunctionCores:
 
         asyncio.run(fn.run("@src", "@dst", [0], report))
 
-        assert any("parse" in m.lower() for m in messages)
+        assert any("исходного чата" in m for m in messages)
 
 
 # --- start: waiting for the Bot API -----------------------------------------

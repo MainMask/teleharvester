@@ -90,23 +90,23 @@ async def _run(creds: Credentials, params: MembersParams) -> tuple[dict, list[tu
                 dialogs_loaded = await _warm_channel(client, ref, dialogs_loaded)
                 entity = await client.get_input_entity(ref.arg)
                 if isinstance(entity, InputPeerUser):
-                    problems.append((chat, "a private chat has no member list"))
+                    problems.append((chat, "у личного чата нет списка участников"))
                     continue
                 listed, total = await _collect(client, entity, f"@{ref.slug}", members, params)
                 print(f"  {listed} of {total} members")
                 if listed < total:
-                    problems.append((chat, f"Telegram gave {listed} of {total} members"))
+                    problems.append((chat, f"Telegram отдал {listed} из {total} участников"))
             except asyncio.CancelledError:
                 if params.stop is None or not params.stop.is_set():
                     raise  # a real cancellation (Ctrl-C), not the operator's stop
                 asyncio.current_task().uncancel()
-                problems.append((chat, "stopped - the members listed so far are saved"))
+                problems.append((chat, "остановлено — собранные участники сохранены"))
                 break
             except ChatAdminRequiredError:
-                problems.append((chat, "the member list is hidden or admins-only "
-                                       "(a channel's subscribers)"))
+                problems.append((chat, "список участников скрыт или доступен только админам "
+                                       "(подписчики канала)"))
             except FloodWaitError as exc:  # a long wait: keep what is listed, skip the rest
-                problems.append((chat, f"FLOOD_WAIT {exc.seconds}s - stopped, the rest skipped"))
+                problems.append((chat, f"FLOOD_WAIT {exc.seconds} с — остановлено, остальное пропущено"))
                 break
             except Exception as exc:  # unknown chat, not a member, ...
                 problems.append((chat, f"{type(exc).__name__}: {exc}"))
@@ -114,7 +114,7 @@ async def _run(creds: Credentials, params: MembersParams) -> tuple[dict, list[tu
         if params.stop is None or not params.stop.is_set():
             raise
         asyncio.current_task().uncancel()
-        problems.append((", ".join(params.chats), "stopped before the listing started"))
+        problems.append((", ".join(params.chats), "остановлено до начала сбора"))
     finally:
         if watcher is not None:
             watcher.cancel()

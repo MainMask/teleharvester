@@ -256,7 +256,7 @@ def test_scrape_func_won_t_continue_on_another_account(monkeypatch, tmp_path):
     _answers(monkeypatch, scraper, texts=["Test", str(tmp_path)], bools=[True])
 
     scraper.ScrapeFunc(FakeStorage([]), FakeSettings()).execute()
-    assert ran == [] and any("is gone" in p for p in printed)
+    assert ran == [] and any("не найден" in p for p in printed)
 
 
 def test_personal_accounts_are_listed_first_and_marked(tmp_path, monkeypatch):
@@ -286,7 +286,7 @@ def test_members_func_notes_a_personal_account(monkeypatch, tmp_path):
     _answers(monkeypatch, scraper, texts=["@grp", "Grp", str(tmp_path)])
 
     scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()
-    assert any("by username only" in p for p in printed)
+    assert any("только по " in p for p in printed)
 
 
 def test_members_func_reports_a_logged_out_account(monkeypatch, tmp_path):
@@ -305,3 +305,22 @@ def test_members_func_reports_a_logged_out_account(monkeypatch, tmp_path):
 
     scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()  # no SystemExit out of the menu
     assert any("no longer authorized" in p for p in printed)
+
+
+def test_declining_to_continue_warns_the_saved_posts_go(monkeypatch, tmp_path):
+    import json
+
+    ckpt = tmp_path / "Test_partial" / "checkpoint"
+    ckpt.mkdir(parents=True)
+    (ckpt / "resume.json").write_text(json.dumps({
+        "name": "Test", "channels": ["@a"], "t_index": 7,
+        "date_min": "2024-01-01T00:00:00+00:00", "date_max": "2024-01-31T23:59:59+00:00"}))
+    asked = []
+    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: None)
+    _answers(monkeypatch, scraper, texts=["Test", str(tmp_path)])  # then pick_session gives up
+    monkeypatch.setattr(scraper.Confirm, "ask", lambda text, **k: asked.append(text) or False)
+
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
+
+    # a fresh scrape under the same name clears the checkpoint: as the bot's button says
+    assert "удалится" in asked[0]

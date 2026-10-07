@@ -38,30 +38,43 @@ class ChangeUsernameFunc(TelethonFunction):
             try:
                 me = await self.get_me(session)
             except Exception as err:
-                await report(f"get_me failed: {err}")
+                self.progress_failed()
+                await report(f"не удалось опросить аккаунт: {err}")
                 return
 
             if base is not None:
                 try:
                     username = await self.generate_username(session, base, used)
                 except Exception as err:
+                    self.progress_failed()
                     await report(f"[{me.first_name}] не удалось подобрать username: {err}")
                     return
 
                 if not username:
-                    await report(f"[{me.first_name}] couldn't find a free username")
+                    self.progress_failed()
+                    await report(f"[{me.first_name}] не удалось найти свободный username")
                     return
 
             try:
                 await session(UpdateUsernameRequest(username))
             except Exception as err:
-                await report(f"[{me.first_name}] not changed: {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] username не изменён: {err}")
             else:
                 self.storage.remember_username(session, username)  # orders the pool
-                await report(f"[{me.first_name}] username set: @{username}")
+                self.mark_done(session)
+                self.progress_ok()
+                await report(f"[{me.first_name}] username установлен: @{username}")
 
     async def run(self, report, usernames=None, base=None):
         if usernames is not None:
+            # a list sent again for new workers: the lines the old ones hold already would fail
+            taken = {username.lower() for username in self.storage.usernames.values()}
+            free = [username for username in usernames if username.lower() not in taken]
+            if len(free) < len(usernames):
+                await report(f"[i] пропущено username, уже занятых вашими воркерами: {len(usernames) - len(free)}")
+            usernames = free
+
             if len(usernames) < len(self.sessions):
                 await report(
                     f"[!] usernames в файле: {len(usernames)}, аккаунтов: {len(self.sessions)} — "
@@ -82,24 +95,25 @@ class ChangeUsernameFunc(TelethonFunction):
             )
 
     async def execute(self):
-        self.ask_accounts_count()
+        self.ask_workers()
 
-        from_file = console.input("[bold red]from file? (y/n)> ")
+        from_file = console.input("[bold red]из файла? (y/n)> ")
 
         if from_file == "y":
             try:
                 with open("assets/usernames.txt", encoding="utf-8") as file:
-                    usernames = [line.strip() for line in file if line.strip()]
+                    # "@name" as the bot takes it from the same file: the request wants a bare name
+                    usernames = [line.strip().lstrip("@") for line in file if line.strip()]
             except FileNotFoundError:
-                console.print("[bold red]File assets/usernames.txt not found!")
+                console.print("[bold red]Файл assets/usernames.txt не найден!")
                 return
 
             if not usernames:
-                console.print("[bold red]Usernames list is empty!")
+                console.print("[bold red]Список username пуст!")
                 return
 
             await self.run(console_report, usernames=usernames)
         else:
-            base = console.input("[bold red]base username> [/]")
+            base = console.input("[bold red]основа username> [/]")
 
             await self.run(console_report, base=base)

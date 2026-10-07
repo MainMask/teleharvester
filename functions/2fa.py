@@ -15,7 +15,8 @@ class SetPasswordFunc(TelethonFunction):
             try:
                 me = await self.get_me(session)
             except Exception as err:
-                await report(f"get_me failed: {err}")
+                self.progress_failed()
+                await report(f"не удалось опросить аккаунт: {err}")
                 return
 
             path = self.storage.get_session_path(session)
@@ -28,18 +29,21 @@ class SetPasswordFunc(TelethonFunction):
                     new_password=password,
                 )
             except Exception as err:
-                await report(f"[{me.first_name}] : Password not changed. Error: {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] пароль не изменён: {err}")
             else:
                 if json_session is not None:  # persist it, so a later change knows the current one
                     json_session.account.password = password
                     json_session.account.save(path)
-                await report(f"[{me.first_name}] : Successfully updated password")
+                self.mark_done(session)
+                self.progress_ok()
+                await report(f"[{me.first_name}] пароль изменён")
 
                 if json_session is not None:  # and next to the tdata, for a re-import
                     try:
                         tdata_import.write_2fa_password(json_session.account.account.phone_number, password)
                     except Exception as err:
-                        await report(f"[{me.first_name}] : password not saved to tdata_import: {err}")
+                        await report(f"[{me.first_name}] пароль не сохранён в tdata_import: {err}")
 
     async def run(self, password: str, report):
         await self.run_sequential(
@@ -48,10 +52,10 @@ class SetPasswordFunc(TelethonFunction):
         )
 
     async def execute(self):
-        self.ask_accounts_count()
+        self.ask_workers()
 
-        password = console.input("[bold red]new password> [/]")
+        password = console.input("[bold red]новый пароль> [/]")
 
-        with console.status("Setting password..."):
+        with console.status("Установка пароля..."):
             await self.run(password, console_report)
 

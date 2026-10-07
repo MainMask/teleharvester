@@ -25,21 +25,6 @@ async def stats_run(callback: CallbackQuery, pool: WorkerPool, functions: dict, 
     )
 
 
-# --- terminate other sessions ---
-
-@router.callback_query(FunctionCB.filter(F.key == "terminate"))
-async def terminate_run(callback: CallbackQuery, pool: WorkerPool, functions: dict, manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    instance, bot_function = resolve(functions, "terminate")
-    await manager.run(
-        callback.bot, callback.message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(r),
-        "Сброс чужих сессий…", "Готово ✅",
-    )
-
-
 # --- clear dialogs (destructive → confirm) ---
 
 @router.callback_query(FunctionCB.filter(F.key == "clear"))

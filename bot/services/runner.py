@@ -1,24 +1,7 @@
 import asyncio
-import re
 import time
 
 from aiogram.exceptions import TelegramRetryAfter
-
-# Best-effort classification of a progress line for the end-of-job summary.
-# Whole words only, so "unlimited" / "present" don't count as "limit" / "sent".
-_ERROR_RE = re.compile(
-    r"⚠️|❌|💀|\[!\]|\bfailed\b|\berrors?\b|\bnot (?:sent|changed|cleared|hidden|saved|voted)\b"
-    r"|\blimit\b|\bcan't\b|\bcouldn't\b|\bskip\b|\bbanned\b|\bno invite rights\b|\bnot a supergroup\b"
-    r"|не удал|не отправ|ошибк",
-    re.IGNORECASE,
-)
-_OK_RE = re.compile(
-    r"✅|\[\+\]|\bsent\b|\bsubmitted\b|\binvited\b|\bjoined\b|\breacted\b|\bchanged\b"
-    r"|\bupdated\b|\bsuccess(?:fully)?\b|\badded\b|\bdeleted\b|\buploaded\b"
-    r"|\bhidden\b|\bcleared\b|\bvoted\b|\bset\b|\breset\b"
-    r"|отправлен|приглаш|готово",
-    re.IGNORECASE,
-)
 
 
 class TelegramReporter:
@@ -26,11 +9,12 @@ class TelegramReporter:
 
     Used as the `report` callback passed to a function's run(): `await report(text)`.
     Edits are throttled; only the last `max_lines` lines are kept so the message
-    stays within Telegram's size limit.
+    stays within Telegram's size limit. The end-of-job summary's success/error counts come
+    from `progress` (the job's Progress, counted by the function itself), not the lines.
     """
 
     def __init__(self, bot, chat_id, header="Выполняется…", max_lines=25, min_interval=1.2,
-                 reply_markup=None, job_label=None, workers=None, final_markup=None):
+                 reply_markup=None, job_label=None, workers=None, final_markup=None, progress=None):
         self.bot = bot
         self.chat_id = chat_id
         self.header = header
@@ -41,6 +25,7 @@ class TelegramReporter:
         self.job_label = job_label or header
         self.workers = workers
         self.final_markup = final_markup
+        self.progress = progress
 
         self.lines: list[str] = []
         self.message_id = None
@@ -49,25 +34,14 @@ class TelegramReporter:
         self._pending = None  # delayed flush for lines that arrived inside min_interval
 
         self._started = None  # monotonic start time; set in start()
-        self._ok = 0
-        self._errors = 0
 
     async def start(self):
         self._started = time.monotonic()
         message = await self.bot.send_message(self.chat_id, self.header, reply_markup=self.reply_markup)
         self.message_id = message.message_id
 
-    def _tally(self, text: str):
-        if text.startswith("💬"):  # a quote (a @SpamBot reply), not a result
-            return
-        if _ERROR_RE.search(text):
-            self._errors += 1
-        elif _OK_RE.search(text):
-            self._ok += 1
-
     async def __call__(self, text: str):
         async with self._lock:
-            self._tally(text)
             self.lines.append(text)
             self.lines = self.lines[-self.max_lines:]
 
@@ -118,10 +92,10 @@ class TelegramReporter:
         lines = [summary, f"📋 Задача: {self.job_label}"]
         if self.workers is not None:
             lines.append(f"🤖 Воркеров: {self.workers}")
-        if self._ok:
-            lines.append(f"✅ Успешно: {self._ok}")
-        if self._errors:
-            lines.append(f"⚠️ Ошибок: {self._errors}")
+        if self.progress is not None and self.progress.ok:
+            lines.append(f"✅ Успешно: {self.progress.ok}")
+        if self.progress is not None and self.progress.failed:
+            lines.append(f"⚠️ Ошибок: {self.progress.failed}")
         elapsed = int(time.monotonic() - self._started) if self._started else 0
         lines.append(f"⏱ Время: {elapsed // 60:02d}:{elapsed % 60:02d}")
         return "\n".join(lines)

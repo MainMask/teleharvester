@@ -78,25 +78,25 @@ def pick_session(storage, personal=None) -> ScrapeAccount | None:
     accounts = scrape_accounts(storage, personal)
 
     if not accounts:
-        console.print("[bold red]No accounts in sessions/. Add one first.[/]")
+        console.print("[bold red]Нет аккаунтов в sessions/. Сначала добавьте аккаунт.[/]")
         return None
 
     for index, account in enumerate(accounts):
-        mark = " - personal" if account.personal else ""
+        mark = " — личный" if account.personal else ""
         # no markup: a name could hold "[...]"
         console.print(f"[{index + 1}] {account.label}{mark}  {account.path}", markup=False,
                       highlight=False, style="bold white")
 
-    raw = Prompt.ask("[bold magenta]account to use[/]", default="1")
+    raw = Prompt.ask("[bold magenta]аккаунт[/]", default="1")
 
     if not raw.isdigit():
-        console.print("[bold red]Invalid account number.[/]")
+        console.print("[bold red]Неверный номер аккаунта.[/]")
         return None
 
     choice = int(raw) - 1
 
     if choice < 0 or choice >= len(accounts):
-        console.print("[bold red]Invalid account number.[/]")
+        console.print("[bold red]Неверный номер аккаунта.[/]")
         return None
 
     return accounts[choice]

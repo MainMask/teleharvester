@@ -62,7 +62,7 @@ def save_table(df: pd.DataFrame, path: str | Path, fmt: str | None = None) -> Pa
     path = Path(path)
     ext = _EXT_FOR_FORMAT.get((fmt or path.suffix.lstrip(".")).lower())
     if ext is None:
-        raise ValueError(f"Unsupported format: {fmt!r}")
+        raise ValueError(f"Неподдерживаемый формат: {fmt!r}")
     # append the extension without clobbering dots that are part of the name
     if path.suffix.lower() != f".{ext}":
         path = path.with_name(f"{path.name}.{ext}")
@@ -112,7 +112,7 @@ def read_table(path: str | Path, columns: list[str] | None = None) -> pd.DataFra
         hash_cols = [c for c in pd.read_csv(path, nrows=0).columns if _is_hash_column(c)]
         return _hashes_to_int64(pd.read_csv(path, dtype={c: str for c in hash_cols},
                                             keep_default_na=False, na_values=[""]), hash_cols)
-    raise ValueError(f"Unsupported file type: {path.name}")
+    raise ValueError(f"Неподдерживаемый тип файла: {path.name}")
 
 
 def resolve_inputs(pattern: str) -> list[Path]:
@@ -121,11 +121,11 @@ def resolve_inputs(pattern: str) -> list[Path]:
     if p.is_dir():
         found = sorted(p.glob("*.parquet"))
         if not found:
-            raise SystemExit(f"No .parquet files in: {pattern}")
+            raise SystemExit(f"Нет .parquet-файлов в: {pattern}")
         return found
     if p.exists():
         return [p]
     matches = sorted(Path(m) for m in glob.glob(pattern))
     if not matches:
-        raise SystemExit(f"No files match: {pattern}")
+        raise SystemExit(f"Нет файлов по шаблону: {pattern}")
     return matches

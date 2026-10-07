@@ -9,7 +9,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from telethon import types
+from telethon import errors, types
 
 from functions.base.base import AccountLimited
 
@@ -68,6 +68,9 @@ class RichContent:
     media: List[MediaItem] = field(default_factory=list)
     temp_paths: List[str] = field(default_factory=list)
     temp_dir: Optional[str] = None
+    # {id(session): the media of its first send}: Telethon uploads a file path on every
+    # send_file, so a worker re-sends its uploaded media instead (one upload per worker)
+    sent_media: dict = field(default_factory=dict)
 
     def cleanup(self):
         for path in self.temp_paths:
@@ -82,15 +85,11 @@ class RichContent:
             self.temp_dir = None
 
 
-async def _send_once(session, peer, content, entities, safe_call, **kwargs):
-    if not content.media:
-        await safe_call(lambda: session.send_message(
-            peer, content.text, formatting_entities=entities, **kwargs
-        ))
-    elif len(content.media) == 1:
+async def _send_media(session, peer, content, entities, safe_call, cached, **kwargs):
+    if len(content.media) == 1:
         item = content.media[0]
-        await safe_call(lambda: session.send_file(
-            peer, item.path,
+        return await safe_call(lambda: session.send_file(
+            peer, item.path if cached is None else cached[0],
             caption=content.text,
             formatting_entities=entities,
             parse_mode=None,  # with no entities send_file would parse the caption as markdown
@@ -100,17 +99,41 @@ async def _send_once(session, peer, content, entities, safe_call, **kwargs):
             attributes=[types.DocumentAttributeAnimated()] if item.animated else None,
             **kwargs,
         ))
-    else:
-        paths = [item.path for item in content.media]
-        all_docs = all(item.force_document for item in content.media)
-        await safe_call(lambda: session.send_file(
-            peer, paths,
-            caption=content.text,
-            formatting_entities=entities,
-            parse_mode=None,  # with no entities send_file would parse the caption as markdown
-            force_document=all_docs,
-            **kwargs,
+
+    paths = [item.path for item in content.media]
+    all_docs = all(item.force_document for item in content.media)
+    return await safe_call(lambda: session.send_file(
+        peer, paths if cached is None else cached,
+        caption=content.text,
+        formatting_entities=entities,
+        parse_mode=None,  # with no entities send_file would parse the caption as markdown
+        force_document=all_docs,
+        **kwargs,
+    ))
+
+
+async def _send_once(session, peer, content, entities, safe_call, **kwargs):
+    if not content.media:
+        await safe_call(lambda: session.send_message(
+            peer, content.text, formatting_entities=entities, **kwargs
         ))
+        return
+
+    cached = content.sent_media.get(id(session))
+    try:
+        sent = await _send_media(session, peer, content, entities, safe_call, cached, **kwargs)
+    except errors.FileReferenceExpiredError:
+        if cached is None:
+            raise
+        # a file reference expires over a days-long run: upload the file again
+        content.sent_media.pop(id(session), None)
+        cached = None
+        sent = await _send_media(session, peer, content, entities, safe_call, None, **kwargs)
+
+    if cached is None:
+        media = [getattr(message, "media", None) for message in (sent if isinstance(sent, list) else [sent])]
+        if len(media) == len(content.media) and all(media):
+            content.sent_media[id(session)] = media
 
 
 async def _resolve_mentions(session, entities) -> list:
@@ -148,5 +171,5 @@ async def send(session, peer, content, safe_call, report=None, **kwargs):
         if not has_custom_emoji(entities):
             raise
         if report:
-            await report("custom emoji not sent (needs Premium), retrying without them")
+            await report("кастомные эмодзи не отправлены (нужен Premium), повторяю без них")
         await _send_once(session, peer, content, strip_custom_emoji(entities), safe_call, **kwargs)

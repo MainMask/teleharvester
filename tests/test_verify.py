@@ -187,6 +187,20 @@ def test_verify_rejects_reactors_file(tmp_path):
             date_max=datetime(2024, 12, 31, tzinfo=timezone.utc)))
 
 
+def test_verify_refuses_a_keyword_scrape(tmp_path):
+    # its non-matching posts were left out on purpose: each would come back as "missed"
+    p = tmp_path / "kw_posts.parquet"
+    df = pd.DataFrame({"Message ID": [88, 100]})
+    df.attrs["keyword"] = "крипта"
+    df.to_parquet(p, index=False)
+    with pytest.raises(SystemExit, match="фильтром по слову «крипта»") as exc:
+        verify.run(Credentials(1, "h", ""), VerifyParams(
+            input=str(p), channel="-100123",
+            date_min=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            date_max=datetime(2024, 12, 31, tzinfo=timezone.utc)))
+    assert isinstance(exc.value.code, str)  # the bot shows a str code as the reason
+
+
 def test_verify_folder_skips_reactors_file(tmp_path, capsys):
     # scrape's output folder holds the _reactors file next to the posts
     pd.DataFrame({"Message ID": REAL_IN_WINDOW, "Group": "@a"}).to_parquet(tmp_path / "T_posts.parquet")

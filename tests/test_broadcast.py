@@ -8,7 +8,7 @@ from telethon.errors import ChatWriteForbiddenError
 
 from functions.broadcast import Broadcast
 from functions.pmbroadcast import PmBroadcastFunc
-from modules.rich_message import RichContent
+from modules.rich_message import MediaItem, RichContent
 
 
 def _storage(sessions):
@@ -31,13 +31,14 @@ class _Session:
         self.left.append(peer)
 
 
-def _run_broadcast(outcomes, messages_count, delays=None):
+def _run_broadcast(outcomes, messages_count, delays=None, progress=None):
     """Run Broadcast.broadcast where each _send yields the next outcome (None = sent);
     delays, if given, gets one entry per delay slept."""
     session = _Session()
     settings = types.SimpleNamespace(delay=[0], messages_count=messages_count, messages=["hi"])
     fn = Broadcast(_storage([session]), settings)
     fn.configure(choice=0, content=RichContent(text="hi"))
+    fn.progress = progress
 
     outcomes = iter(outcomes)
     sends = []
@@ -70,7 +71,17 @@ class TestBroadcastErrors:
 
         assert len(sends) == 3
         assert session.left == []
-        assert any("3 errors in a row" in r for r in reports)
+        assert any("3 ошибки подряд" in r for r in reports)
+
+    def test_summary_counts_each_send_once(self):
+        from bot.services.progress import Progress
+
+        progress = Progress()
+        e = ValueError("bad")
+        _run_broadcast([None, None, e, e, e], 0, progress=progress)
+
+        # the "3 ошибки подряд" stop line is no fourth error
+        assert (progress.ok, progress.failed) == (2, 3)
 
     def test_success_resets_error_counter(self):
         e = ValueError("bad")
@@ -150,7 +161,7 @@ class TestPmBroadcastPhone:
         asyncio.run(fn.run("+100", RichContent(text="hi"), True, report))
 
         assert sent == ["good"]
-        assert any("couldn't resolve phone" in r and "resolve failed" in r for r in reports)
+        assert any("не удалось найти номер" in r and "resolve failed" in r for r in reports)
 
     def test_get_me_failure_is_reported(self):
         class _Broken(_Session):
@@ -166,4 +177,36 @@ class TestPmBroadcastPhone:
 
         asyncio.run(fn.run("user", RichContent(text="hi"), False, report))
 
-        assert any("get_me failed" in r and "auth key" in r for r in reports)
+        assert any("не удалось опросить аккаунт" in r and "auth key" in r for r in reports)
+
+
+class TestBroadcastMediaUpload:
+    def test_worker_uploads_media_once_per_campaign(self, tmp_path):
+        photo = tmp_path / "a.jpg"
+        photo.write_bytes(b"x")
+        uploaded = object()  # the media of the first send, which later sends re-use
+
+        class _Sender(_Session):
+            def __init__(self):
+                super().__init__()
+                self.files = []
+
+            async def send_file(self, peer, file, **kwargs):
+                self.files.append(file)
+                return types.SimpleNamespace(media=uploaded)
+
+        session = _Sender()
+        settings = types.SimpleNamespace(delay=[0], messages_count=3, messages=["hi"])
+        fn = Broadcast(_storage([session]), settings)
+        fn.configure(choice=2, content=RichContent(text="hi", media=[MediaItem(path=str(photo))]))
+
+        async def _no_delay():
+            pass
+
+        async def report(text):
+            pass
+
+        fn.delay = _no_delay
+        asyncio.run(fn.broadcast(session, "chat", report))
+
+        assert session.files == [str(photo), uploaded, uploaded]

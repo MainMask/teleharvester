@@ -131,9 +131,13 @@ def _personal_user_ids() -> set[int]:
     directory = scraper_creds.PERSONAL_DIR
     if os.path.isdir(directory):
         for name in os.listdir(directory):
-            if name.endswith(".jsession"):
+            if not name.endswith(".jsession"):
+                continue
+            try:
                 with open(os.path.join(directory, name), encoding="utf-8") as fileobj:
                     ids.add(json.load(fileobj)["account"]["user_id"])
+            except (OSError, ValueError, KeyError, TypeError):  # a broken file is skipped by SessionsStorage too
+                continue
     return ids
 
 
@@ -191,7 +195,7 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
         try:  # new workers start without a personal channel pinned to the profile
             await client(UpdatePersonalChannelRequest(InputChannelEmpty()))
         except Exception as err:
-            console.print(f"[bold yellow]WARNING:[/] couldn't clear personal channel for +{me.phone}: {err}")
+            console.print(f"[bold yellow]ВНИМАНИЕ:[/] не удалось убрать канал из профиля +{me.phone}: {err}")
 
         account_settings = AccountSettings.from_client(client, me, proxy, password, client._init_request.lang_pack)
     finally:
@@ -258,7 +262,7 @@ async def import_all(workers_dir: str = "tdata_import", sessions_dir: str = "ses
             assigned.append(proxy)
     except ValueError as err:
         raise RuntimeError(
-            f"not enough proxies for {len(pending)} new accounts: {err} ({proxies_path})"
+            f"не хватает прокси для {len(pending)} новых аккаунтов: {err} ({proxies_path})"
         ) from err
 
     imported = 0
@@ -274,15 +278,15 @@ async def import_all(workers_dir: str = "tdata_import", sessions_dir: str = "ses
                 sessions_dir,
             )
         except Exception as err:
-            console.print(f"[bold yellow]WARNING:[/] failed to import {worker_dir}: {err}")
+            console.print(f"[bold yellow]ВНИМАНИЕ:[/] не удалось импортировать {worker_dir}: {err}")
             continue
 
         if phone is None:
-            console.print(f"[bold yellow]WARNING:[/] {worker_dir} is not authorized, skipped")
+            console.print(f"[bold yellow]ВНИМАНИЕ:[/] {worker_dir} не авторизован, пропущен")
             continue
 
         open(os.path.join(worker_dir, ".imported"), "w").close()
-        console.print(f"[bold green]Imported[/] {worker_dir} -> sessions/{phone}.jsession")
+        console.print(f"[bold green]Импортирован[/] {worker_dir} -> sessions/{phone}.jsession")
         imported += 1
 
     return imported

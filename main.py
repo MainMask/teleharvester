@@ -7,7 +7,7 @@ from rich.markup import escape
 
 from bot.services.registry import RISK_NOTE, RISKY, cli_menu
 
-from modules import updater
+from modules import instance_lock, updater
 from modules.config import load_env
 from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
@@ -44,9 +44,13 @@ def print_menu(entries) -> None:
 
 def main() -> None:
     if "utf-8" not in (locale.getlocale()[1] or "").lower():
-        console.print("[bold yellow]WARNING:[/] You don't have UTF-8 encoding. teleharvester may not work")
+        console.print("[bold yellow]ВНИМАНИЕ:[/] кодировка терминала не UTF-8 — teleharvester может работать некорректно")
 
-    with console.status("Checking updates..."):
+    # not while the bot runs: the same worker sessions and stats/; before the update check,
+    # so a `git pull` + `pip install` never runs under a live bot
+    instance_lock.hold()
+
+    with console.status("Проверка обновлений..."):
         update = updater.check_update()
 
     if update["has_update"]:
@@ -54,41 +58,41 @@ def main() -> None:
         upcoming_commit = update["upcoming_commit"]
         message = update["message"]
 
-        console.print("[bold white]A new teleharvester update has been released.[/]")
+        console.print("[bold white]Вышло обновление teleharvester.[/]")
 
         console.print(
             "[yellow]{current_commit}[/] → [green]{upcoming_commit}[/] : [white]{message}[/]"
-            .format(current_commit=current_commit[:8] if current_commit else "unknown", upcoming_commit=upcoming_commit[:8], message=message)
+            .format(current_commit=current_commit[:8] if current_commit else "неизвестно", upcoming_commit=upcoming_commit[:8], message=message)
         )
 
-        install_choice = console.input("[bold white]Install? (y/n) >> [/]")
+        install_choice = console.input("[bold white]Установить? (y/n) >> [/]")
 
         if install_choice == "y":
             updater.update(console)
 
     else:
-        console.print("You using the latest version of teleharvester :)")
+        console.print("У вас последняя версия teleharvester :)")
 
     if sys.version_info < (3, 11, 0):
-        console.print("\n[red]Error: you using an outdated Python version. Install Python 3.11.0 at least.")
+        console.print("\n[red]Ошибка: устаревшая версия Python. Нужен Python 3.11.0 или новее.")
         return
 
     if sys.platform == "win32":
-        console.print("[yellow]Warning: you using Windows. Some features may not work properly\n")
+        console.print("[yellow]Внимание: на Windows некоторые функции могут работать некорректно\n")
 
     load_env()
     Settings.ensure_config()
     settings = Settings()
 
     try:
-        with console.status("Importing tdata workers..."):
+        with console.status("Импорт воркеров из tdata..."):
             imported = asyncio.run(import_all())
         if imported:
-            console.print(f"[bold green]Imported {imported} account(s) from tdata_import/[/]")
+            console.print(f"[bold green]Импортировано аккаунтов из tdata_import/: {imported}[/]")
     except Exception as err:
-        console.print(f"[bold yellow]WARNING:[/] tdata import failed: {err}")
+        console.print(f"[bold yellow]ВНИМАНИЕ:[/] импорт tdata не удался: {err}")
 
-    initialize = console.input("Initialize sessions? (y/n) ") == "y"
+    initialize = console.input("Подключить сессии сейчас? (y/n) ") == "y"
 
     sessions_storage = SessionsStorage(
         "sessions",
@@ -103,7 +107,7 @@ def main() -> None:
         settings
     )
 
-    console.print("[bold white]accounts count> %d[/]" % len(sessions_storage))
+    console.print("[bold white]аккаунтов: %d[/]" % len(sessions_storage))
 
     entries = menu_entries(functions_storage.functions)
     print_menu(entries)
@@ -121,14 +125,14 @@ def main() -> None:
                     "[bold white]>> [/]"
                 )
         except (KeyboardInterrupt, EOFError):
-            console.print("[bold white]Bye![/]")
+            console.print("[bold white]Пока![/]")
             break
 
         else:
             choice = int(choice) - 1
 
         if choice < 0 or choice >= len(entries):
-            console.print("[bold red]unknown option[/]")
+            console.print("[bold red]нет такого пункта[/]")
             continue
 
         try:
@@ -136,7 +140,7 @@ def main() -> None:
         except KeyboardInterrupt:
             pass
         except Exception as err:
-            console.print(f"[bold red]Error:[/] {err}")
+            console.print(f"[bold red]Ошибка:[/] {err}")
 
 
 if __name__ == "__main__":

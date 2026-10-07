@@ -21,7 +21,7 @@ def load(path):
     missing = REQUIRED_COLUMNS - columns
     if missing:
         raise ValueError(
-            f"parquet is missing required columns {sorted(missing)}; found {sorted(columns)}"
+            f"в parquet нет обязательных столбцов {sorted(missing)}; есть {sorted(columns)}"
         )
 
     return table.to_pylist()

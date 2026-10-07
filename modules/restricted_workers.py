@@ -47,6 +47,18 @@ def save_released(paths: list):
     json_file.save(RELEASED_PATH, paths)
 
 
+def classify(path, forever: set, status: dict) -> tuple[int, str]:
+    """The last @SpamBot check's result for the accounts list: (group, label); the list goes
+    working first (0), then restricted until a date (1), permanently restricted last (2)."""
+    if path in forever:
+        return 2, "⛔ ограничен бессрочно"
+    if path not in status:
+        return 0, "❔ не проверялся"
+    if status[path] == "active":
+        return 0, "✅ без ограничений"
+    return 1, f"🚫 ЛС ограничены до {status[path]}"
+
+
 def release(path: str):
     """The admin's decision: the worker's people go to the other workers from the next run."""
     released = load_released()

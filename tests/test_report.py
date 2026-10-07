@@ -3,6 +3,7 @@
 import asyncio
 import types
 
+from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
 
 
@@ -27,17 +28,16 @@ class _Bot:
 def test_finish_sends_report_with_counts_and_menu():
     bot = _Bot()
     markup = object()
+    progress = Progress()
     reporter = TelegramReporter(
         bot, 1, header="Рассылка…", min_interval=0,
-        job_label="Рассылка", workers=5, final_markup=markup,
+        job_label="Рассылка", workers=5, final_markup=markup, progress=progress,
     )
 
     async def scenario():
         await reporter.start()
-        await reporter("[A] sent. user1")       # ok
-        await reporter("[A] sent. user2")       # ok
-        await reporter("[B] not sent. user3")   # error
-        await reporter("нейтральная строка")    # neutral
+        progress.ok, progress.failed = 2, 1  # as the function counted them
+        await reporter("[A] отправлено: user1")
         await reporter.finish("Готово ✅")
 
     asyncio.run(scenario())
@@ -86,7 +86,7 @@ def test_job_manager_run_emits_report():
         def workers(self):
             return ["w1", "w2"]
 
-        async def run(self, instance, bot_function, factory, report):
+        async def run(self, instance, bot_function, factory, report, only=None):
             instance.sessions = self.workers  # as WorkerPool.delegate
             await factory(instance)
 
@@ -106,66 +106,48 @@ def test_job_manager_run_emits_report():
     assert any("Воркеров: 2" in text for text, _ in bot.sent)
 
 
-def test_report_submissions_count_as_success():
+def test_line_wording_does_not_count():
+    # the counts are the function's own (progress_ok / progress_failed), not guessed from the
+    # text: a total like "Готово. Добавлено…" or "3 ошибки подряд" adds nothing
     bot = _Bot()
-    reporter = TelegramReporter(bot, 1, header="Репорт…", min_interval=0, job_label="Репорт")
+    reporter = TelegramReporter(bot, 1, header="Задача", min_interval=0, progress=Progress())
 
     async def scenario():
         await reporter.start()
-        await reporter("[A] submitted.")
-        await reporter.finish("Репорт отправлен ✅")
+        for line in ("Готово. Добавлено контактов: 4", "[A] 3 ошибки подряд, остановка.",
+                     "[A] отправлено, всего: 3", "[!] FloodWait"):
+            await reporter(line)
+        await reporter.finish("Готово ✅")
 
     asyncio.run(scenario())
 
-    assert "Успешно: 1" in bot.sent[-1][0]
+    report_text = bot.sent[-1][0]
+    assert "Успешно" not in report_text and "Ошибок" not in report_text
 
 
-def _tally(*lines):
-    reporter = TelegramReporter(_Bot(), 1, min_interval=0)
-    for line in lines:
-        reporter._tally(line)
-    return reporter._ok, reporter._errors
+def test_job_manager_reports_the_functions_counts():
+    from bot.services.jobs import JobManager
 
+    class _Pool:
+        workers = ["w1"]
 
-def test_tally_matches_whole_words_only():
-    # "unlimited" is not "limit", "present" is not "sent"
-    assert _tally("[A] unlimited plan", "[B] present in chat") == (0, 0)
+        async def run(self, instance, bot_function, factory, report, only=None):
+            instance.sessions = self.workers
+            await factory(instance)
 
+    async def scenario():
+        bot = _Bot()
 
-def test_tally_counts_function_error_lines():
-    assert _tally("[!] FloodWait", "[A] can't read participants: x",
-                  "[A] couldn't find a free username", "[A] skip 42: x") == (0, 4)
+        async def job(func, reporter):
+            func.progress.ok += 3  # what BaseFunction.progress_ok does
+            func.progress.failed += 1
 
+        await JobManager().run(bot, 1, _Pool(), ns(), ns(risk="safe"), job, "Инвайт", "Готово ✅")
+        await asyncio.sleep(0.05)
+        return bot
 
-def test_tally_negated_success_word_is_an_error():
-    # "not changed" contains "changed": the error check must win
-    assert _tally("[A] not changed: USERNAME_OCCUPIED", "[A] not cleared: x", "[A] not hidden: x",
-                  "[A] not voted: x", "[!] [acc 1] no linked chat",
-                  "[A] no invite rights in destination") == (0, 6)
-
-
-def test_tally_counts_profile_and_activity_success_lines():
-    assert _tally("[A] last seen hidden", "[A] personal channel cleared", "[A] voted",
-                  "[A] username set: @x", "Reset authorization 1.2.3.4 (PC, Windows)",
-                  "[acc 1] joined") == (6, 0)
-
-
-def test_tally_ignores_neutral_lines():
-    # job totals and per-account notes are not counted again
-    assert _tally("Done: 5/5 accounts", "[acc 1] captcha solved", "[acc 1] no captcha in 30s",
-                  "[-] [@a] Account restricted until: 1 Nov 2026") == (0, 0)
-
-
-def test_tally_spambot_check_lines():
-    # a quoted @SpamBot reply is not a result, whatever words it has; a dead session is an error
-    assert _tally("✅ @a — без ограничений", "⛔ @b — ограничен бессрочно") == (1, 0)
-    assert _tally("💬 Ответ @SpamBot (@b):\nyou can't send messages, error") == (0, 0)
-    assert _tally("💀 x.jsession — сессия мертва") == (0, 1)
-
-
-def test_tally_counts_function_success_lines():
-    assert _tally("added. user_id=1 total: 1", "[+] Account active (no restriction)",
-                  "[SUCCESS] [A] : Reaction was sent", "[A] Photo uploaded successfully (p)") == (4, 0)
+    report_text = asyncio.run(scenario()).sent[-1][0]
+    assert "Успешно: 3" in report_text and "Ошибок: 1" in report_text
 
 
 def test_report_counts_the_workers_the_job_got():

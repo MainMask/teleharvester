@@ -15,7 +15,7 @@ class BotConfig:
         bot = load_toml(path).get("bot", {})
 
         if bot.get("token"):  # the old example's empty `token = ""` is harmless
-            sys.exit("Bot token moved to .env: put [bot].token into BOT_TOKEN and delete it from config.toml.")
+            sys.exit("Токен бота переехал в .env: перенесите [bot].token в BOT_TOKEN и удалите его из config.toml.")
 
         token = os.environ.get("BOT_TOKEN", "")
         admins = bot.get("admins", [])
@@ -28,11 +28,11 @@ class BotConfig:
         try:
             self.admins: set[int] = {int(a) for a in admins}
         except (TypeError, ValueError):
-            sys.exit(f"Bot admins must be numeric Telegram user IDs, not {admins!r} "
+            sys.exit(f"Админы бота должны быть числовыми Telegram ID, а не {admins!r} "
                      "(config.toml [bot].admins / BOT_ADMINS).")
 
     def validate(self):
         if not self.token:
-            sys.exit("BOT_TOKEN is empty (set it in .env). Get one from @BotFather.")
+            sys.exit("BOT_TOKEN пуст (укажите его в .env). Получить токен — у @BotFather.")
         if not self.admins:
-            sys.exit("config.toml [bot].admins is empty (or set BOT_ADMINS). Add your Telegram user ID.")
+            sys.exit("config.toml [bot].admins пуст (или задайте BOT_ADMINS). Добавьте свой Telegram ID.")

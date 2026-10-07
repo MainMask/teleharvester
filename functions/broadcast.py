@@ -11,12 +11,14 @@ from telethon.errors import (
 )
 from telethon.extensions import html
 from telethon.tl.functions.messages import GetStickerSetRequest
+from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.types import InputStickerSetShortName
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited
 from modules import rich_message
 from modules.rich_message import RichContent
+from modules.storages.sessions_storage import connect_client
 
 # Invisible mention carrier: each hidden mention is these two chars linked to a user.
 _MENTION_CHARS = "⁬⁯"
@@ -62,11 +64,11 @@ class Broadcast(TelethonFunction):
 
         # Labels only (menu display / choice numbering); all modes share one sender.
         self.modes = (
-            "Campaign with text",
-            "Single-account campaign",
-            "Campaign with media",
-            "Campaign with reply",
-            "Campaign with stickers",
+            "Рассылка текстом",
+            "Рассылка одним аккаунтом",
+            "Рассылка с медиа",
+            "Рассылка ответом",
+            "Рассылка стикерами",
         )
 
     def _base_content(self):
@@ -138,7 +140,8 @@ class Broadcast(TelethonFunction):
         try:
             me = await self.get_me(session)
         except Exception as err:
-            await report(f"get_me failed: {err}")
+            self.progress_failed()
+            await report(f"не удалось опросить аккаунт: {err}")
             self.progress_drop(self.settings.messages_count)
             return
 
@@ -159,7 +162,7 @@ class Broadcast(TelethonFunction):
                         if user.id not in admin_ids
                     ]
             except Exception as err:
-                await report(f"[{me.first_name}] can't read participants, sending without mentions: {err}")
+                await report(f"[{me.first_name}] не удалось прочитать участников, отправляю без упоминаний: {err}")
 
         while count < self.settings.messages_count \
                 or self.settings.messages_count == 0:
@@ -173,37 +176,43 @@ class Broadcast(TelethonFunction):
                 )
                 text, entities = self._append_mentions(text, entities, sample)
 
-            content = RichContent(text=text, entities=entities, media=media)
+            # the captured content's upload cache: a worker uploads its media once, not per send
+            content = RichContent(text=text, entities=entities, media=media,
+                                  sent_media=self.content.sent_media if self.content is not None else {})
 
             try:
                 await self._send(session, peer, content, report, reply_to=reply_to)
             except AccountLimited as err:
-                await report(f"[{me.first_name}] limit, stopping. {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] лимит, остановка. {err}")
                 break
             except _CHAT_ERRORS as err:
                 # the chat itself refuses this account: leave it, retrying is pointless
-                await report(f"[{me.first_name}] can't write to chat, leaving. {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] не удалось писать в чат, выхожу из него. {err}")
 
                 try:
                     await session.delete_dialog(peer)
                 except Exception as err:
-                    await report(f"ERROR while leaving from chat: {err}")
+                    await report(f"[!] ошибка при выходе из чата: {err}")
 
                 break
             except Exception as err:
-                await report(f"[{me.first_name}] not sent. {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] не отправлено: {err}")
 
                 errors += 1
 
                 if errors >= 3:
-                    await report(f"[{me.first_name}] 3 errors in a row, stopping.")
+                    await report(f"[{me.first_name}] 3 ошибки подряд, остановка.")
                     break
 
             else:
                 errors = 0
                 count += 1
                 self.progress_step()
-                await report(f"[{me.first_name}] sent. COUNT: {count}")
+                self.progress_ok()
+                await report(f"[{me.first_name}] отправлено, всего: {count}")
 
             # delay between sends only; a break (limit / 3 errors) skips it, as does the last send
             if not (self.settings.messages_count and count >= self.settings.messages_count):
@@ -249,15 +258,20 @@ class Broadcast(TelethonFunction):
         try:
             while True:
                 try:
-                    await session.connect()  # a no-op if connected (the CLI's clients are)
-                    await session.run_until_disconnected()
+                    await connect_client(session)  # a no-op if connected (the CLI's clients are)
+                    # run_until_disconnected() without its disconnect() on a ⏹: that one bypasses
+                    # release_client's lock (the job releases the worker itself)
+                    await session(GetStateRequest())  # tells Telegram to send updates
+                    await session.disconnected
+                    if getattr(session, "_updates_error", None) is not None:
+                        raise session._updates_error
                     return  # disconnected on purpose: the job is over
                 except OSError as err:  # ConnectionError: Telethon's reconnects ran out
-                    await report(f"[!] [{label}] connection lost ({err}), "
-                                 f"reconnecting in {LISTENER_RECONNECT_DELAY}s")
+                    await report(f"[!] [{label}] соединение потеряно ({err}), "
+                                 f"переподключение через {LISTENER_RECONNECT_DELAY} с")
                     await asyncio.sleep(LISTENER_RECONNECT_DELAY)
                 except Exception as err:  # e.g. a logged-out session: this worker only
-                    await report(f"[!] [{label}] listener stopped: {err}")
+                    await report(f"[!] [{label}] слушатель остановлен: {err}")
                     return
         finally:
             session.remove_event_handler(handler, events.NewMessage)
@@ -279,23 +293,22 @@ class Broadcast(TelethonFunction):
             )
 
         self.choice = int(choice) - 1
-        self.ask_accounts_count()
 
         if self.choice == 4:
-            self.sticker_set = console.input("[bold red]enter link to sticker set (e.g https://t.me/addstickers/AlbinoEmoji)> [/]")
+            self.sticker_set = console.input("[bold red]ссылка на стикерпак (например https://t.me/addstickers/AlbinoEmoji)> [/]")
             self.sticker_set = self.sticker_set.replace("https://t.me/addstickers/", "")
 
         delay = Prompt.ask(
-            "[bold red]delay[/]",
+            "[bold red]задержка[/]",
             default="-".join(str(x) for x in self.settings.delay)
         )
 
         self.delay_range = self.parse_delay(delay)
-        self.mention_all = Confirm.ask("[bold red]mention all?[/]", default=True)
+        self.mention_all = Confirm.ask("[bold red]упоминать всех?[/]", default=True)
 
         if self.mention_all:
             self.mention_mode = Prompt.ask(
-                "[bold red]mention mode[/]",
+                "[bold red]кого упоминать (admins — админов, users — участников)[/]",
                 choices=["admins", "users"]
             )
 
@@ -312,12 +325,12 @@ class Broadcast(TelethonFunction):
 
     async def start_campaign(self, report):
         if self.choice == 1:
-            link = Prompt.ask("[bold red]link to chat[/]")
+            link = Prompt.ask("[bold red]ссылка на чат[/]")
 
             await self.start_single_campaign(self.sessions, link, report)
             return
 
-        await report('[*] Send "{trigger}" to chat'.format(trigger=self.settings.trigger))
+        await report('[*] Отправьте «{trigger}» в чат'.format(trigger=self.settings.trigger))
 
         await asyncio.gather(*[
             self.handle(session, report)

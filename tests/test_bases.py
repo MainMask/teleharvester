@@ -3,6 +3,7 @@
 import asyncio
 import os
 import types
+from pathlib import Path
 
 import pandas as pd
 
@@ -73,6 +74,15 @@ def test_bases_newest_first_with_row_counts(tmp_path, monkeypatch):
         (new, "OmniBase · 01.05.2022-27.09.2026 · 1 234"),
         (old, "Old · 01.01.2026-31.01.2026 · 3"),
     ]
+
+
+def test_a_base_removed_while_listing_is_left_out(tmp_path, monkeypatch):
+    old, new = _bases_dir(tmp_path, monkeypatch)
+    gone = tmp_path / "Gone_participants.parquet"  # globbed, then removed before its stat
+    found = [Path(old), Path(new), gone]
+    monkeypatch.setattr(scraped_files.Path, "glob", lambda self, pattern: iter(found))
+
+    assert [path for path, _ in scraped_files.participant_bases()] == [new, old]
 
 
 def test_no_bases_dir(tmp_path, monkeypatch):
@@ -329,6 +339,36 @@ def test_contacts_ledger_records_and_skips_on_rerun(tmp_path):
     assert "Уже в контактах (пропущено): 2" in msgs
 
 
+def test_contacts_summary_counts_the_adds_not_the_total_line(tmp_path):
+    from bot.services.progress import Progress
+
+    progress = Progress()
+    rows = [{"ID": 10, "Access Hash": 1, "Username": "a"}, {"ID": 20, "Access Hash": 2, "Username": "b"}]
+    msgs = _contacts([_Session(1, "w")], rows, tmp_path, progress=progress)
+
+    assert "Готово. Добавлено контактов: 2" in msgs
+    assert (progress.ok, progress.failed) == (2, 0)
+
+
+def test_contacts_ledger_is_not_kept_in_memory_after_a_run(tmp_path):
+    from functions.add_contacts import AddContactsFunc
+    from modules import contacts_ledger
+
+    w = _Session(1, "w")
+    path = tmp_path / "base.parquet"
+    pd.DataFrame([{"ID": 10, "Access Hash": 1, "Username": "a"}]).to_parquet(path)
+    fn = AddContactsFunc(_WorkerStorage([w]), ns(delay=[0], contacts_per_account_daily=0))
+    fn.sessions, fn.on_hold = [w], []
+
+    async def report(text):
+        pass
+
+    asyncio.run(fn.run(str(path), [0], report))
+
+    # the shared instance lives as long as the bot: the ledger is reloaded by every run
+    assert fn.ledger == {} and contacts_ledger.load() == {"10": 1}
+
+
 def test_contacts_of_a_removed_worker_are_added_again(tmp_path):
     from modules import contacts_ledger
 
@@ -418,7 +458,7 @@ def test_stats_are_keyed_by_id_but_reports_show_username(monkeypatch, tmp_path):
     msgs, _ = _mailing([w], [ROWS[0]], monkeypatch, tmp_path)
 
     assert list(json.load(open(tmp_path / "stats" / "pm_mailing.json"))) == ["1"]
-    assert any("sent" in m and "alice" in m for m in msgs)
+    assert any("отправлено" in m and "alice" in m for m in msgs)
 
     from functions.pmmailing import PmMailingFunc
     fn = PmMailingFunc(_WorkerStorage([w]), ns(delay=[0]))
@@ -659,7 +699,7 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
 def test_verify_typed_path_that_can_t_be_read_asks_the_channel(tmp_path):
     msg, state = _Msg(), _State()
     asyncio.run(scraping_router._ask_channel(msg, state, str(tmp_path / "missing.parquet")))
-    assert msg.answers == [("Канал (@name / t.me / numeric id):", None)]
+    assert msg.answers == [("Канал (@name / t.me / числовой id):", None)]
 
 
 # --- analysis: Russian buttons, a file by button, results named and placed automatically ----

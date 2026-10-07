@@ -14,7 +14,8 @@ class ClearDialogsFunc(TelethonFunction):
             try:
                 await self.get_me(session)  # a worker that can't connect is skipped here, the others still run
             except Exception as err:
-                await report(f"get_me failed: {err}")
+                self.progress_failed()
+                await report(f"не удалось опросить аккаунт: {err}")
                 return
 
             try:
@@ -41,15 +42,19 @@ class ClearDialogsFunc(TelethonFunction):
                             ))
                     except AccountLimited as err:
                         # a long FloodWait: stop clearing this account, leave the others to run
-                        await report(f"[!] limit, stopping. {err}")
+                        self.progress_failed()
+                        await report(f"[!] лимит, остановка. {err}")
                         return
                     except Exception as err:
+                        self.progress_failed()
                         await report(f"[!] {dialog.id}: {err}")
                         continue
 
-                    await report(f"Dialog {dialog.id} | {dialog.title} has been deleted")
+                    self.progress_ok()
+                    await report(f"Диалог {dialog.id} | {dialog.title} удалён")
             except Exception as err:  # the listing itself (a long flood wait, a dropped connection): this worker only
-                await report(f"[!] can't list dialogs: {err}")
+                self.progress_failed()
+                await report(f"[!] не удалось получить список диалогов: {err}")
 
     async def run(self, report):
         await self.gather_in_order(self.clear, report)
@@ -57,7 +62,7 @@ class ClearDialogsFunc(TelethonFunction):
     async def execute(self):
         self.ask_accounts_count()
 
-        confirm = Confirm.ask("[bold red]are you sure?[/]")
+        confirm = Confirm.ask("[bold red]точно очистить все диалоги?[/]")
 
         if confirm:
             await self.run(console_report)

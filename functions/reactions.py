@@ -21,7 +21,8 @@ class ReactionsFunc(TelethonFunction):
             try:
                 me = await self.get_me(session)
             except Exception as err:
-                await report(f"get_me failed: {err}")
+                self.progress_failed()
+                await report(f"не удалось опросить аккаунт: {err}")
                 return
 
             try:
@@ -34,9 +35,11 @@ class ReactionsFunc(TelethonFunction):
                     reaction=[types.ReactionEmoji(emoticon=reaction)]
                 )))
             except Exception as err:
-                await report(f"[ERROR] [{me.first_name}] : {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] ошибка: {err}")
             else:
-                await report(f"[SUCCESS] [{me.first_name}] : Reaction \"{reaction}\" was sent")
+                self.progress_ok()
+                await report(f"[{me.first_name}] реакция «{reaction}» поставлена")
 
     async def run(self, link, reaction, report):
         peer, message_id = self.parse_message_link(link)
@@ -50,10 +53,10 @@ class ReactionsFunc(TelethonFunction):
     async def execute(self):
         self.ask_accounts_count()
 
-        link_to_message = console.input("[bold red]link to msg/post> [/]")
+        link_to_message = console.input("[bold red]ссылка на сообщение/пост> [/]")
 
         reaction = console.input(
-            "[bold red]enter reaction ({reactions}) or skip for random> [/]"
+            "[bold red]реакция ({reactions}), пусто — случайная> [/]"
             .format(reactions=", ".join(self.reactions))
         )
 

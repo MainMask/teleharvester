@@ -70,15 +70,19 @@ def _load_saved(pattern: str, group: str, with_comments: bool = False) -> pd.Dat
         if "Reactor ID" in df.columns or "Message ID" not in df.columns:
             print(f"  - skipped {p.name}: not a posts file")
             continue
+        if keyword := df.attrs.get("keyword"):  # its posts without the word were left out on purpose
+            raise SystemExit(f"{p.name}: скрап собран с фильтром по слову «{keyword}» — верификация сверяет "
+                             "полный скрап и покажет каждый пост без этого слова как пропущенный. "
+                             "Проверяйте скрап без фильтра.")
         frames.append(df)
     if not frames:
-        raise SystemExit(f"{pattern}: no scraped posts file — pass the *_posts file, not *_reactors")
+        raise SystemExit(f"{pattern}: нет файла постов скрапа — укажите файл *_posts, а не *_reactors")
     df = pd.concat(frames, ignore_index=True)
     if "Group" in df.columns:  # a multi-channel scrape: ids of other channels are not ours
         groups = df["Group"].astype(str)
         df = df[groups.str.lower() == group.lower()]
         if df.empty:
-            raise SystemExit(f"{pattern}: no rows for {group}; groups in the file: "
+            raise SystemExit(f"{pattern}: нет строк для {group}; группы в файле: "
                              f"{sorted(set(groups.dropna()))}")
     df = df[df["Message ID"].notna()].copy()
     # dedup on the int: _posts files store the id as str, _until_ snapshots as int

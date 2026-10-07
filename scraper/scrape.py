@@ -111,7 +111,7 @@ async def connect(creds: Credentials, entity_cache: Path | None = None) -> Teleg
     await client.connect()
     if not await client.is_user_authorized():
         await client.disconnect()
-        raise SystemExit("the worker's session is no longer authorized - re-add the account")
+        raise SystemExit("сессия аккаунта больше не авторизована — добавьте аккаунт заново")
     return client
 
 # In-run automatic resume: restart a channel from the last checkpointed message
@@ -523,7 +523,7 @@ async def _reconnect(client) -> None:
 def check_date_range(date_min: datetime, date_max: datetime, raw_min: str, raw_max: str) -> None:
     """SystemExit on a reversed range: it would scrape / verify nothing, silently."""
     if date_min > date_max:
-        raise SystemExit(f"The start date {raw_min} is after the end date {raw_max}.")
+        raise SystemExit(f"Дата начала {raw_min} позже даты конца {raw_max}.")
 
 
 def parse_date(value: str, *, end_of_day: bool = False) -> datetime:
@@ -539,7 +539,7 @@ def parse_date(value: str, *, end_of_day: bool = False) -> datetime:
         try:
             dt = datetime.fromisoformat(value)
         except ValueError:
-            raise SystemExit(f"Bad date {value!r}: use DD.MM.YYYY or YYYY-MM-DD")
+            raise SystemExit(f"Неверная дата {value!r}: нужен формат ДД.ММ.ГГГГ или ГГГГ-ММ-ДД")
     return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
@@ -834,12 +834,12 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
                 or meta.get("keyword", "") != params.keyword
                 or meta.get("date_min") != params.date_min.isoformat()
                 or meta.get("date_max") != params.date_max.isoformat()):
-            raise SystemExit("resume: resume.json does not match the current "
-                             "channels / keyword / dates of the interrupted scrape.")
+            raise SystemExit("продолжение: resume.json не совпадает с каналами / словом / датами "
+                             "прерванного скрапа.")
         if not _shard_paths(ckpt_dir, "posts") and int(meta.get("t_index", 0)) > 0:
-            raise SystemExit(f"resume: checkpoint shards are missing from {ckpt_dir} "
-                             f"but resume.json reports {meta['t_index']} scraped posts "
-                             f"— cannot resume safely.")
+            raise SystemExit(f"продолжение: в {ckpt_dir} нет файлов чекпоинта, "
+                             f"а resume.json сообщает о {meta['t_index']} собранных постах "
+                             f"— продолжить безопасно нельзя.")
         shard_index = _next_shard_index(ckpt_dir)
         t_index = _count_shard_rows(ckpt_dir, "posts")  # footer metadata only, no data
         n_reactor_rows = _count_shard_rows(ckpt_dir, "reactors")
@@ -1134,6 +1134,11 @@ def run(creds: Credentials, params: ScrapeParams) -> Path:
                                "date_max": params.date_max.date().isoformat()}}
     if params.owner_id is not None:  # a rebuilt participants base keeps its Owner ID
         attrs["owner_id"] = params.owner_id
+    # verify's presets: the channels as given (a username "c12345" rebuilt from its Group would
+    # read as the channel id -10012345); the keyword: verify refuses a filtered scrape
+    attrs["channels"] = params.channels
+    if params.keyword:
+        attrs["keyword"] = params.keyword
     path, rows, span = _write_posts(ckpt_dir, params.out_dir, params.name, attrs)
     print(f"Posts:    {path}  ({rows} rows)")
 

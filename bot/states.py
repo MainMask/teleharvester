@@ -15,6 +15,10 @@ class Join(StatesGroup):
     link = State()
 
 
+class PickWorkers(StatesGroup):
+    choose = State()
+
+
 class ChangeName(StatesGroup):
     manual = State()
 

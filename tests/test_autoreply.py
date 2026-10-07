@@ -41,8 +41,9 @@ def dialog(entity, unread=1, out=False, text="hi", msg_id=10, history=None):
 
 
 class FakeClient:
-    def __init__(self, dialogs, wrote_first=True, fail=None):
+    def __init__(self, dialogs, wrote_first=True, fail=None, last_mine="рассылка"):
         self.dialogs = dialogs
+        self.last_mine = last_mine  # the worker's own last message in the chat
         self.by_id = {d.entity.id: d for d in dialogs}
         self.wrote_first = wrote_first
         self.fail = fail
@@ -69,7 +70,7 @@ class FakeClient:
         if from_user is not None:
             assert from_user == "me"
             self.searches += 1
-            return ["msg"] if self.wrote_first else []
+            return [message(self.last_mine, out=True)] if self.wrote_first else []
         return self.by_id[entity.id].history[:limit]
 
     async def send_message(self, entity, text, parse_mode="md"):
@@ -153,6 +154,17 @@ def test_answered_person_writing_again_is_forwarded_without_another_reply():
 
     assert again.sent == []
     assert again.read == [(5, 11)]
+    assert "Новое сообщение" in notes[0][0] and "а подробнее?" in notes[0][0]
+
+
+def test_reply_sent_but_not_recorded_is_not_sent_again():
+    # a round's connection dropped after the reply went out: the person writes again
+    client = FakeClient([dialog(user(5), text="а подробнее?", msg_id=11)], last_mine=TEXT + "\n")
+    replied, notes = run_poll(FakePool([client]))
+
+    assert client.sent == []
+    assert list(replied) == ["sessions/w0.jsession:5"]
+    assert client.read == [(5, 11)]
     assert "Новое сообщение" in notes[0][0] and "а подробнее?" in notes[0][0]
 
 
@@ -419,6 +431,35 @@ def test_one_failing_worker_does_not_stop_the_round():
     assert not broken.connected
 
 
+def test_worker_released_mid_poll_does_not_end_the_round():
+    # a job's release_client() cancels the poll's in-flight request (Telethon cancels pending
+    # futures on disconnect): that worker only, not the whole loop
+    released = FakeClient([], fail=asyncio.CancelledError())
+    ok = FakeClient([dialog(user(5))])
+    run_poll(FakePool([released, ok]))
+
+    assert ok.sent == [(5, TEXT)]
+
+
+def test_bot_stopping_still_cancels_the_round():
+    class Hanging(FakeClient):
+        async def iter_dialogs(self, limit):
+            await asyncio.sleep(3600)
+            yield
+
+    async def notify(text, url):
+        return True
+
+    async def main():
+        task = asyncio.create_task(autoreply.poll_once(FakePool([Hanging([])]), TEXT, {}, notify))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+
+
 @pytest.mark.parametrize("enabled, text, polled", [
     (True, TEXT, True),
     (False, TEXT, False),
@@ -576,6 +617,51 @@ def test_screen_shows_status_text_and_stats(tmp_path, monkeypatch):
     assert "всего 2 · за сутки 1 · за 7 дней 1" in text
     assert "@worker_a — 1" in text and "b.jsession — 1" in text
     assert markup.inline_keyboard[0][0].text == "⏸ Выключить"
+
+
+def _replied_by(workers: int) -> dict:
+    """worker i (sessions/wI.jsession) answered i + 1 people."""
+    now = datetime.now().strftime(autoreply.TIME_FORMAT)
+    return {f"sessions/w{i}.jsession:{n}": now for i in range(workers) for n in range(i + 1)}
+
+
+def _buttons(markup):
+    return [b.text for row in markup.inline_keyboard for b in row]
+
+
+def test_screen_shows_the_top_workers_and_a_button_for_all(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, monkeypatch)
+    autoreply.save_replied(_replied_by(screen.TOP_WORKERS + 3))  # w12 13 answers ... w0 1
+    callback = _Callback()
+    asyncio.run(screen.autoreply_screen(callback, _State(), settings, _pool()))
+
+    text, markup = callback.message.edits[0]
+    shown = [line for line in text.splitlines() if line.startswith("• ")]
+    assert len(shown) == screen.TOP_WORKERS and shown[0] == "• w12.jsession — 13"
+    assert "…и ещё воркеров: 3, ответов у них: 6" in text  # w2, w1, w0: 3 + 2 + 1
+    assert "📋 Все воркеры" in _buttons(markup)
+
+
+def test_few_workers_no_button(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, monkeypatch)
+    autoreply.save_replied(_replied_by(screen.TOP_WORKERS))
+    callback = _Callback()
+    asyncio.run(screen.autoreply_screen(callback, _State(), settings, _pool()))
+
+    text, markup = callback.message.edits[0]
+    assert "и ещё воркеров" not in text and "📋 Все воркеры" not in _buttons(markup)
+
+
+def test_all_workers_button_sends_every_worker_in_chunks(tmp_path, monkeypatch):
+    settings_with(tmp_path, monkeypatch)
+    autoreply.save_replied(_replied_by(300))  # ~6 000 characters: more than one message
+    callback = _Callback()
+    asyncio.run(screen.autoreply_workers(callback, _pool()))
+
+    answers = callback.message.answers
+    assert len(answers) > 1 and all(len(chunk) <= 4096 for chunk in answers)
+    lines = [line for chunk in answers for line in chunk.splitlines() if line.startswith("• ")]
+    assert len(lines) == 300 and lines[0] == "• w299.jsession — 300"
 
 
 def test_toggle_off_and_on(tmp_path, monkeypatch):

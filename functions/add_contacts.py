@@ -30,7 +30,7 @@ class AddContactsFunc(TelethonFunction):
             try:
                 self._my_ids[id(session)] = (await session.get_me()).id
             except Exception as err:
-                raise AccountLimited(f"get_me failed: {err}")
+                raise AccountLimited(f"не удалось опросить аккаунт: {err}")
         return self._my_ids[id(session)]
 
     async def _add_by_username(self, session, row):
@@ -42,7 +42,7 @@ class AddContactsFunc(TelethonFunction):
 
         if self._limits.reached(aid):
             # out for today: rotation moves this person to the next account (item not lost)
-            raise AccountLimited(f"daily cap {self._limits.cap} reached")
+            raise AccountLimited(f"дневной лимит {self._limits.cap} исчерпан")
 
         owner = row.get("owner_id")
         foreign = owner is not None and owner != aid
@@ -68,7 +68,8 @@ class AddContactsFunc(TelethonFunction):
         except AccountLimited:
             raise
         except Exception as err:
-            await self._report(f"skip user_id={row.get('user_id')}: {err}")
+            self.progress_failed()
+            await self._report(f"пропуск user_id={row.get('user_id')}: {err}")
             return
 
         self.added += 1
@@ -77,7 +78,8 @@ class AddContactsFunc(TelethonFunction):
         self._unsaved += 1
         if self._unsaved >= LEDGER_SAVE_EVERY:
             self.flush_ledger()
-        await self._report(f"added. user_id={row['user_id']} total: {self.added}")
+        self.progress_ok()
+        await self._report(f"добавлен user_id={row['user_id']}, всего: {self.added}")
 
     def flush_ledger(self):
         if self._unsaved:
@@ -101,11 +103,13 @@ class AddContactsFunc(TelethonFunction):
             # DB would otherwise stall the bot's polling loop for its whole duration
             rows = await asyncio.to_thread(parquet_db.load, path)
         except Exception as err:
+            self.progress_failed()
             await report(str(err))
             return
 
         if not rows:
-            await report("Database is empty!")
+            self.progress_failed()
+            await report("База пуста!")
             return
 
         self.ledger = contacts_ledger.load()
@@ -134,8 +138,9 @@ class AddContactsFunc(TelethonFunction):
                 self.progress_drop(len(queue) - done)  # its accounts ran out: the rest is skipped
         finally:
             self.flush_ledger()  # persist the tail on any exit (success, error, cancel)
+            self.ledger = {}  # every run reloads it: the shared instance must not hold it between runs
 
-        await report(f"Done. Added {self.added} contacts.")
+        await report(f"Готово. Добавлено контактов: {self.added}")
         if already:
             await report(f"Уже в контактах (пропущено): {already}")
         if self.skipped:
@@ -152,13 +157,13 @@ class AddContactsFunc(TelethonFunction):
         self.ask_accounts_count()
 
         path = self.ask_file(
-            "[bold red]path to .parquet[/]",
+            "[bold red]путь к .parquet[/]",
             scraped_files.participant_bases(),  # the scraped bases, newest first, as in the bot
             default="assets/contacts.parquet",
         )
 
         delay = Prompt.ask(
-            "[bold red]delay[/]",
+            "[bold red]задержка[/]",
             default="-".join(str(x) for x in self.settings.delay)
         )
 

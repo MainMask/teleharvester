@@ -17,7 +17,9 @@ def save(path: str, data):
 
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as fileobj:
-        json.dump(data, fileobj, ensure_ascii=False)
+        # dumps, not dump: only the one-shot call uses the C encoder (~4x faster), and a big
+        # ledger (stats/pm_mailing.json) is rewritten on the event loop
+        fileobj.write(json.dumps(data, ensure_ascii=False))
         fileobj.flush()
         os.fsync(fileobj.fileno())  # on disk before the rename: a power cut must not leave it empty
 

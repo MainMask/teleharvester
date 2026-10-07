@@ -14,6 +14,7 @@ from telethon.tl.functions.contacts import UnblockRequest
 from functions.base import TelethonFunction
 from functions.base.base import console_report
 from modules import contacts_ledger, restricted_workers
+from modules.storages.sessions_storage import release_client
 
 # the report's groups, in order: working first, then the ones restricted, dead, unchecked
 GROUPS = ("✅", "🚫", "⛔", "💀", "⚠️")
@@ -78,10 +79,12 @@ class SpamBlockFunc(TelethonFunction):
             try:
                 me = await session.get_me()
             except Exception as err:
+                self.progress_failed()
                 await report(f"⚠️ {name} — не удалось опросить: {err}")
                 return
 
             if me is None:  # get_me() swallows the auth error of a banned / logged-out account
+                self.progress_failed()
                 await report(f"💀 {name} — сессия мертва (бан или выход), перенесена в sessions/inactive")
                 return "dead", session
 
@@ -98,11 +101,13 @@ class SpamBlockFunc(TelethonFunction):
                 try:
                     await session(UnblockRequest("spambot"))
                 except Exception as err:
+                    self.progress_failed()
                     await report(f"⚠️ {who} — не удалось разблокировать @SpamBot: {err}")
                     return
                 return await self.check(session, report)
 
             except Exception as err:
+                self.progress_failed()
                 await report(f"⚠️ {who} — не удалось проверить: {err}")
                 return
 
@@ -110,6 +115,7 @@ class SpamBlockFunc(TelethonFunction):
             lines = text.split("\n")
 
             if len(lines) == 1:
+                self.progress_ok()
                 await report(f"✅ {who} — без ограничений")
                 return "active", session
 
@@ -208,7 +214,7 @@ class SpamBlockFunc(TelethonFunction):
                 result.append((path, user_id, worker_name(self.storage, path), context.counts[user_id]))
         return result
 
-    def move_restricted(self, blocks: Dict[str, List[TelegramClient]]) -> List[str]:
+    async def move_restricted(self, blocks: Dict[str, List[TelegramClient]]) -> List[str]:
         """Move restricted sessions into sessions/restricted/<date>/ (local filesystem op).
         One whose people wait for it (see holds_people) stays: out of sessions/ it would be
         gone, and its people handed to strangers. Returns the names of the ones kept."""
@@ -232,6 +238,7 @@ class SpamBlockFunc(TelethonFunction):
                     os.mkdir(path)
                 session_name = os.path.basename(session_path)
 
+                await release_client(session)  # CLI clients stay connected: a forgotten one runs on
                 os.rename(
                     session_path,
                     os.path.join(path, session_name)
@@ -247,7 +254,7 @@ class SpamBlockFunc(TelethonFunction):
         for session in dead:
             path = self.storage.get_session_path(session)
             if path is not None:
-                await session.disconnect()  # CLI clients stay connected: a forgotten one runs on
+                await release_client(session)  # CLI clients stay connected: a forgotten one runs on
                 self.storage.move_to_inactive(path)
         return dead
 
@@ -257,7 +264,7 @@ class SpamBlockFunc(TelethonFunction):
         await self.drop_dead(blocks)
 
         if move_restricted:
-            self.move_restricted(blocks)
+            await self.move_restricted(blocks)
 
         return blocks
 
@@ -271,7 +278,7 @@ class SpamBlockFunc(TelethonFunction):
                            "Это не отменить.[/]", default=False):
                 restricted_workers.release(path)
 
-        if Confirm.ask("[bold magenta]Move restricted sessions to other folders?[/]"):
-            if kept := self.move_restricted(blocks):
+        if Confirm.ask("[bold magenta]Перенести ограниченные сессии в отдельные папки?[/]"):
+            if kept := await self.move_restricted(blocks):
                 await console_report(f"Оставлены в sessions/ — их контакты ждут: {', '.join(kept)}")
 

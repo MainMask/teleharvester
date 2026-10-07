@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import weakref
 from contextlib import asynccontextmanager
 from typing import Dict, List, Union
 
@@ -31,19 +32,36 @@ def profile_order(me) -> tuple:
     return (0, natural_key(me.username))
 
 
+# Telethon's disconnect() doesn't take the lock its connect() does: a connect() of a client while
+# it is disconnecting leaves it "connected" with no connection, every request hanging, until a
+# restart. The bot's jobs, autoreply and lists connect and release the same worker clients.
+_client_locks = weakref.WeakKeyDictionary()
+
+
+def _client_lock(client) -> asyncio.Lock:
+    return _client_locks.setdefault(client, asyncio.Lock())
+
+
+async def connect_client(client):
+    """client.connect(), never at once with a release_client() of the same client."""
+    async with _client_lock(client):
+        await client.connect()
+
+
 async def release_client(client):
     """Disconnect a worker client and drop its entity cache. Bot mode reuses the same worker
     clients for the whole process life, and Telethon keeps appending every RPC result's
     users/chats to the StringSession's in-memory _entities set, which never shrinks; the
     next use re-resolves peers anyway."""
-    try:
-        await client.disconnect()
-    except Exception:
-        pass
-    try:
-        client.session._entities.clear()
-    except Exception:
-        pass
+    async with _client_lock(client):
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        try:
+            client.session._entities.clear()
+        except Exception:
+            pass
 
 
 class SessionsStorage:
@@ -89,7 +107,7 @@ class SessionsStorage:
 
                     session = JsonSession(dict_settings=session_settings)
                 except Exception as err:  # one broken file must not stop the CLI / bot start
-                    console.print(f"[bold yellow]WARNING:[/] skipped broken session file {session_path}: {err}")
+                    console.print(f"[bold yellow]ВНИМАНИЕ:[/] пропущен повреждённый файл сессии {session_path}: {err}")
                     continue
 
                 if old_session := self.is_phone_exists(
@@ -98,7 +116,7 @@ class SessionsStorage:
                     old_session_path = self.get_json_session_path(old_session)
 
                     console.print(
-                        f"[bold yellow]WARNING:[/] Same accounts in teleharvester — {old_session_path} matches with {session_path}"
+                        f"[bold yellow]ВНИМАНИЕ:[/] один и тот же аккаунт дважды — {old_session_path} совпадает с {session_path}"
                     )
 
                     continue
@@ -114,10 +132,10 @@ class SessionsStorage:
         if self.initialize:
             if len(self.full_sessions) == 0:
                 return print(
-                    "In order for teleharvester to work, you need to add accounts"
+                    "Для работы teleharvester нужно добавить аккаунты"
                 )
 
-            with console.status("Initializing..."):
+            with console.status("Подключение..."):
                 try:
                     loop = asyncio.get_running_loop()
                 except RuntimeError:  # no running loop (CLI path): make one for run_until_complete
@@ -180,8 +198,8 @@ class SessionsStorage:
 
         if len(proxies) < required:
             raise ValueError(
-                f"not enough proxies: {len(proxies)} for {len(paths)} accounts "
-                f"({required} needed at {ACCOUNTS_PER_PROXY} accounts per proxy)"
+                f"мало прокси: {len(proxies)} на {len(paths)} аккаунтов "
+                f"(нужно {required} — по {ACCOUNTS_PER_PROXY} аккаунта на прокси)"
             )
 
         for index, path in enumerate(paths):
@@ -206,7 +224,7 @@ class SessionsStorage:
             self.json_sessions.remove(json_session)
 
     async def check_session(self, session: TelegramClient, path: str):
-        console.log(f"Initializing session {path}")
+        console.log(f"Подключаю сессию {path}")
 
         try:
             await session.connect()
@@ -216,10 +234,10 @@ class SessionsStorage:
 
             if json_session is not None and json_session.account.proxy is not None:
                 console.log(
-                    f"Error with connection to session {path}. Maybe proxy {json_session.account.proxy.ip} is unreachable?"
+                    f"Не удалось подключить сессию {path}. Возможно, прокси {json_session.account.proxy.ip} недоступен?"
                 )
             else:
-                console.log(f"Error with connection to session {path}")
+                console.log(f"Не удалось подключить сессию {path}")
 
             # disconnect a forgotten client, or its keepalive/update tasks run on forever;
             # connect() may have succeeded before the check
@@ -228,18 +246,18 @@ class SessionsStorage:
             return
 
         except Exception as err:
-            console.log(f"Session {path} returned error. {err}. Skipping.")
+            console.log(f"Сессия {path} вернула ошибку: {err}. Пропускаю.")
             await session.disconnect()
             self._forget_session(path)
             return
 
         if not authorized:
-            console.log(f"Session {path} is inactive. Moving it to sessions/inactive")
+            console.log(f"Сессия {path} неактивна, переношу в sessions/inactive")
             await session.disconnect()
             self.move_to_inactive(path)
             return
 
-        console.log(f"Initialized {path}")
+        console.log(f"Подключена {path}")
 
     def move_to_inactive(self, path: str):
         """Drop a dead (banned / logged out) session from the pool and move its file
@@ -328,7 +346,7 @@ class SessionsStorage:
     async def ainitialize_session(self, session):
         if not self.initialize:
             try:
-                await session.connect()
+                await connect_client(session)
             except OSError as err:
                 # one worker's dead proxy / network must not end the whole job: its first request
                 # then fails at once ("Cannot send requests while disconnected"), which every

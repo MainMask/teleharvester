@@ -22,6 +22,11 @@ Restart=on-failure
 RestartSec=5
 # aiogram turns SIGTERM into a graceful polling stop; give it room to finish
 TimeoutStopSec=30
+# a hung event loop (alive, but answering nothing) is not a crash: the bot pings this watchdog
+# from its loop (bot/services/watchdog.py), and without a ping for 2 min systemd kills it and
+# Restart= brings it back; only the bot's own process may ping, not the scraper's child
+WatchdogSec=120
+NotifyAccess=main
 
 # logs go to journald (journalctl -u teleharvester-bot -f)
 StandardOutput=journal

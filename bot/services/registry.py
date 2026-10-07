@@ -109,7 +109,7 @@ def section_text(category: str) -> str:
 CLI_WORKERS = "🤖 Воркеры"
 CLI_EXTRAS = [
     BotFunction("accounts", "AccountsFunc", "Список аккаунтов", SAFE, CLI_WORKERS,
-                "имя, username, номер, прокси и статус каждого воркера"),
+                "имя, username, номер, прокси и статус каждого воркера, ограничения от @SpamBot"),
     BotFunction("proxies", "SetProxiesFunc", "Прокси", SAFE, CLI_WORKERS,
                 "раздать прокси из файла всем аккаунтам"),
 ]

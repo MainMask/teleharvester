@@ -64,7 +64,7 @@ def _launches(monkeypatch=None):
     runs = []
 
     class _Manager:
-        async def run(self, bot, chat_id, pool, instance, bot_function, job, *labels):
+        async def run(self, bot, chat_id, pool, instance, bot_function, job, *labels, only=None):
             async def run(report, **kwargs):
                 runs.append(kwargs)
 
@@ -236,8 +236,10 @@ def test_names_button_from_assets(tmp_path, monkeypatch):
 
     monkeypatch.setattr(profile, "NAMES_FILE", str(tmp_path / "names.txt"))
     (tmp_path / "names.txt").write_text("A\nB\nC\n")
-    callback = _Callback()
-    asyncio.run(profile.name_start(callback, _State(), ns(count=lambda: 1)))
+    state = _State()
+    asyncio.run(profile.name_start(_Callback(), state, _pool(), {}, None))
+    _pick("all", state, _pool())
+    callback = _pick("go", state, _pool())
     assert _buttons(callback.message.answers[0][1]) == [f"📄 Из {tmp_path / 'names.txt'} (3)"]
 
     manager, runs = _launches()
@@ -917,3 +919,185 @@ def test_a_crashed_scrape_process_says_the_data_is_kept(monkeypatch, tmp_path):
     asyncio.run(router._run_scrape(bot, 1, JobManager(), _pool(), None, params))
     text = _sent(bot)[-1]
     assert "не хватило памяти" in text and "Собранное сохранено" in text
+
+
+def test_a_sticker_for_the_output_folder_is_asked_again(tmp_path):
+    from bot.routers import scraping as router
+    from bot.services.jobs import JobManager
+
+    state = _State({"name": "n"})
+    msg = _SMsg(text=None)  # a sticker / photo: no text
+    asyncio.run(router.scrape_out(msg, state, _pool(), None, JobManager()))
+    assert "out_dir" not in state.data and msg.answers[0][0] == "Ожидается текст. Попробуйте ещё раз."
+
+
+# --- 4. profile / security functions on the picked workers only ---------------------------
+
+class _PickCallback:
+    """A callback on the picker's message: records alerts and the message's edits."""
+
+    def __init__(self, message=None):
+        self.message = message or _Msg()
+        self.alerts = []
+        self.message.edits = []
+
+        async def edit_text(text, reply_markup=None):
+            self.message.edits.append((text, reply_markup))
+        self.message.edit_text = edit_text
+
+    async def answer(self, text=None, show_alert=False):
+        if text:
+            self.alerts.append(text)
+
+
+def _pick(value, state, pool, manager=None, functions=None):
+    from bot.routers import profile
+
+    callback = _PickCallback()
+    asyncio.run(profile.workers_pick(callback, ChoiceCB(scope="wpick", value=value), state, pool,
+                                     functions or {}, manager))
+    return callback
+
+
+def _seeded(*keys, **done):
+    """A ledger already kept: these workers done by these functions ({key: [classnames]})."""
+    from modules import profile_done, json_file
+
+    json_file.save(profile_done.PATH, {"done": {key: dict.fromkeys(done.get(key, []), "2026-10-01") for key in keys},
+                                       "values": {}})
+
+
+def _jpool(*paths):
+    """A pool of .jsession workers: sessions/a.session is user id "a", shown as @a."""
+    pool = _pool(*paths)
+    for path in paths:
+        stem = os.path.basename(path).split(".")[0]
+        pool.storage.jsessions_paths[path] = ns(account=ns(account=ns(
+            user_id=stem, first_name=None, last_name=None, username=stem, phone_number="+1")))
+    return pool
+
+
+_A, _B = "sessions/a.session", "sessions/b.session"
+
+
+def test_picker_ticks_the_new_workers_and_toggles():
+    from bot.routers import profile
+    from bot.states import PickWorkers
+
+    _seeded("a", "b", a=["ChangeNameFunc"])  # a: renamed before, b: new
+    pool, state, callback = _jpool(_A, _B), _State(), _Callback()
+    asyncio.run(profile.name_start(callback, state, pool, {}, None))
+    text, markup = callback.message.answers[0]
+    assert state.state == PickWorkers.choose and "Отмечено: 1 из 2" in text
+    assert _buttons(markup)[:2] == ["⬜ @a ✓ 01.10", "✅ @b"]
+    assert "стр 1/1" not in _buttons(markup)  # one page: no paging
+
+    edited = _pick("0", state, pool).message.edits[0]
+    assert "Отмечено: 2 из 2" in edited[0] and _buttons(edited[1])[:2] == ["✅ @a ✓ 01.10", "✅ @b"]
+    assert _pick("none", state, pool).message.edits[0][0].startswith("На каких воркерах? Отмечено: 0 из 2")
+    assert _pick("go", state, pool).alerts == ["Отметьте хотя бы одного воркера"]
+    assert _pick("new", state, pool).message.edits[0][0].startswith("На каких воркерах? Отмечено: 1 из 2")
+    assert _pick("all", state, pool).message.edits[0][0].startswith("На каких воркерах? Отмечено: 2 из 2")
+
+
+def test_first_picker_marks_every_current_worker_done():
+    from bot.routers import profile
+    from modules import profile_done
+
+    pool, callback = _jpool(_A, _B), _Callback()
+    asyncio.run(profile.photo_start(callback, _State(), pool, {}, None))
+    text, markup = callback.message.answers[0]
+    assert "Новых нет" in text and _buttons(markup)[:2] == ["⬜ @a ✓", "⬜ @b ✓"]
+    assert profile_done.load()["done"]["a"]["SetPasswordFunc"] == profile_done.SEEDED
+
+    profile_done.seed(["c"])  # once only: a worker added later is new
+    assert "c" not in profile_done.load()["done"]
+
+
+def test_picker_notes_scraping_and_restricted_workers():
+    from bot.routers import profile
+    from modules import restricted_workers
+
+    _seeded("a", "b")
+    restricted_workers.save([_A])
+    restricted_workers.save_status({_B: "01.11.2026"})
+    pool, callback = _jpool(_A, _B), _Callback()
+    pool.scraping = ns(path=_B, label="B")
+    asyncio.run(profile.bio_start(callback, _State(), pool, {}, None))
+    assert _buttons(callback.message.answers[0][1])[:2] == ["✅ @a ⛔", "✅ @b 🚫 до 01.11.2026 ⏳ скрап"]
+
+
+def test_picker_pages():
+    from bot.routers import profile
+
+    paths = [f"sessions/w{i:02}.session" for i in range(45)]
+    _seeded(*[f"w{i:02}" for i in range(45)])
+    pool, state, callback = _jpool(*paths), _State(), _Callback()
+    asyncio.run(profile.bio_start(callback, state, pool, {}, None))
+    buttons = _buttons(callback.message.answers[0][1])
+    assert buttons[0] == "✅ @w00" and buttons[19] == "✅ @w19" and "стр 1/3" in buttons
+
+    buttons = _buttons(_pick("next", state, pool).message.edits[0][1])
+    assert buttons[0] == "✅ @w20" and "стр 2/3" in buttons
+    _pick("prev", state, pool)
+    buttons = _buttons(_pick("prev", state, pool).message.edits[0][1])  # wraps around to the last
+    assert buttons[0] == "✅ @w40" and len([b for b in buttons if "@w" in b]) == 5
+    assert _pick("page", state, pool).message.edits == []  # the page number is no button
+
+
+def test_picked_workers_reach_the_job():
+    from bot.routers import profile
+    from bot.states import ChangeName
+
+    _seeded("a", "b")
+    pool, state = _jpool(_A, _B), _State()
+    asyncio.run(profile.name_start(_Callback(), state, pool, {}, None))
+    _pick("0", state, pool)
+    callback = _pick("go", state, pool)
+    assert state.state == ChangeName.manual and "Введите имя" in callback.message.answers[0][0]
+
+    seen = []
+
+    class _Manager:
+        async def run(self, *args, only=None, **kw):
+            seen.append(only)
+
+    asyncio.run(profile.name_run(_Msg(text="Иван"), state, pool, {"ChangeNameFunc": object()}, _Manager()))
+    assert seen == [[_B]]
+
+
+def test_all_picked_runs_on_the_whole_pool():
+    from bot.routers import profile
+
+    seen = []
+
+    class _Manager:
+        async def run(self, *args, only=None, **kw):
+            seen.append(only)
+
+    _seeded("a", "b")
+    pool, state = _jpool(_A, _B), _State()
+    functions = {"HideLastSeenFunc": object()}
+    asyncio.run(profile.lastseen_start(_Callback(), state, pool, functions, _Manager()))
+    _pick("go", state, pool, _Manager(), functions)
+    assert seen == [None] and state.state is None
+
+
+def test_delegate_keeps_only_the_picked_workers(monkeypatch):
+    monkeypatch.setattr(WorkerPool, "_assert_workers", staticmethod(lambda sessions: None))
+    pool = _pool("sessions/a.session", "sessions/b.session", "sessions/c.session")
+    a, b, c = pool.workers
+    pool.scraping = ns(path="sessions/c.session", label="C")  # not picked: no hold, no notice
+    func, reports = ns(), []
+
+    async def report(text):
+        reports.append(text)
+
+    async def job(f):
+        pass
+
+    ran = asyncio.run(pool.run(func, ns(risk="safe"), job, report, only=["sessions/b.session"]))
+    assert ran is True and func.sessions == [b] and func.on_hold == [] and reports == []
+
+    ran = asyncio.run(pool.run(func, ns(risk="safe"), job, report, only=["sessions/gone.session"]))
+    assert ran is False and "недоступны" in reports[0]

@@ -106,7 +106,7 @@ def test_name_search_fills_in_past_the_listing_limit(fake, tmp_path):
 def test_incomplete_listing_is_reported(fake, tmp_path):
     fake.chats = {"@big": ([_user(1)], 3, {})}
     _, problems = _run(tmp_path, ["@big"])
-    assert problems == [("@big", "Telegram gave 1 of 3 members")]
+    assert problems == [("@big", "Telegram отдал 1 из 3 участников")]
 
 
 def test_hidden_list_is_reported_and_the_next_chat_still_runs(fake, tmp_path):
@@ -114,7 +114,7 @@ def test_hidden_list_is_reported_and_the_next_chat_still_runs(fake, tmp_path):
     path, problems = _run(tmp_path, ["@chan", "@grp"])
 
     assert {r["user_id"] for r in parquet_db.load(str(path))} == {1}
-    assert problems[0][0] == "@chan" and "admins-only" in problems[0][1]
+    assert problems[0][0] == "@chan" and "только админам" in problems[0][1]
 
 
 def test_flood_wait_keeps_what_was_listed(fake, tmp_path):
@@ -123,7 +123,7 @@ def test_flood_wait_keeps_what_was_listed(fake, tmp_path):
     path, problems = _run(tmp_path, ["@a", "@b", "@c"])
 
     assert {r["user_id"] for r in parquet_db.load(str(path))} == {1}  # @c skipped after the wait
-    assert problems == [("@b", "FLOOD_WAIT 900s - stopped, the rest skipped")]
+    assert problems == [("@b", "FLOOD_WAIT 900 с — остановлено, остальное пропущено")]
 
 
 def test_nobody_listed_writes_no_file(fake, tmp_path):
@@ -259,7 +259,7 @@ def test_a_stop_keeps_the_members_listed_so_far(fake, tmp_path, monkeypatch):
 
     path, problems = _run(tmp_path, ["@slow", "@next"], stop=stop)  # ~1 s, not an hour
     assert {r["user_id"] for r in parquet_db.load(str(path))} == {1}  # @next not reached
-    assert problems == [("@slow", "stopped - the members listed so far are saved")]
+    assert problems == [("@slow", "остановлено — собранные участники сохранены")]
 
 
 def test_bot_members_stop_says_the_base_is_saved(monkeypatch, tmp_path):
@@ -275,7 +275,7 @@ def test_bot_members_stop_says_the_base_is_saved(monkeypatch, tmp_path):
     async def do_members(creds, params):
         await router.scrape_stop(types.SimpleNamespace(answer=_noop))  # the operator's ⏹
         assert params.stop.is_set()
-        return base, [("@grp", "stopped - the members listed so far are saved")]
+        return base, [("@grp", "остановлено — собранные участники сохранены")]
 
     monkeypatch.setattr(scraping, "do_members", do_members)
     monkeypatch.setattr(router, "build_credentials", lambda client: None)
@@ -357,7 +357,7 @@ def test_private_chat_has_no_member_list(fake, tmp_path, monkeypatch):
 
     monkeypatch.setattr(scrape, "TelegramClient", UserClient)
     path, problems = _run(tmp_path, ["@bob"])
-    assert path is None and problems == [("@bob", "a private chat has no member list")]
+    assert path is None and problems == [("@bob", "у личного чата нет списка участников")]
 
 
 def test_stop_works_while_connecting(fake, tmp_path, monkeypatch):
@@ -372,4 +372,4 @@ def test_stop_works_while_connecting(fake, tmp_path, monkeypatch):
     stop = threading.Event()
     threading.Timer(0.1, stop.set).start()
     path, problems = _run(tmp_path, ["@grp"], stop=stop)
-    assert path is None and problems == [("@grp", "stopped before the listing started")]
+    assert path is None and problems == [("@grp", "остановлено до начала сбора")]

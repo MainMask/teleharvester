@@ -1,9 +1,13 @@
 """Offline tests for rich broadcast content: aiogram -> Telethon entity mapping."""
+import asyncio
 from types import SimpleNamespace
 
-from telethon import types
+from telethon import errors, types
 
 from modules.rich_message import (
+    MediaItem,
+    RichContent,
+    _send_once,
     convert_entities,
     has_custom_emoji,
     strip_custom_emoji,
@@ -88,3 +92,73 @@ class TestCustomEmojiHelpers:
     def test_strip_removes_only_custom_emoji(self):
         stripped = strip_custom_emoji(self._mixed())
         assert [type(e).__name__ for e in stripped] == ["MessageEntityBold", "MessageEntityItalic"]
+
+
+class _Worker:
+    """send_file stub: records what it was given, returns messages carrying fresh media."""
+
+    def __init__(self, expire_cached=False):
+        self.files = []
+        self.expire_cached = expire_cached
+
+    async def send_file(self, peer, file, **kw):
+        self.files.append(file)
+        if self.expire_cached and "media:" in str(file):  # a re-send of an uploaded file
+            self.expire_cached = False
+            raise errors.FileReferenceExpiredError(request=None)
+        if isinstance(file, list):
+            return [SimpleNamespace(media=f"media:{f}") for f in file]
+        return SimpleNamespace(media=f"media:{file}")
+
+
+async def _direct(make):
+    return await make()
+
+
+def _send(worker, content):
+    asyncio.run(_send_once(worker, "peer", content, [], _direct))
+
+
+class TestMediaUploadedOnce:
+    def test_second_send_reuses_the_workers_media(self):
+        content = RichContent(media=[MediaItem(path="a.jpg")])
+        worker = _Worker()
+        _send(worker, content)
+        _send(worker, content)
+        assert worker.files == ["a.jpg", "media:a.jpg"]
+
+    def test_each_worker_uploads_its_own(self):
+        content = RichContent(media=[MediaItem(path="a.jpg")])
+        first, second = _Worker(), _Worker()
+        _send(first, content)
+        _send(second, content)
+        assert first.files == ["a.jpg"] and second.files == ["a.jpg"]
+
+    def test_album_reuses_the_media_list(self):
+        content = RichContent(media=[MediaItem(path="a.jpg"), MediaItem(path="b.jpg")])
+        worker = _Worker()
+        _send(worker, content)
+        _send(worker, content)
+        assert worker.files == [["a.jpg", "b.jpg"], ["media:a.jpg", "media:b.jpg"]]
+
+    def test_expired_reference_uploads_again(self):
+        content = RichContent(media=[MediaItem(path="a.jpg")])
+        worker = _Worker()
+        _send(worker, content)
+        worker.expire_cached = True
+        _send(worker, content)  # the cached media is refused: the file goes again
+        _send(worker, content)  # ...and the fresh upload is cached
+        assert worker.files == ["a.jpg", "media:a.jpg", "a.jpg", "media:a.jpg"]
+
+    def test_send_without_a_message_is_not_cached(self):
+        class _NoMessage:
+            files = []
+
+            async def send_file(self, peer, file, **kw):
+                self.files.append(file)
+
+        content = RichContent(media=[MediaItem(path="a.jpg")])
+        worker = _NoMessage()
+        _send(worker, content)
+        _send(worker, content)
+        assert worker.files == ["a.jpg", "a.jpg"]

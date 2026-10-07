@@ -83,7 +83,7 @@ def test_profile_job_skips_the_dead_worker(tmp_path):
     asyncio.run(fn.run(report, bio="hi"))  # must not raise
 
     assert len(ok.requests) == 1 and dead.requests == []
-    assert any("get_me failed" in m for m in msgs) and any("bio changed" in m for m in msgs)
+    assert any("не удалось опросить аккаунт" in m for m in msgs) and any("bio изменено" in m for m in msgs)
 
 
 def test_clear_dialogs_skips_the_dead_worker(tmp_path):
@@ -94,7 +94,7 @@ def test_clear_dialogs_skips_the_dead_worker(tmp_path):
 
     asyncio.run(fn.run(report))  # must not raise
 
-    assert any("get_me failed" in m for m in msgs)
+    assert any("не удалось опросить аккаунт" in m for m in msgs)
 
 
 def test_mailing_rotates_past_the_dead_worker(tmp_path, monkeypatch):

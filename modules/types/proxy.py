@@ -19,9 +19,9 @@ class Proxy:
         parsed = urlparse(line.strip())
 
         if not parsed.scheme or not parsed.hostname or not parsed.port:
-            raise ValueError(f"invalid proxy: {line!r}")
+            raise ValueError(f"неверный прокси: {line!r}")
         if parsed.scheme not in PROXY_SCHEMES:
-            raise ValueError(f"unsupported proxy type {parsed.scheme!r} (socks5/socks4/http): {line!r}")
+            raise ValueError(f"неподдерживаемый тип прокси {parsed.scheme!r} (socks5/socks4/http): {line!r}")
 
         return cls(
             parsed.scheme,

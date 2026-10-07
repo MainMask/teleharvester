@@ -6,6 +6,7 @@ import shutil
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 
+from modules import instance_lock
 from modules.config import load_env
 from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
@@ -14,7 +15,7 @@ from modules.storages.sessions_storage import SessionsStorage
 
 from bot.config import BotConfig
 from bot.middlewares.auth import AuthMiddleware
-from bot.services import autoreply
+from bot.services import autoreply, watchdog
 from bot.services.album import AlbumMiddleware
 from bot.services.capture import clear_orphan_temp
 from bot.services.delegation import WorkerPool
@@ -84,11 +85,18 @@ async def mark_stopped():
         pass
 
 
+_watchdog = None  # the watchdog's task, kept referenced (the loop holds tasks by weak ref only)
+
+
 async def run_bot():
+    global _watchdog
+    # first: it pings from the first await on, through wait_for_bot_api's possibly long outage too
+    _watchdog = asyncio.create_task(watchdog.run())
     load_env()
     config = BotConfig()
     config.validate()
 
+    instance_lock.hold()  # before the sweep below: it would delete a running bot's broadcast media
     clear_orphan_temp()  # sweep broadcast temp dirs a previous run was killed before cleaning
     shutil.rmtree(profile.PHOTO_TMP_DIR, ignore_errors=True)  # ...and the photo a profile job left
 

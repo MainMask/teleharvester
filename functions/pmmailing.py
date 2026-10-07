@@ -78,7 +78,7 @@ class PmMailingFunc(TelethonFunction):
         if recipient.startswith("+") or recipient.lstrip("+").isdigit():
             users = await self.import_phone_contact(session, recipient)
             if not users:
-                raise ValueError(f"phone {recipient} not resolved")
+                raise ValueError(f"номер {recipient} не найден")
             return users[0]
 
         return recipient
@@ -88,10 +88,10 @@ class PmMailingFunc(TelethonFunction):
             try:
                 me = await session.get_me()
             except Exception as err:
-                raise AccountLimited(f"get_me failed: {err}")
+                raise AccountLimited(f"не удалось опросить аккаунт: {err}")
 
             if me is None:
-                raise AccountLimited("account not authorized")
+                raise AccountLimited("аккаунт не авторизован")
 
             self._me_cache[id(session)] = me
 
@@ -104,7 +104,7 @@ class PmMailingFunc(TelethonFunction):
         if self._active_accounts:  # not the first account to send
             seconds = pick_seconds(self.settings.account_pause)
 
-            await self._report(f"switching to {name}, pause {seconds}s")
+            await self._report(f"переход на {name}, пауза {seconds} с")
             await asyncio.sleep(seconds)
 
         self._active_accounts.add(account_key)
@@ -123,7 +123,7 @@ class PmMailingFunc(TelethonFunction):
 
         if self._limits.reached(account_key):
             self._capped.add(id(session))  # out for today only: its people wait for it
-            raise AccountLimited(f"daily cap {self.settings.per_account_daily} reached")
+            raise AccountLimited(f"дневной лимит {self.settings.per_account_daily} исчерпан")
 
         await self.pause_between_accounts(account_key, name)
 
@@ -141,15 +141,17 @@ class PmMailingFunc(TelethonFunction):
         except AccountLimited:
             raise
         except Exception as err:
-            await self._report(f"[{name}] not sent. {self.recipient_label(recipient)} {err}")
+            self.progress_failed()
+            await self._report(f"[{name}] не отправлено: {self.recipient_label(recipient)} {err}")
             return
 
         self.record_success(key)
         self._limits.bump(account_key)
+        self.progress_ok()
         await self._report(
-            "[{name}] sent{via}. {recipient} COUNT: {count}".format(
+            "[{name}] отправлено{via}: {recipient}, всего: {count}".format(
                 name=name,
-                via=" (via username)" if fallback else "",
+                via=" (по username)" if fallback else "",
                 recipient=self.recipient_label(recipient),
                 count=self.stats[key]["count"],
             )
@@ -228,18 +230,18 @@ class PmMailingFunc(TelethonFunction):
                 "остаток не отправлен."
             )
         else:
-            await report(f"Done. Recipients processed: {processed}")
+            await report(f"Итого обработано получателей: {processed}")
 
     def print_stats(self):
         table = Table()
 
-        table.add_column("Recipient", justify="left", style="white")
-        table.add_column("Count", justify="center", style="white")
-        table.add_column("Last date", style="white")
+        table.add_column("Получатель", justify="left", style="white")
+        table.add_column("Кол-во", justify="center", style="white")
+        table.add_column("Последняя отправка", style="white")
 
         for recipient, entry in self.stats.items():
             table.add_row(
-                recipient, str(entry["count"]), entry.get("last_date", "N/A")
+                self.safe(recipient), str(entry["count"]), entry.get("last_date", "—")
             )
 
         console.print(table)
@@ -248,13 +250,13 @@ class PmMailingFunc(TelethonFunction):
         self.ask_accounts_count()
 
         path = self.ask_file(
-            "[bold red]file with recipients[/]",
+            "[bold red]файл с получателями[/]",
             scraped_files.participant_bases(),  # the scraped bases, newest first, as in the bot
             default=os.path.join("assets", "targets.txt"),
         )
 
         if not os.path.exists(path):
-            console.print("[bold red]File not found!")
+            console.print("[bold red]Файл не найден!")
             return
 
         try:
@@ -264,23 +266,23 @@ class PmMailingFunc(TelethonFunction):
             return
 
         if not recipients:
-            console.print("[bold red]Recipients list is empty!")
+            console.print("[bold red]Список получателей пуст!")
             return
 
         self.load_stats()
 
-        if Confirm.ask("[bold red]skip already-messaged recipients?", default=True):
+        if Confirm.ask("[bold red]пропускать тех, кому уже писали?", default=True):
             before = len(recipients)
             recipients = self.filter_unsent(recipients)
-            console.print(f"[bold white]skipped {before - len(recipients)} already-messaged[/]")
+            console.print(f"[bold white]пропущено уже получивших: {before - len(recipients)}[/]")
 
             if not recipients:
-                console.print("[bold red]Nothing left to send!")
+                console.print("[bold red]Отправлять некому!")
                 return
 
         while True:
             limit = Prompt.ask(
-                "[bold red]how many recipients (blank = all)[/]",
+                "[bold red]сколько получателей (пусто — все)[/]",
                 default=""
             )
 
@@ -291,17 +293,17 @@ class PmMailingFunc(TelethonFunction):
                 recipients = recipients[:int(limit)]
                 break
 
-        console.print("[bold white]first recipients:[/]")
+        console.print("[bold white]первые получатели:[/]")
         for recipient in recipients[:5]:
-            console.print("  " + self.recipient_label(recipient))
+            console.print("  " + self.safe(self.recipient_label(recipient)))
 
-        if not Confirm.ask(f"[bold red]send to {len(recipients)} recipients?"):
+        if not Confirm.ask(f"[bold red]отправить {len(recipients)} получателям?"):
             return
 
-        text = console.input("[bold red]text> [/]")
+        text = console.input("[bold red]текст> [/]")
 
         delay = Prompt.ask(
-            "[bold red]delay[/]",
+            "[bold red]задержка[/]",
             default="-".join(str(x) for x in self.settings.delay)
         )
 

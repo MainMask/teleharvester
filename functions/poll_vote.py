@@ -13,7 +13,8 @@ class PollVoteFunc(TelethonFunction):
             try:
                 me = await self.get_me(session)
             except Exception as err:
-                await report(f"get_me failed: {err}")
+                self.progress_failed()
+                await report(f"не удалось опросить аккаунт: {err}")
                 return False
 
             try:
@@ -30,10 +31,12 @@ class PollVoteFunc(TelethonFunction):
                     )
                 ))
             except Exception as err:
-                await report(f"[{me.first_name}] not voted: {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] не проголосовал: {err}")
                 return False
 
-            await report(f"[{me.first_name}] voted")
+            self.progress_ok()
+            await report(f"[{me.first_name}] проголосовал")
             return True
 
     async def run(self, link, option_number, report):
@@ -46,20 +49,20 @@ class PollVoteFunc(TelethonFunction):
         )
 
         # no ok/error keyword: the per-account lines above are what the job summary counts
-        await report(f"Done: {sum(results)}/{len(self.sessions)} accounts")
+        await report(f"Итого: {sum(results)}/{len(self.sessions)} аккаунтов")
 
     async def execute(self):
         self.ask_accounts_count()
 
-        post_link = console.input("[bold red]enter link to msg/post> ")
-        option_number = console.input("[bold red]enter answer number (e.g 1, 2)> ")
+        post_link = console.input("[bold red]ссылка на сообщение/пост> ")
+        option_number = console.input("[bold red]номер варианта ответа (например 1, 2)> ")
 
         while not (option_number.isdigit() and int(option_number) >= 1):
-            option_number = console.input("[bold red]enter answer number (e.g 1, 2)> ")
+            option_number = console.input("[bold red]номер варианта ответа (например 1, 2)> ")
 
         option_number = int(option_number) - 1
 
-        with console.status("Voting"):
+        with console.status("Голосование"):
             await self.run(post_link, option_number, console_report)
 
         

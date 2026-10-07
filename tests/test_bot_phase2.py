@@ -99,7 +99,7 @@ class TestRuns:
         fn.sessions = [_Session()]
         msgs, report = collect()
         asyncio.run(fn.run(report, bio="hello"))
-        assert any("bio changed" in m for m in msgs)
+        assert any("bio изменено" in m for m in msgs)
 
     def test_reactions_parses_link(self):
         from functions.reactions import ReactionsFunc
@@ -107,7 +107,7 @@ class TestRuns:
         fn.sessions = [_Session()]
         msgs, report = collect()
         asyncio.run(fn.run("t.me/chan/5", "🔥", report))
-        assert any("Reaction" in m for m in msgs)
+        assert any("реакция" in m for m in msgs)
 
     def test_report_user(self):
         from functions.report_user import ReportUserFunc
@@ -116,7 +116,7 @@ class TestRuns:
         msgs, report = collect()
         reason = fn.reasons[0][1]
         asyncio.run(fn.run("@someone", reason, "spam", report))
-        assert any("submitted" in m for m in msgs)
+        assert any("жалоба отправлена" in m for m in msgs)
 
     def test_broadcast_comments(self):
         from functions.broadcast_comments import CommentsBroadcastFunc
@@ -125,13 +125,21 @@ class TestRuns:
         fn.sessions = [_Session()]
         msgs, report = collect()
         asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), [0], report))
-        assert any("sent" in m for m in msgs)
+        assert any("отправлено" in m for m in msgs)
 
     def test_statistics_tally(self):
         from functions.statistics_phones import PhoneNumbersStatsFunc
         fn = PhoneNumbersStatsFunc(_Storage(), ns())
         rows = fn.tally(["12025550123", "12025550124"])
         assert rows and rows[0][0] == 1 and rows[0][2] == 2
+
+    def test_statistics_one_code_several_countries(self):
+        # +1 is the USA and Canada, +7 Russia and Kazakhstan: a row per country, not per code
+        from functions.statistics_phones import PhoneNumbersStatsFunc
+        fn = PhoneNumbersStatsFunc(_Storage(), ns())
+        rows = fn.tally(["12025550123", "14165550123", "79991234567", "77011234567", "79161234567"])
+        assert sorted(rows) == [(1, "Канада", 1), (1, "Соединенные Штаты", 1),
+                                (7, "Казахстан", 1), (7, "Россия", 2)]
 
     def test_statistics_count_a_worker_on_hold_by_its_stored_number(self):
         from functions.statistics_phones import PhoneNumbersStatsFunc
@@ -167,8 +175,8 @@ class TestDeadWorkerSkipped:
         fn.sessions = [_DeadSession(), _Session()]
         msgs, report = collect()
         asyncio.run(fn.run("@someone", fn.reasons[0][1], "spam", report))
-        assert any("get_me failed" in m for m in msgs)  # dead one reported...
-        assert any("submitted" in m for m in msgs)      # ...and the healthy one still ran
+        assert any("не удалось опросить аккаунт" in m for m in msgs)  # dead one reported...
+        assert any("жалоба отправлена" in m for m in msgs)      # ...and the healthy one still ran
 
     def test_changename_survives_dead_worker(self):
         from functions.changename import ChangeNameFunc
@@ -176,8 +184,8 @@ class TestDeadWorkerSkipped:
         fn.sessions = [_DeadSession(), _Session()]
         msgs, report = collect()
         asyncio.run(fn.run(report, first_name="Ivan", last_name=None))  # must not raise
-        assert any("get_me failed" in m for m in msgs)
-        assert any("Name changed" in m for m in msgs)
+        assert any("не удалось опросить аккаунт" in m for m in msgs)
+        assert any("Имя изменено" in m for m in msgs)
 
 
 # --- job manager (single-slot, stop, exclusivity) ---
@@ -202,7 +210,7 @@ class _Pool:
     def workers(self):
         return self._w
 
-    async def run(self, instance, bot_function, factory, report):
+    async def run(self, instance, bot_function, factory, report, only=None):
         instance.sessions = self.workers  # as WorkerPool.delegate
         await factory(instance)
 
@@ -381,7 +389,7 @@ class TestReportStepper:
         msgs, report = collect()
         asyncio.run(fn.replay_rest([_Session()], "x", [1], "c", [0], report))
 
-        assert called and any("submitted" in m for m in msgs)
+        assert called and any("жалоба отправлена" in m for m in msgs)
 
 
 # --- trigger-listener cleans up its event handler ---
@@ -400,8 +408,12 @@ class _ListenSession:
     async def connect(self):
         return None
 
-    async def run_until_disconnected(self):
+    async def __call__(self, request):  # GetStateRequest
         return None
+
+    @property
+    def disconnected(self):  # the job released the worker at once
+        return asyncio.sleep(0)
 
 
 class TestBroadcastHandleCleanup:
@@ -419,6 +431,37 @@ class TestBroadcastHandleCleanup:
         assert len(session.added) == 1
         assert len(session.removed) == 1
         assert session.added[0][0] is session.removed[0][0]  # same handler added and removed
+
+    def test_a_stop_leaves_the_disconnect_to_the_job(self):
+        """⏹ cancels the listener: it must not disconnect the worker itself (Telethon's
+        run_until_disconnected did, bypassing release_client's lock), only drop its handler."""
+        from functions.broadcast import Broadcast
+
+        class Listening(_ListenSession):
+            disconnects = 0
+
+            @property
+            def disconnected(self):  # connected until the job releases it
+                return asyncio.Event().wait()
+
+            async def disconnect(self):
+                type(self).disconnects += 1
+
+        b = Broadcast(_Storage(), ns(trigger="go", messages=["m"], delay=[0], messages_count=1))
+        session = Listening()
+
+        async def report(_text):
+            return None
+
+        async def scenario():
+            task = asyncio.create_task(b.handle(session, report))
+            await asyncio.sleep(0.01)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        asyncio.run(scenario())
+        assert Listening.disconnects == 0
+        assert len(session.removed) == 1
 
 
     def test_a_days_long_listener_keeps_the_entity_cache_bounded(self, monkeypatch):
@@ -526,7 +569,7 @@ class TestListenerSafety:
         class Flaky(_ListenSession):
             runs = 0
 
-            async def run_until_disconnected(self):
+            async def __call__(self, request):
                 type(self).runs += 1
                 if type(self).runs < 3:  # Telethon's own reconnects ran out, twice
                     raise ConnectionError("Connection to Telegram failed 5 time(s)")
@@ -540,12 +583,12 @@ class TestListenerSafety:
         session = Flaky()
         asyncio.run(b.handle(session, report))
         assert Flaky.runs == 3
-        assert sum("reconnecting" in m for m in msgs) == 2
+        assert sum("переподключение" in m for m in msgs) == 2
         assert len(session.removed) == 1
 
     def test_one_broken_worker_does_not_end_the_others(self):
         class LoggedOut(_ListenSession):
-            async def run_until_disconnected(self):
+            async def __call__(self, request):
                 raise RuntimeError("AUTH_KEY_UNREGISTERED")
 
         b = self._broadcast()
@@ -558,7 +601,7 @@ class TestListenerSafety:
             await asyncio.gather(b.handle(LoggedOut(), report), b.handle(_ListenSession(), report))
 
         asyncio.run(both())  # must not raise
-        assert any("listener stopped: AUTH_KEY_UNREGISTERED" in m for m in msgs)
+        assert any("слушатель остановлен: AUTH_KEY_UNREGISTERED" in m for m in msgs)
 
 
 # --- report _finish always frees the slot (regression: stuck job on error) ---
@@ -852,8 +895,8 @@ class TestBroadcastMentionFailure:
         msgs, report = collect()
         asyncio.run(b.broadcast(_S(), "peer", report))
 
-        assert any("can't read participants" in m for m in msgs)
-        assert any("sent" in m for m in msgs)  # the message still went out, just without mentions
+        assert any("не удалось прочитать участников" in m for m in msgs)
+        assert any("отправлено" in m for m in msgs)  # the message still went out, just without mentions
 
 
 # --- text-only FSM steps reject a non-text message instead of crashing ---
@@ -965,6 +1008,9 @@ class TestTwoFaDeletesPassword:
         from bot.routers import profile
 
         class _State:
+            async def get_data(self):
+                return {}
+
             async def clear(self):
                 return None
 
@@ -1023,7 +1069,7 @@ class TestAnalysisBadInputReported:
         manager = JobManager()
         asyncio.run(scraping.analysis_file_text(m, _State(), manager))  # must not raise SystemExit
 
-        assert any("Ошибка" in r and "No files match" in r for r in m.replies)
+        assert any("Ошибка" in r and "Нет файлов по шаблону" in r for r in m.replies)
         assert manager.active is False  # slot released on the error path
 
 
@@ -1085,6 +1131,9 @@ class TestChangePhotoFromChat:
 
         class _State:
             cleared = False
+
+            async def get_data(self):
+                return {}
 
             async def clear(self):
                 _State.cleared = True

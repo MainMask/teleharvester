@@ -41,25 +41,36 @@ class InvitingFunc(TelethonFunction):
     def chunkify(lst, n):  # split list
         return [lst[i::n] for i in range(n)]
 
+    @staticmethod
+    def joined_chat(result):
+        """The chat a join result carries (ChatInviteJoinResultOk wraps the Updates); None
+        for UpdatesTooLong, which has no chats: the caller looks the chat up instead. A join
+        that waits for a confirmation in the chat's bot web app is not a join: ValueError."""
+        if isinstance(result, types.messages.ChatInviteJoinResultWebView):
+            raise ValueError("чат требует подтверждения вступления в web-app бота")
+        chats = getattr(result.updates, "chats", None)
+        return chats[0] if chats else None
+
     async def resolve_source(self, session, link):
         """Join the source with this account and return its entity (access hashes valid for it)."""
         if self.is_public(link):
             ref = self.public_ref(link)
 
             try:
-                res = await session(JoinChannelRequest(ref))
-                return res.updates.chats[0]  # ChatInviteJoinResultOk wraps the Updates
+                if chat := self.joined_chat(await session(JoinChannelRequest(ref))):
+                    return chat
             except UserAlreadyParticipantError:
-                return await session.get_entity(ref)
+                pass
+            return await session.get_entity(ref)
 
         hash_ = self.invite_hash(link)
 
         try:
-            res = await session(ImportChatInviteRequest(hash_))
-            return res.updates.chats[0]  # ChatInviteJoinResultOk wraps the Updates
+            if chat := self.joined_chat(await session(ImportChatInviteRequest(hash_))):
+                return chat
         except UserAlreadyParticipantError:
-            info = await session(CheckChatInviteRequest(hash_))
-            return info.chat
+            pass
+        return (await session(CheckChatInviteRequest(hash_))).chat  # ChatInviteAlready
 
     async def invite(self, session, source_link, destination, target_ids, report):
         if not target_ids:
@@ -71,12 +82,14 @@ class InvitingFunc(TelethonFunction):
                 source = await self.resolve_source(session, source_link)
                 dest = await session.get_entity(destination)
             except Exception as err:
-                await report(f"[!] can't prepare account: {err}")
+                self.progress_failed()
+                await report(f"[!] аккаунт не подготовлен: {err}")
                 self.progress_drop(len(target_ids))
                 return
 
             if isinstance(dest, types.Chat):  # a basic group: InviteToChannel needs a channel/supergroup
-                await report(f"[{me.first_name}] destination is not a supergroup/channel")
+                self.progress_failed()
+                await report(f"[!] [{me.first_name}] чат назначения — не супергруппа и не канал")
                 self.progress_drop(len(target_ids))
                 return
 
@@ -100,29 +113,34 @@ class InvitingFunc(TelethonFunction):
                             users=[user]
                         )))
                     except AccountLimited as err:
-                        await report(f"[{me.first_name}] limit, stopping. {err}")
+                        self.progress_failed()
+                        await report(f"[{me.first_name}] лимит, остановка. {err}")
                         break
                     except ChatAdminRequiredError:
-                        await report(f"[{me.first_name}] no invite rights in destination")
+                        self.progress_failed()
+                        await report(f"[!] [{me.first_name}] нет прав приглашать в чат назначения")
                         break
                     except (UserPrivacyRestrictedError, UserNotMutualContactError,
                             UserChannelsTooMuchError, UserBotError):
                         self._limits.bump(aid)  # the request was sent: counts toward the daily cap
                     except Exception as err:
-                        await report(f"[{me.first_name}] skip {user.id}: {err}")
+                        self.progress_failed()
+                        await report(f"[{me.first_name}] пропуск {user.id}: {err}")
                     else:
                         self._limits.bump(aid)  # the request reached Telegram
                         # privacy-restricted users come back in missing_invitees, not as an
                         # error: not invited, but the request was sent, so the delay still applies
                         if not getattr(result, "missing_invitees", None):
                             added += 1
-                            await report(f"[{me.first_name}] invited {user.id} total: {added}")
+                            self.progress_ok()
+                            await report(f"[{me.first_name}] приглашён {user.id}, всего: {added}")
 
                     tried += 1
                     self.progress_step()
                     await self.delay()
             except Exception as err:
-                await report(f"[{me.first_name}] can't read participants: {err}")
+                self.progress_failed()
+                await report(f"[{me.first_name}] не удалось прочитать участников: {err}")
 
             # a limit / no rights / users not found in the source: the rest won't be tried
             self.progress_drop(len(target_ids) - tried)
@@ -155,10 +173,11 @@ class InvitingFunc(TelethonFunction):
         target_ids = await self.parse_targets(source_link, report)
 
         if not target_ids:
-            await report("Couldn't parse the source chat with any account")
+            self.progress_failed()
+            await report("Не удалось получить участников исходного чата ни одним аккаунтом")
             return
 
-        await report(f"[*] Parsed {len(target_ids)} users")
+        await report(f"[*] Получено пользователей: {len(target_ids)}")
         self.progress_total(len(target_ids))
 
         chunks = self.chunkify(target_ids, len(self.sessions))
@@ -172,14 +191,14 @@ class InvitingFunc(TelethonFunction):
         self.ask_accounts_count()
 
         if not self.sessions:
-            console.print("[bold red]No accounts")
+            console.print("[bold red]Нет аккаунтов")
             return
 
-        source_link = console.input("[bold red]link to source chat> [/]")
-        destination = console.input("[bold red]where to invite users> [/]")
+        source_link = console.input("[bold red]ссылка на чат-источник> [/]")
+        destination = console.input("[bold red]куда приглашать> [/]")
 
         delay = Prompt.ask(
-            "[bold red]delay[/]",
+            "[bold red]задержка[/]",
             default="-".join(str(x) for x in self.settings.delay)
         )
 

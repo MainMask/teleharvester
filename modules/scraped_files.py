@@ -19,8 +19,14 @@ def _newest(pattern: str, limit: int, skip=lambda path: False) -> list[tuple[Pat
     except OSError:
         return []
 
+    def mtime(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:  # removed since the glob: its footer read below drops it
+            return 0
+
     found = []
-    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+    for path in sorted(paths, key=mtime, reverse=True)[:limit]:
         try:
             found.append((path, pq.ParquetFile(path).metadata.num_rows))
         except Exception:  # unreadable / half-written file: not offered
@@ -80,7 +86,8 @@ def verify_presets(path: str) -> tuple[list[str], tuple[str, str] | None]:
         else:
             df = read_table(path)
         groups = df["Group"].dropna().astype(str).unique() if "Group" in df.columns else []
-        channels = [group_channel(group) for group in groups]
+        # as the scrape was given them; an older or a combined file: rebuilt from its Group column
+        channels = df.attrs.get("channels") or [group_channel(group) for group in groups]
         window = df.attrs.get("scrape_window")
         return channels, (window["date_min"], window["date_max"]) if window else None
     except Exception:  # a folder, a glob, an unreadable file: everything is asked

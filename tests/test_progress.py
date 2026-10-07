@@ -167,7 +167,7 @@ class TestHandler:
         class _Pool:
             workers = []
 
-            async def run(self, instance, bot_function, factory, report):
+            async def run(self, instance, bot_function, factory, report, only=None):
                 instance.sessions = self.workers  # as WorkerPool.delegate
                 await factory(instance)
 
@@ -433,7 +433,7 @@ class TestMoreJobs:
             progress = None
 
             async def replay_rest(self, rest, *args):
-                seen.append((self.progress.total, self.progress.done))
+                seen.append((self.progress.total, self.progress.done, self.progress.ok))
 
         class _First:
             async def disconnect(self):
@@ -446,7 +446,7 @@ class TestMoreJobs:
                 "selections": []}
         asyncio.run(moderation._finish(instance, flow, _Bot(), 1, manager, types.SimpleNamespace(in_job=[])))
 
-        assert seen == [(3, 1)]
+        assert seen == [(3, 1, 1)]  # the first account's report is done and counted
         assert sent[0].inline_keyboard[0][0].text == "📊 Прогресс"
         assert instance.progress is None and manager.progress is None and not manager.active
 
