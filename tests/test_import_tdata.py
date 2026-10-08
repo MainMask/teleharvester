@@ -187,6 +187,15 @@ def test_import_all_counts_already_imported_accounts(tmp_path, monkeypatch):
     assert data["proxy"]["ip"] == "10.0.0.1"
 
 
+def test_import_all_skips_a_broken_jsession(tmp_path, monkeypatch):
+    workers, sessions, proxies = _setup_workers(tmp_path, monkeypatch, count=1, with_proxies=1)
+    (tmp_path / "sessions").mkdir()
+    (tmp_path / "sessions" / "odd.jsession").write_text(json.dumps({"proxy": {"host": "x"}}))  # wrong keys
+    (tmp_path / "sessions" / "list.jsession").write_text("[]")  # not an object
+
+    assert asyncio.run(tdata_import.import_all(workers, sessions, proxies)) == 1
+
+
 def test_import_all_errors_when_existing_accounts_fill_proxies(tmp_path, monkeypatch):
     workers, sessions, proxies = _setup_workers(tmp_path, monkeypatch, count=1, with_proxies=1)
     (tmp_path / "sessions").mkdir()

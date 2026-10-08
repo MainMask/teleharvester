@@ -93,6 +93,7 @@ _BASE_FLOWS = {"scrape", "scrape_resume", "members"}  # the flows that build a b
 # a worker in a running bot job: one account must not scrape and mail at once (see WorkerPool)
 WORKER_BUSY = ("⛔ Этот воркер сейчас занят задачей бота. Выберите другой аккаунт (например, личный) "
                "или дождитесь её окончания.")
+PERSONAL_BUSY = "⛔ Бот сейчас читает коды входа этого аккаунта — повторите через несколько секунд."
 
 
 def _accounts(pool: WorkerPool, personal) -> list:
@@ -105,7 +106,7 @@ async def _choose_account(message: Message, state: FSMContext, flow: str, **deps
     accounts = _accounts(deps["pool"], deps["personal"])
     if not accounts:
         await state.clear()
-        await _menu(message, "Нет аккаунтов: добавьте воркера (или личный аккаунт в personal_sessions/).")
+        await _menu(message, "Нет аккаунтов: добавьте воркера или личный аккаунт — 🤖 Воркеры → 📲 Добавить по номеру.")
         return
     if len(accounts) == 1:
         await _account_chosen(message, state, accounts[0], flow, deps)
@@ -143,10 +144,9 @@ def _run_account(pool: WorkerPool, personal, path: str):
 
 
 # =============================== scrape ===============================
-# A bot scrape in progress, continued automatically after a bot restart (see
-# resume_after_restart): kept on an interruption or a shutdown, dropped once the scrape
-# ends for good (finished, stopped by the operator, bad input).
-MARKER_PATH = os.path.join("stats", "bot_scrape.json")
+# A bot scrape in progress (scraped_files.SCRAPE_MARKER), continued automatically after a bot
+# restart (see resume_after_restart): kept on an interruption or a shutdown, dropped once the
+# scrape ends for good (finished, stopped by the operator, bad input).
 # automatic resumes in a row that made no progress before auto-resume gives up: a run killed
 # at the same spot each time (e.g. out of memory in its final step) must not crash-loop the bot
 MAX_STALLED_RESUMES = 2
@@ -175,13 +175,13 @@ def _disarm_stop(stop: threading.Event):
 async def _take_slot(scrapes: JobManager, pool: WorkerPool, account, label: str, menu, answer) -> Progress | None:
     """The scraper's slot for a job on `account` (a worker is kept out of bot jobs meanwhile):
     the job's 📊 Progress, or None after telling why (menu: with the main menu)."""
-    if not account.personal and pool.busy(account.path):
-        await menu(WORKER_BUSY)
+    if pool.busy(account.path):  # a personal account: only while its login codes are read
+        await menu(PERSONAL_BUSY if account.personal else WORKER_BUSY)
         return None
     if not scrapes.acquire(label, cancelable=False, timeout=0):
         await answer(f"⛔ Скрапер занят: {scrapes.label}. Дождитесь завершения.")
         return None
-    pool.scraping = None if account.personal else account  # new bot jobs run without it
+    pool.scraping = account  # new bot jobs run without it (a worker); its login codes wait
     progress = scrapes.progress = Progress()
     progress.prepare()  # connecting, resolving, loading the file come first
     return progress
@@ -196,19 +196,19 @@ async def _free_slot(scrapes: JobManager, pool: WorkerPool, stop: threading.Even
 
 
 def _write_marker(marker: dict):
-    json_file.save(MARKER_PATH, marker)
+    json_file.save(scraped_files.SCRAPE_MARKER, marker)
 
 
 def _read_marker() -> dict | None:
     try:
-        return json_file.load(MARKER_PATH, None)
+        return json_file.load(scraped_files.SCRAPE_MARKER, None)
     except (OSError, ValueError):  # a half-written / broken marker: nothing to continue
         return None
 
 
 def _drop_marker():
     try:
-        os.remove(MARKER_PATH)
+        os.remove(scraped_files.SCRAPE_MARKER)
     except OSError:
         pass
 
@@ -535,7 +535,7 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
 
 
 async def resume_after_restart(bot, scrapes: JobManager, pool: WorkerPool, personal):
-    """Bot startup: continue the scrape a restart interrupted (see MARKER_PATH)."""
+    """Bot startup: continue the scrape a restart interrupted (see scraped_files.SCRAPE_MARKER)."""
     marker = _read_marker()
     if marker is None:
         return
@@ -795,7 +795,7 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
         return
 
     try:
-        output = str(Path(input_).with_suffix("")) + "_missed.parquet"  # ValueError on "."
+        output = scraped_files.missed_path(input_, channel)  # ValueError on "."
         params = VerifyParams(
             input=input_,
             channel=channel,

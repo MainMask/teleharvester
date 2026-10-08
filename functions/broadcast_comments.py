@@ -21,6 +21,14 @@ class CommentsBroadcastFunc(TelethonFunction):
                 self.progress_drop(self.settings.messages_count)
                 return
 
+            try:
+                channel = await self.resolve_chat(session, channel)
+            except Exception as err:
+                self.progress_failed()
+                await report(f"[{me.first_name}] канал не найден: {err}")
+                self.progress_drop(self.settings.messages_count)
+                return
+
             count = 0
             errors = 0
 

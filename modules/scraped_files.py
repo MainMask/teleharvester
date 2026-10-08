@@ -1,14 +1,18 @@
 """The scrape's files in assets/databases: what the bot and the CLI offer to pick from,
-and where an analysis of one writes."""
+where an analysis of one writes, and which scrapes are left to continue."""
+import os
 from pathlib import Path
 
 import pandas as pd
 import pyarrow.parquet as pq
 
+from modules import json_file
 from scraper.datafiles import read_table
-from scraper.scrape import group_channel
+from scraper.scrape import _channel_ref, group_channel
 
 BASES_DIR = "assets/databases"  # default scrape output; holds the <name>_participants bases
+# a bot scrape in progress, continued after a bot restart (bot/routers/scraping.py)
+SCRAPE_MARKER = os.path.join("stats", "bot_scrape.json")
 
 
 def _newest(pattern: str, limit: int, skip=lambda path: False) -> list[tuple[Path, int]]:
@@ -73,6 +77,35 @@ def output_path(input_path: str, suffix: str) -> str:
     path = Path(input_path)
     name, marker, span = path.stem.partition("_posts")
     return str(path.with_name(f"{name}_{suffix}{span}" if marker else f"{path.stem}_{suffix}"))
+
+
+def missed_path(input_path: str, channel: str) -> str:
+    """Where a verify of input_path against channel writes its missed posts: next to a posts
+    file (<file>_missed.parquet); for a folder, in it, and for a glob, in its folder
+    (<channel>_missed.parquet)."""
+    path = Path(input_path)
+    if path.is_file():
+        return str(path.with_suffix("")) + "_missed.parquet"
+    folder = path if path.is_dir() else path.parent
+    return str(folder / f"{_channel_ref(channel).slug}_missed.parquet")
+
+
+def unfinished_scrape(path: str) -> bool:
+    """A scrape on the account (session path) is left to continue, on it only: the bot's marker, or
+    a checkpoint in BASES_DIR (one stopped with ⏹, by an error or in the terminal menu has no marker)."""
+    try:
+        marker = json_file.load(SCRAPE_MARKER, None)
+    except (OSError, ValueError):  # a half-written / broken marker: nothing to continue
+        marker = None
+    if marker is not None and marker.get("account") == path:
+        return True
+    for resume in Path(BASES_DIR).glob("*_partial/checkpoint/resume.json"):
+        try:
+            if json_file.load(resume, {}).get("account") == path:
+                return True
+        except (OSError, ValueError):  # a half-written / broken checkpoint: nothing to continue
+            continue
+    return False
 
 
 def verify_presets(path: str) -> tuple[list[str], tuple[str, str] | None]:

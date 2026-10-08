@@ -11,7 +11,7 @@ class ReactionsFunc(TelethonFunction):
 
     reactions = ['👍', '❤️', '🔥', '🥰', '👏', '😁', '🎉', '🤩', '👎', '🤯', '😱', '🤬', '😢', '🤮', '💩', '🙏']
 
-    async def set_reaction(self, session, peer, message_id, report, reaction=None):
+    async def set_reaction(self, session, peer, message_id, report, reaction=None, comment=None):
         if not reaction:
             reaction = random.choice(self.reactions)
         # Telegram's reaction emoticons carry no variation selector: "❤️" is REACTION_INVALID
@@ -26,6 +26,7 @@ class ReactionsFunc(TelethonFunction):
                 return
 
             try:
+                peer, message_id = await self.resolve_message(session, peer, message_id, comment)
                 # safe_call waits out short FloodWaits so the reaction actually lands
                 # (mass reactions on one post trip rate limits); a long wait raises
                 # AccountLimited, caught by the except below and reported.
@@ -43,9 +44,11 @@ class ReactionsFunc(TelethonFunction):
 
     async def run(self, link, reaction, report):
         peer, message_id = self.parse_message_link(link)
+        comment = self.comment_id(link)  # a comment's link: the reaction goes on the comment
 
         await self.run_sequential(
-            lambda session, report: self.set_reaction(session, peer, message_id, report, reaction=reaction),
+            lambda session, report: self.set_reaction(session, peer, message_id, report,
+                                                      reaction=reaction, comment=comment),
             report,
             pause=self.settings.delay,
         )

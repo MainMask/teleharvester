@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import CategoryCB, ChoiceCB
 from bot.keyboards.menu import functions_kb, main_menu
-from bot.services import login as sign_in
+from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.registry import SECTIONS, WORKER_GROUPS, section_text
@@ -40,7 +40,7 @@ async def start(message: Message, state: FSMContext, pool: WorkerPool):
 async def cancel(message: Message, state: FSMContext, manager: JobManager):
     if await state.get_state() is not None:
         # backing out of a form must not stop a job that may belong to another admin
-        await sign_in.close(message.chat.id)  # a sign-in by phone waiting for its code: disconnect it now
+        await logins.close(message.chat.id)  # a sign-in by phone waiting for its code: disconnect it now
         await state.clear()
         note = f"\nЗадача «{manager.label}» продолжает работу — /cancel ещё раз, чтобы остановить." \
             if manager.active else ""

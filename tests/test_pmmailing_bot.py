@@ -222,3 +222,22 @@ def test_photo_is_not_taken_as_default_targets():
     asyncio.run(broadcasts.mail_path(msg, state))
     assert "path" not in state.data and "recipients" not in state.data
     assert msg.replies  # re-prompted
+
+
+# --- mail_run: a stale «Пропускать?» button leaves no recipients behind -------------
+
+def test_mail_run_without_recipients_says_the_flow_is_stale():
+    """mail_skip isn't tied to a state: tapped after a /cancel it leads here with neither a path
+    nor a list. The operator is told, nothing starts (no KeyError swallowed by aiogram)."""
+    runs = []
+
+    class _Manager:
+        active, label = False, ""
+
+        async def run(self, *args, **kwargs):
+            runs.append(args)
+
+    msg = _Msg()
+    asyncio.run(broadcasts.mail_run(msg, _State({"skip": True, "limit": None}), None, ns(), {},
+                                    _Manager(), ns(delay=[0])))
+    assert msg.replies == ["Флоу устарел, начните заново."] and not runs

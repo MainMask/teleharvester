@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import types
 
 from bot.routers import accounts
@@ -87,7 +88,7 @@ def test_lists_each_account(tmp_path):
     manager = _Manager(free=True)
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, manager))
+    asyncio.run(accounts.accounts(msg, pool, manager, None))
 
     joined = "\n".join(msg.replies)
     assert "всего: <b>2</b>" in joined
@@ -106,7 +107,7 @@ def test_sorted_by_username(tmp_path):
     pool = _Pool(workers, _Storage())
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     order = ["@Curator1 ", "@Curator2 ", "@Curator4 ", "@Curator10 ", "👤 — ", "не удалось опросить"]
@@ -121,7 +122,7 @@ def test_busy_shows_only_count(tmp_path):
     manager = _Manager(free=False)
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, manager))
+    asyncio.run(accounts.accounts(msg, pool, manager, None))
 
     joined = "\n".join(msg.replies)
     assert "всего: <b>1</b>" in joined
@@ -138,7 +139,7 @@ def test_failed_worker_falls_back_to_stored(tmp_path):
     manager = _Manager(free=True)
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, manager))
+    asyncio.run(accounts.accounts(msg, pool, manager, None))
 
     joined = "\n".join(msg.replies)
     assert "Stored Name" in joined
@@ -167,7 +168,7 @@ def test_scraping_worker_is_not_polled(tmp_path):
     pool.scraping = ns(path="sessions/busy.jsession")
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert polled == ["sessions/free.jsession"]
@@ -180,7 +181,7 @@ def test_empty_pool(tmp_path):
     manager = _Manager(free=True)
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, manager))
+    asyncio.run(accounts.accounts(msg, pool, manager, None))
 
     assert any("Воркеров: <b>0</b>" in r for r in msg.replies)
 
@@ -190,7 +191,7 @@ def test_names_are_html_escaped(tmp_path):
     pool = _Pool(workers, _Storage())
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert "A&amp;lt;B &lt;i&gt;" in joined
@@ -208,7 +209,7 @@ def test_slow_connect_is_timed_out(monkeypatch, tmp_path):
     manager = _Manager(free=True)
     msg = _Msg()
 
-    asyncio.run(asyncio.wait_for(accounts.accounts(msg, pool, manager), 2))
+    asyncio.run(asyncio.wait_for(accounts.accounts(msg, pool, manager, None), 2))
 
     assert "не удалось опросить" in "\n".join(msg.replies)
     assert manager.released is True
@@ -226,7 +227,7 @@ def test_polled_workers_are_busy_meanwhile(tmp_path):
     workers = [_Seen(ns(first_name="A", last_name=None, id=1, username="a"))]
     pool = _Pool(workers, _Storage())
     pool.in_job = []
-    asyncio.run(accounts.accounts(_Msg(), pool, _Manager(free=True)))
+    asyncio.run(accounts.accounts(_Msg(), pool, _Manager(free=True), None))
     assert seen == [workers] and pool.in_job == []
 
 
@@ -248,7 +249,7 @@ def test_restrictions_are_shown(tmp_path):
     pool = _Pool([until, forever, clean, new], _Storage({forever.path: stored}))
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert "👤 @until · 🆔 <code>1</code>\n🚫 ЛС ограничены до 12 Nov 2026" in joined
@@ -272,10 +273,151 @@ def test_restricted_go_to_the_bottom(tmp_path):
     pool = _Pool([forever, until, clean], _Storage())
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True)))
+    asyncio.run(accounts.accounts(msg, pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert "всего: <b>3</b> · ограничены: <b>2</b>" in joined
     order = ["<b>1. c</b>", "<b>2. b</b>", "<b>3. a</b>"]
     positions = [joined.index(marker) for marker in order]
     assert positions == sorted(positions)
+
+
+# --- personal accounts: listed from their files, removable ------------------------------------
+
+class _Personal:
+    """A personal_sessions/ storage of one account."""
+
+    def __init__(self, path, client):
+        self.full_sessions = {path: client}
+        self.jsessions_paths = {}
+
+    @property
+    def sessions(self):
+        return list(self.full_sessions.values())
+
+    def get_session_path(self, client):
+        return next(p for p, c in self.full_sessions.items() if c is client)
+
+    def forget_session(self, path):
+        self.full_sessions.pop(path, None)
+
+
+class _Me:
+    """A personal account's client: it must not be connected just to be listed."""
+
+    def __init__(self, log_out_ok=True):
+        self.connected = False
+        self.logged_out = False
+        self.log_out_ok = log_out_ok
+
+    async def connect(self):
+        self.connected = True
+
+    def is_connected(self):
+        return self.connected
+
+    async def disconnect(self):
+        self.connected = False
+
+    async def log_out(self):
+        if not self.log_out_ok:
+            raise ConnectionError("dead network")
+        self.logged_out, self.connected = True, False
+        return True
+
+
+class _State:
+    def __init__(self):
+        self.data = {}
+
+    async def get_data(self):
+        return dict(self.data)
+
+    async def update_data(self, **kw):
+        self.data.update(kw)
+
+    async def clear(self):
+        self.data = {}
+
+
+class _CbMsg(_Msg):
+    async def answer(self, text, **kwargs):
+        self.replies.append((text, kwargs.get("reply_markup")))
+
+
+def _personal(tmp_path, log_out_ok=True):
+    (tmp_path / "personal_sessions").mkdir()
+    path = "personal_sessions/me.jsession"
+    (tmp_path / path).write_text("{}")
+    me = _Me(log_out_ok)
+    return _Personal(path, me), me, path
+
+
+def _remove(pool, personal, state=None):
+    """🗑 Убрать → (one account: straight to the confirmation) → 🗑 Да; the replies."""
+    from bot.callbacks import ChoiceCB
+
+    state, msg = state or _State(), _CbMsg()
+    callback = ns(message=msg, answer=lambda *a, **k: asyncio.sleep(0))
+    asyncio.run(accounts.personal_remove_start(callback, state, personal))
+    asyncio.run(accounts.personal_remove(callback, ChoiceCB(scope="prm_ok", value="0"), state, pool, personal))
+    return [text for text, _ in msg.replies]
+
+
+def _free_pool():
+    pool = _Pool([], _Storage())
+    pool.busy = lambda path: False
+    return pool
+
+
+def test_personal_accounts_are_listed_without_connecting(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    personal, me, _ = _personal(tmp_path)
+    msg = _CbMsg()
+    asyncio.run(accounts.accounts(msg, _Pool([], _Storage()), _Manager(free=True), personal))
+
+    texts = [text for text, _ in msg.replies]
+    assert any("Воркеров: <b>0</b>" in t for t in texts)  # shown with no worker too
+    assert "👤 <b>Личные</b>" in texts[-1] and "me.jsession" in texts[-1] and not me.connected
+    assert msg.replies[-1][1].inline_keyboard[0][0].text == "🗑 Убрать личный аккаунт"
+
+
+def test_removal_logs_out_and_deletes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    personal, me, path = _personal(tmp_path)
+    texts = _remove(_free_pool(), personal)
+    assert "авторизацию из этого файла" in texts[0] and "Desktop тоже выйдет" in texts[0] and "✅" in texts[-1]
+    assert me.logged_out and not (tmp_path / path).exists() and personal.sessions == []
+
+
+def test_failed_log_out_still_deletes_and_says_where_to_end_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    personal, me, path = _personal(tmp_path, log_out_ok=False)
+    texts = _remove(_free_pool(), personal)
+    assert "Устройства" in texts[-1] and not (tmp_path / path).exists() and not me.connected
+
+
+def test_no_removal_while_it_scrapes_or_has_an_unfinished_scrape(tmp_path, monkeypatch):
+    from modules import json_file, scraped_files
+
+    monkeypatch.chdir(tmp_path)
+    personal, me, path = _personal(tmp_path)
+    pool = _free_pool()
+    pool.scraping = ns(path=path)
+    assert "идёт скрап" in _remove(pool, personal)[-1]
+
+    pool.scraping = None
+    json_file.save(scraped_files.SCRAPE_MARKER, {"account": path})
+    assert "незавершённый скрап" in _remove(pool, personal)[-1]
+    assert not me.logged_out and (tmp_path / path).exists() and personal.sessions == [me]
+
+
+def test_no_removal_with_a_checkpoint_left_by_a_stop(tmp_path, monkeypatch):
+    """⏹ or an error drops the bot's marker but keeps the checkpoint: it continues on this account only."""
+    monkeypatch.chdir(tmp_path)
+    personal, me, path = _personal(tmp_path)
+    resume = tmp_path / "assets" / "databases" / "news_partial" / "checkpoint" / "resume.json"
+    resume.parent.mkdir(parents=True)
+    resume.write_text(json.dumps({"name": "news", "account": path}))
+    assert "незавершённый скрап" in _remove(_free_pool(), personal)[-1]
+    assert not me.logged_out and (tmp_path / path).exists()

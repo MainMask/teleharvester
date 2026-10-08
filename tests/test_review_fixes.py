@@ -38,7 +38,7 @@ class _Storage:
     async def ainitialize_session(self, session):
         yield
 
-    def _forget_session(self, path):
+    def forget_session(self, path):
         self.forgotten.append(path)
 
     def get_session_path(self, session):
@@ -277,7 +277,7 @@ class TestSpamBlockMove:
 
 
 class TestSpamBlockReport:
-    def _check(self, reply, username="C1"):
+    def _check(self, reply, username="C1", progress=None):
         from functions.spamblock import SpamBlockFunc
 
         class _Conv:
@@ -301,8 +301,19 @@ class TestSpamBlockReport:
                 return _Conv()
 
         msgs, report = collect()
-        result = asyncio.run(SpamBlockFunc(_Storage(), ns(delay=[0])).check(_S(), report))
+        func = SpamBlockFunc(_Storage(), ns(delay=[0]))
+        func.progress = progress
+        result = asyncio.run(func.check(_S(), report))
         return msgs, result
+
+    def test_restricted_workers_count_as_errors_in_the_summary(self):
+        from bot.services.progress import Progress
+
+        progress = Progress()
+        self._check("Good news, no limits are currently applied.", progress=progress)
+        self._check("Unfortunately...\nlimited until 12 Nov 2026, 10:00 UTC.", progress=progress)
+        self._check("К сожалению...\nВаш аккаунт ограничен.", progress=progress)
+        assert (progress.ok, progress.failed) == (1, 2)
 
     def test_active_names_the_account(self):
         msgs, result = self._check("Good news, no limits are currently applied.")
@@ -551,6 +562,59 @@ class TestParseMessageLink:
         assert (peer.channel_id, message_id) == (1234567890, 89)
 
 
+class TestCommentLinks:
+    """A …/<post>?comment=<id> link: the reaction / vote lands on the comment, in the discussion group."""
+
+    class _S:
+        def __init__(self, linked=50):
+            self.linked, self.requests = linked, []
+
+        async def get_me(self):
+            return ns(first_name="A")
+
+        async def __call__(self, request):
+            from telethon.tl.functions.channels import GetFullChannelRequest
+
+            if isinstance(request, GetFullChannelRequest):
+                return ns(full_chat=ns(linked_chat_id=self.linked),
+                          chats=[ns(id=10, title="channel"), ns(id=50, title="discussion")])
+            self.requests.append(request)
+
+    def test_comment_id(self):
+        assert BaseFunction.comment_id("https://t.me/durov/123?comment=45") == 45
+        assert BaseFunction.comment_id("https://t.me/durov/123?single&comment=45") == 45
+        assert BaseFunction.comment_id("https://t.me/durov/123") is None
+
+    def test_reaction_goes_on_the_comment(self):
+        from functions.reactions import ReactionsFunc
+
+        session = self._S()
+        fn = ReactionsFunc(_Storage(), ns(delay=[0]))
+        _, report = collect()
+        asyncio.run(fn.set_reaction(session, "durov", 123, report, reaction="👍", comment=45))
+        (request,) = session.requests
+        assert (request.peer.id, request.msg_id) == (50, 45)
+
+    def test_no_discussion_group_is_reported(self):
+        from functions.reactions import ReactionsFunc
+
+        session = self._S(linked=None)
+        fn = ReactionsFunc(_Storage(), ns(delay=[0]))
+        msgs, report = collect()
+        asyncio.run(fn.set_reaction(session, "durov", 123, report, reaction="👍", comment=45))
+        assert session.requests == [] and "нет чата обсуждения" in msgs[-1]
+
+    def test_without_a_comment_the_post_itself(self):
+        from functions.reactions import ReactionsFunc
+
+        session = self._S()
+        fn = ReactionsFunc(_Storage(), ns(delay=[0]))
+        _, report = collect()
+        asyncio.run(fn.set_reaction(session, "durov", 123, report, reaction="👍"))
+        (request,) = session.requests
+        assert (request.peer, request.msg_id) == ("durov", 123)
+
+
 class TestReportPeer:
     """Telethon can't resolve a post link as a peer: the report takes the post's chat from it."""
 
@@ -560,20 +624,35 @@ class TestReportPeer:
 
         sent = []
 
-        async def session(request):
-            sent.append(request.peer)
-            return None
+        class _Session:
+            async def __call__(self, request):
+                sent.append(request.peer)
 
-        asyncio.run(ReportFunc(_Storage(), ns(delay=[0])).report_step(session, link, [1], "", b""))
+            async def get_input_entity(self, peer):  # a private link's chat, from the cache
+                return peer
+
+        asyncio.run(ReportFunc(_Storage(), ns(delay=[0])).report_step(_Session(), link, [1], "", b""))
         return sent[0]
 
     def test_a_post_link_reports_in_its_chat(self):
         assert self._peer("https://t.me/chan/123") == "chan"
         assert self._peer("t.me/c/123/45").channel_id == 123
 
-    def test_a_chat_link_name_or_id_goes_as_is(self):
-        for peer in ("https://t.me/chan", "@chan", "-100123"):
+    def test_a_private_chat_link_reports_in_that_chat(self):
+        """t.me/c/<id> alone (the post ids are asked separately) is the chat, not a chat named "c"."""
+        for link in ("https://t.me/c/123", "t.me/c/123/", "https://t.me/c/123?single"):
+            assert self._peer(link).channel_id == 123
+
+    def test_a_chat_link_or_name_goes_as_is(self):
+        for peer in ("https://t.me/chan", "@chan"):
             assert self._peer(peer) == peer
+
+    def test_a_numeric_id_is_the_chat(self):
+        """Telethon reads a "-100…" string as a phone number: the id is turned into the chat's peer."""
+        from telethon import types
+
+        assert self._peer("-1001234567890") == types.PeerChannel(1234567890)
+        assert self._peer("-123") == types.PeerChat(123)
 
 
 # --- modules/ ----------------------------------------------------------------
@@ -2256,6 +2335,9 @@ class _Worker:
     async def send_message(self, *args, **kwargs):
         self.requests.append(args)
 
+    async def get_input_entity(self, peer):  # a private link's chat, from the cache
+        return peer
+
 
 class TestDeadWorkerIsSkipped:
     def _run(self, cls, call, settings):
@@ -2385,33 +2467,82 @@ def test_clear_dialogs_survives_a_failed_listing():
     assert len(ok.requests) == 1 and any("удалён" in m for m in msgs)
 
 
-# --- add_session: the 2FA password typed at sign-in is kept in the .jsession -----------
+# --- a private post link (t.me/c/<id>/<msg>): its chat resolves from the cache, else the dialogs ---
 
-def test_application_session_keeps_typed_2fa_password(monkeypatch, tmp_path):
-    import json
+class _Resolver:
+    def __init__(self, cached):
+        self.cached, self.dialogs_loaded = cached, 0
 
-    from modules.types import json_session
+    async def get_input_entity(self, peer):
+        if not self.cached:
+            raise ValueError("Could not find the input entity")
+        return ("input", peer.channel_id)
 
-    class _Client:
-        def __init__(self, *args, **kwargs):
-            self.api_id, self.api_hash = kwargs["api_id"], kwargs["api_hash"]
-            self._init_request = ns(device_model="d", app_version="1", system_version="s",
-                                    system_lang_code="en")
-            self.session = ns(save=lambda: "KEY")
+    async def get_dialogs(self):
+        self.dialogs_loaded += 1
+        self.cached = True
 
-        async def start(self, password):
-            assert password() == "secret"  # the account has 2FA: Telethon asks for it
 
-        async def get_me(self):
-            return ns(first_name="a", last_name=None, id=1, phone="79990001122", username=None)
+def _resolve(session, peer):
+    from functions.base import TelethonFunction
 
-        async def disconnect(self):
-            pass
+    return asyncio.run(TelethonFunction(_Storage(), ns()).resolve_chat(session, peer))
 
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(json_session, "TelegramClient", _Client)
-    monkeypatch.setattr(json_session.getpass, "getpass", lambda prompt: "secret")
 
-    asyncio.run(json_session.JsonSession.create_application_session())
-    saved = json.loads((tmp_path / "79990001122.jsession").read_text())
-    assert saved["password"] == "secret"
+def test_a_private_link_chat_loads_the_dialogs_once_on_a_cache_miss():
+    from telethon.tl.types import PeerChannel
+
+    session = _Resolver(cached=False)
+    assert _resolve(session, PeerChannel(5)) == ("input", 5) and session.dialogs_loaded == 1
+
+
+def test_a_cached_private_link_chat_needs_no_dialogs():
+    from telethon.tl.types import PeerChannel
+
+    session = _Resolver(cached=True)
+    assert _resolve(session, PeerChannel(5)) == ("input", 5) and session.dialogs_loaded == 0
+
+
+def test_a_public_peer_is_passed_as_is():
+    session = _Resolver(cached=False)
+    assert _resolve(session, "durov") == "durov" and session.dialogs_loaded == 0
+
+
+# --- the «Очистить диалоги» confirmation expires: an old «Да» must not wipe the workers ---
+
+def _clear(age):
+    import datetime
+
+    from bot.callbacks import ChoiceCB
+    from bot.routers import service
+
+    alerts, runs = [], []
+
+    async def answer(text=None, show_alert=False):
+        if show_alert:
+            alerts.append(text)
+
+    class _Manager:
+        async def run(self, *args, **kwargs):
+            runs.append(args)
+
+    message = ns(date=datetime.datetime.now(datetime.timezone.utc) - age, chat=ns(id=1))
+    callback = ns(message=message, answer=answer, bot=None)
+    functions = {"ClearDialogsFunc": object()}
+    asyncio.run(service.clear_run(callback, ChoiceCB(scope="clear_confirm", value="yes"),
+                                  ns(), functions, _Manager()))
+    return alerts, runs
+
+
+def test_a_stale_clear_confirmation_runs_nothing():
+    import datetime
+
+    alerts, runs = _clear(datetime.timedelta(hours=1))
+    assert not runs and alerts and "устарело" in alerts[0]
+
+
+def test_a_fresh_clear_confirmation_runs_the_wipe():
+    import datetime
+
+    alerts, runs = _clear(datetime.timedelta(seconds=5))
+    assert runs and not alerts

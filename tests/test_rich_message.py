@@ -8,6 +8,7 @@ from modules.rich_message import (
     MediaItem,
     RichContent,
     _send_once,
+    send,
     convert_entities,
     has_custom_emoji,
     strip_custom_emoji,
@@ -162,3 +163,40 @@ class TestMediaUploadedOnce:
         _send(worker, content)
         _send(worker, content)
         assert worker.files == ["a.jpg", "a.jpg"]
+
+
+class _Refusing:
+    """send_message stub that raises `error` on every call."""
+
+    def __init__(self, error):
+        self.error, self.calls = error, 0
+
+    async def send_message(self, peer, text, **kw):
+        self.calls += 1
+        raise self.error
+
+
+def _send_rich(worker, reports):
+    async def report(text):
+        reports.append(text)
+
+    content = RichContent(text="hi 🙂", entities=convert_entities([ent("custom_emoji", 3, 2, custom_emoji_id="1")]))
+    asyncio.run(send(worker, "peer", content, _direct, report=report))
+
+
+class TestCustomEmojiRetry:
+    def test_a_refusing_recipient_is_not_asked_twice(self):
+        worker, reports = _Refusing(errors.PeerIdInvalidError(request=None)), []
+        try:
+            _send_rich(worker, reports)
+        except errors.PeerIdInvalidError:
+            pass
+        assert worker.calls == 1 and reports == []
+
+    def test_another_error_retries_without_the_custom_emoji(self):
+        worker, reports = _Refusing(ValueError("premium")), []
+        try:
+            _send_rich(worker, reports)
+        except ValueError:
+            pass
+        assert worker.calls == 2 and "Premium" in reports[0]

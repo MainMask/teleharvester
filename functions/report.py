@@ -1,7 +1,7 @@
 from modules.console import console
 from rich.prompt import Prompt
 
-from telethon import types, functions
+from telethon import types, functions, utils
 from functions.base import TelethonFunction
 from functions.base.base import console_report
 
@@ -11,76 +11,73 @@ class ReportFunc(TelethonFunction):
 
     def report_peer(self, peer):
         """The chat of a post link (t.me/<name>/<id>, t.me/c/<id>/<id>): Telethon resolves a chat's
-        link, @name or id, but not a post link. Anything else is passed on as is."""
+        link or @name, but not a post link nor a -100… id (it reads one as a phone number). Anything
+        else is passed on as is."""
         if isinstance(peer, str):
+            if peer.startswith("-") and peer[1:].isdigit():  # a chat's id, as the scraper takes it
+                short, peer_type = utils.resolve_id(int(peer))
+                return peer_type(short)
+            parts = peer.split("?")[0].rstrip("/").split("/")
+            if len(parts) >= 2 and parts[-2] == "c" and parts[-1].isdigit():  # a private chat's own link
+                return types.PeerChannel(int(parts[-1]))
             try:
                 return self.parse_message_link(peer)[0]
-            except (ValueError, IndexError):  # a chat link, @name, -100… id
+            except (ValueError, IndexError):  # a chat link, @name
                 pass
         return peer
 
     async def report_step(self, session, peer, ids, comment, option):
         return await session(functions.messages.ReportRequest(
-            peer=self.report_peer(peer),
+            peer=await self.resolve_chat(session, self.report_peer(peer)),
             id=ids,
             option=option,
             message=comment
         ))
 
-    async def resolve_and_report(self, session, peer, ids, comment):
-        """Walk the report flow interactively on the first account; record menu choices."""
-        option = b""
-        selections = []
-
+    async def walk(self, session, peer, ids, comment, option, choose):
+        """Follow the report flow from `option`: a comment step goes on by itself, a menu by
+        choose(result) -> the option's index, or None to stop there. Returns ("choose", options)
+        when stopped at a menu, ("done", None) once the report is submitted."""
         while True:
             result = await self.report_step(session, peer, ids, comment, option)
-
-            if isinstance(result, types.ReportResultReported):
-                return selections
 
             if isinstance(result, types.ReportResultAddComment):
                 option = result.option
                 continue
 
             if isinstance(result, types.ReportResultChooseOption):
-                console.print(f"\n[bold white]{result.title}[/]")
-                for i, opt in enumerate(result.options):
-                    console.print(f"[bold white][{i + 1}] {opt.text}[/]")
-
-                choice = console.input("[bold white]>> ")
-
-                while not (choice.isdigit() and 1 <= int(choice) <= len(result.options)):
-                    choice = console.input("[bold white]>> ")
-
-                choice = int(choice) - 1
-                selections.append(choice)
-                option = result.options[choice].option
+                index = choose(result)
+                if index is None:
+                    return "choose", result.options
+                option = result.options[index].option
                 continue
 
-            return selections
+            return "done", None  # ReportResultReported (or an unknown result: nothing to follow)
+
+    async def resolve_and_report(self, session, peer, ids, comment):
+        """Walk the report flow interactively on the first account; record menu choices."""
+        selections = []
+
+        def ask(result):
+            console.print(f"\n[bold white]{result.title}[/]")
+            for i, opt in enumerate(result.options):
+                console.print(f"[bold white][{i + 1}] {opt.text}[/]")
+
+            choice = console.input("[bold white]>> ")
+
+            while not (choice.isdigit() and 1 <= int(choice) <= len(result.options)):
+                choice = console.input("[bold white]>> ")
+
+            selections.append(int(choice) - 1)
+            return selections[-1]
+
+        await self.walk(session, peer, ids, comment, b"", ask)
+        return selections
 
     async def replay(self, session, peer, ids, comment, selections):
         """Repeat the recorded report path on another account (menu choices by index)."""
-        option = b""
-        step = 0
-
-        while True:
-            result = await self.report_step(session, peer, ids, comment, option)
-
-            if isinstance(result, types.ReportResultReported):
-                return
-
-            if isinstance(result, types.ReportResultAddComment):
-                option = result.option
-                continue
-
-            if isinstance(result, types.ReportResultChooseOption):
-                idx = selections[step] if step < len(selections) else 0
-                option = result.options[idx].option
-                step += 1
-                continue
-
-            return
+        recorded = iter(selections)
+        await self.walk(session, peer, ids, comment, b"", lambda result: next(recorded, 0))
 
     async def step(self, state, option):
         """Advance the report flow one step on the first worker (bot-driven).
@@ -88,22 +85,8 @@ class ReportFunc(TelethonFunction):
         Auto-follows AddComment. Returns ("choose", options) when the operator must
         pick, or ("done", None) when the report is submitted.
         """
-        while True:
-            result = await self.report_step(
-                state["session"], state["peer"], state["ids"], state["comment"], option
-            )
-
-            if isinstance(result, types.ReportResultReported):
-                return "done", None
-
-            if isinstance(result, types.ReportResultAddComment):
-                option = result.option
-                continue
-
-            if isinstance(result, types.ReportResultChooseOption):
-                return "choose", result.options
-
-            return "done", None
+        return await self.walk(state["session"], state["peer"], state["ids"], state["comment"], option,
+                               lambda result: None)
 
     async def replay_rest(self, sessions, peer, ids, comment, selections, report, stop=None):
         """Replay the recorded report path on the remaining workers; `stop` (the bot's ⏹, an

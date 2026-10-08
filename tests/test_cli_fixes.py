@@ -35,7 +35,7 @@ class _Storage:
 
 
 def _settings():
-    return ns(delay=[0], messages=["m"], trigger="", messages_count=1)
+    return ns(delay=[0], messages=["m"], trigger="", messages_count=1, api_id=1, api_hash="h")
 
 
 def test_report_first_account_get_me_failure_is_reported(monkeypatch):
@@ -137,7 +137,7 @@ def _run_joiner(monkeypatch, broadcast_choice, joined):
         def __init__(self, storage, settings):
             pass
 
-        def ask(self):
+        def ask(self, modes=None):
             return broadcast_choice
 
         async def broadcast(self, session, target, report):
@@ -172,13 +172,26 @@ def test_broadcast_ask_leaves_the_accounts_count_to_its_caller(monkeypatch):
     assert func.ask() == 0
 
 
+def test_broadcast_ask_offers_only_the_callers_modes(monkeypatch):
+    import functions.broadcast as broadcast
+
+    shown = []
+    monkeypatch.setattr(broadcast, "console", ns(input=lambda *a: "2", print=lambda text, **k: shown.append(text)))
+    monkeypatch.setattr(broadcast.Prompt, "ask", lambda *a, **k: "0")
+    monkeypatch.setattr(broadcast.Confirm, "ask", lambda *a, **k: False)
+    func = broadcast.Broadcast(_Storage(), _settings())
+
+    assert func.ask(modes=(0, 4)) == 4  # «2» is the second offered mode: the stickers
+    assert len(shown) == 2 and "с медиа" not in " ".join(shown)
+
+
 def test_instant_broadcast_asks_the_accounts_count(monkeypatch):
     import functions.broadcast as broadcast
     import functions.broadcast_instant as instant
 
     asked = []
     monkeypatch.setattr(instant, "console", ns(input=lambda *a: "https://t.me/chat"))
-    monkeypatch.setattr(broadcast.Broadcast, "ask", lambda self: 0)
+    monkeypatch.setattr(broadcast.Broadcast, "ask", lambda self, modes=None: 0)
     monkeypatch.setattr(broadcast.Broadcast, "ask_accounts_count", lambda self: asked.append(1))
 
     asyncio.run(instant.InstantBroadcastFunc(_Storage(), _settings()).execute())

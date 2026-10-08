@@ -104,7 +104,7 @@ def section_text(category: str) -> str:
     return "\n".join(lines)
 
 
-# The CLI menu: the same sections, titles and hints as the bot. Two of the bot's
+# The CLI menu: the same sections, titles and hints as the bot. Some of the bot's
 # workers-screen buttons are CLI functions there.
 CLI_WORKERS = "🤖 Воркеры"
 CLI_EXTRAS = [
@@ -112,6 +112,12 @@ CLI_EXTRAS = [
                 "имя, username, номер, прокси и статус каждого воркера, ограничения от @SpamBot"),
     BotFunction("proxies", "SetProxiesFunc", "Прокси", SAFE, CLI_WORKERS,
                 "раздать прокси из файла всем аккаунтам"),
+    BotFunction("phone", "AddByPhoneFunc", "Добавить по номеру", SAFE, CLI_WORKERS,
+                "войти по номеру и коду: воркер или личный аккаунт (только для скрапа)"),
+    BotFunction("codes", "LoginCodesFunc", "Код входа", SAFE, CLI_WORKERS,
+                "коды от Telegram, пришедшие воркеру или личному аккаунту (для входа с другого устройства)"),
+    BotFunction("rmpersonal", "RemovePersonalFunc", "Убрать личный аккаунт", SAFE, CLI_WORKERS,
+                "завершить сессию teleharvester на личном аккаунте и удалить его файл"),
 ]
 
 

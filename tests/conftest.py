@@ -31,8 +31,9 @@ def _isolated_personal_accounts(monkeypatch, tmp_path):
 def _isolated_bot_scrape(monkeypatch, tmp_path):
     """No test may write the real stats/bot_scrape.json; the router's scrape state starts clean."""
     from bot.routers import scraping
+    from modules import scraped_files
 
-    monkeypatch.setattr(scraping, "MARKER_PATH", str(tmp_path / "bot_scrape.json"))
+    monkeypatch.setattr(scraped_files, "SCRAPE_MARKER", str(tmp_path / "bot_scrape.json"))
     monkeypatch.setattr(scraping, "_job_stop", None)
     monkeypatch.setattr(scraping, "_user_stopped", False)
     monkeypatch.setattr(scraping, "_shutting_down", False)

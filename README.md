@@ -145,19 +145,31 @@ Put session files into the `sessions/` folder. Two formats are supported:
 - `.session` — a Telethon `StringSession` (a 353-character auth key).
 - `.jsession` — a JSON session with account/app/proxy metadata.
 
-Helper scripts (run from inside `sessions/`):
+Accounts are added by phone in the control bot or in the terminal, by the same rules
+(`modules/login.py`). In the terminal menu (`python main.py`), the **🤖 Воркеры** section has
+**Добавить по номеру**, **Код входа** and **Убрать личный аккаунт** (the personal accounts are also
+listed under **Список аккаунтов**); the same without the menu:
 
 ```bash
 cd sessions
-python add_session.py   # log in a new account and save it as .jsession (optional proxy; a 2FA password typed at sign-in is stored)
-python login.py <file.jsession>   # connect a session and print service messages
+python add_session.py                    # «Добавить по номеру»: a worker or a personal account
+python login.py [file.jsession]          # «Код входа»: the codes of the last 15 minutes (no file: pick one)
 ```
 
-The control bot does both without a terminal: **🤖 Воркеры → 📲 Добавить по номеру** (phone,
-then the code — typed with spaces, `1 2 3 4 5`, as Telegram expires a code sent through Telegram
-whole — and the 2FA password if set; the account gets a proxy from `assets/proxies.txt` and joins
-the pool live) and **🤖 Воркеры → 🔑 Код входа** (a worker's login codes from the last 15 minutes,
-shown spaced, with 🔄 to refresh).
+Neither runs while the bot or the menu does (the same sessions from two processes). In the
+terminal the code is typed whole and the 2FA password is asked without echo.
+
+The control bot: **🤖 Воркеры → 📲 Добавить по номеру** (🤖 a worker
+or 👤 a personal account, then the phone, then the code — typed with spaces, `1 2 3 4 5`, as
+Telegram expires a code sent through Telegram whole — and the 2FA password if set; a worker gets a
+proxy from `assets/proxies.txt` and joins the pool live, a personal account is saved to
+`personal_sessions/` without a proxy and without its 2FA password, for scraping only) and
+**🤖 Воркеры → 🔑 Код входа** (the login codes of a worker or a personal account from the last
+15 minutes, shown spaced, with 🔄 to refresh). **📋 Список аккаунтов** also lists the personal
+accounts (from their files, never connected for it) with **🗑 Убрать личный аккаунт**: the bot ends
+the authorization stored in the file (the phone stays signed in; a file converted from a Telegram
+Desktop `tdata` shares its key with that Desktop, which is signed out too) and deletes the file — refused while that account scrapes or has an unfinished scrape (the bot's, or a checkpoint in
+`assets/databases`): a scrape continues on the account it was started on only.
 
 ### Importing Telegram Desktop `tdata`
 
@@ -265,7 +277,8 @@ one-line description of what each does:
   - **Анализ данных** — 🔗 t.me links (top list in chat + table), 🔎 keyword search, 👀 view a
     file, and under ➕ Ещё: combine posts files, comments as a table, monthly activity, sample.
     The file is picked by button; results are named automatically next to it and sent back.
-- **🤖 Воркеры** — 📋 account list (name, `@username`, ID, polled live, by username), three groups:
+- **🤖 Воркеры** — 📋 account list (name, `@username`, ID, polled live, by username; the personal
+  accounts below, removable), three groups:
   **👤 Профиль** (name, username, bio, photo, hide last seen, remove the profile channel — names
   and usernames can come from a `.txt`), **🔐 Безопасность** (2FA, terminate other sessions),
   **🩺 Проверка и статистика** (@SpamBot status, phone stats, clear dialogs); and
@@ -365,8 +378,9 @@ analysing the result, stored as **Apache Parquet** (`.parquet`) or **Excel** (`.
 
 Everything runs from the terminal menu or the control bot, in the **🎯 Аудитория** section, on an
 account you pick: a worker from `sessions/` or a **personal account from `personal_sessions/`**
-(the same `.jsession` format; personal accounts are never workers — mailings and the other
-functions don't see them — but the scraper only reads, so it may run on one). Each runs with that
+(the same `.jsession` format, put there by hand or added in the bot with **📲 Добавить по номеру →
+👤 Личный**; personal accounts are never workers — mailings and the other functions don't see them —
+but the scraper only reads, so it may run on one). Each runs with that
 account's own API credentials, proxy and device — no separate login. A scrape is continued on the
 account it was started on: the scraped access hashes are valid for that account only. For the same
 reason a base scraped by a personal account reaches, through the workers' mailing, only the people

@@ -1,8 +1,10 @@
-"""Login codes and adding an account by phone (bot/services/login.py, bot/routers/login.py)."""
+"""Login codes and adding an account by phone (modules/login.py, bot/services/login.py,
+bot/routers/login.py)."""
 
 import asyncio
 import json
 import types
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,8 +12,9 @@ from telethon import errors
 from telethon.tl.types.auth import SentCodeTypeApp
 
 from bot.routers import login as router
-from bot.services import login as sign_in
+from bot.services import login as logins
 from bot.states import AddByPhone
+from modules import login as sign_in
 from modules.types.proxy import Proxy
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
@@ -24,7 +27,7 @@ def ns(**kw):
 @pytest.fixture(autouse=True)
 def _no_logins(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sign_in, "_logins", {})
+    monkeypatch.setattr(logins, "_logins", {})
 
 
 # --- login codes -----------------------------------------------------------------
@@ -64,20 +67,67 @@ class _Worker:
 
 
 def _pool(busy=False, scraping=None):
-    return ns(busy=lambda path: busy, scraping=scraping)
+    return ns(busy=lambda path: busy, scraping=scraping, reading_codes=Counter())
 
 
 def test_free_worker_read_then_disconnected_and_cache_cleared():
     worker = _Worker([ns(message="Login code: 12345", date=datetime.now(timezone.utc))])
-    codes = asyncio.run(sign_in.fetch_codes(_pool(), worker, "sessions/w.jsession"))
+    codes = asyncio.run(logins.fetch_codes(_pool(), worker, "sessions/w.jsession"))
     assert [code for code, _ in codes] == ["12345"]
     assert not worker.connected and worker.session._entities == set()
 
 
 def test_busy_worker_stays_connected():
     worker = _Worker()
-    asyncio.run(sign_in.fetch_codes(_pool(busy=True), worker, "sessions/w.jsession"))
+    asyncio.run(logins.fetch_codes(_pool(busy=True), worker, "sessions/w.jsession"))
     assert worker.connected  # its job (or the auto-reply) disconnects it
+
+
+def test_an_account_is_busy_while_its_codes_are_read():
+    """A scrape must not start on it meanwhile: its own client would share the key."""
+    from bot.services.delegation import WorkerPool
+
+    pool, seen = WorkerPool(ns(sessions=[], get_session_path=lambda c: None)), []
+
+    class _Watched(_Worker):
+        async def get_messages(self, entity, limit):
+            seen.append(pool.busy("personal_sessions/me.jsession"))
+            return []
+    worker = _Watched()
+    asyncio.run(logins.fetch_codes(pool, worker, "personal_sessions/me.jsession"))
+    assert seen == [True] and not pool.busy("personal_sessions/me.jsession") and not worker.connected
+
+
+def test_a_double_refresh_keeps_the_account_connected_until_the_last_read():
+    """Two 🔄 at once on one account: the first read to end must not disconnect the second."""
+    from bot.services.delegation import WorkerPool
+
+    pool = WorkerPool(ns(sessions=[], get_session_path=lambda c: None))
+    path = "sessions/w.jsession"
+    code = ns(message="Login code: 12345", date=datetime.now(timezone.utc))
+
+    class _Slow(_Worker):
+        async def get_messages(self, entity, limit):
+            await asyncio.sleep(0)  # both reads are in flight here
+            assert self.connected  # the other read has not disconnected it
+            return [code]
+    worker = _Slow()
+
+    async def both():
+        return await asyncio.gather(logins.fetch_codes(pool, worker, path), logins.fetch_codes(pool, worker, path))
+    first, second = asyncio.run(both())
+    assert first == second and len(first) == 1
+    assert not worker.connected and not pool.busy(path) and path not in pool.reading_codes
+
+
+def test_a_read_cut_by_a_release_says_so(monkeypatch):
+    """A job's end disconnects the account mid-read: Telethon cancels the request; the button answers."""
+    async def cut(pool, client, path):
+        raise asyncio.CancelledError
+    monkeypatch.setattr(logins, "fetch_codes", cut)
+    account = ns(path="sessions/w.jsession", label="W", client=_Worker())
+    text, markup = asyncio.run(router._codes(_pool(), account, 0))
+    assert "соединение прервано" in text and markup is not None
 
 
 def test_scraping_worker_is_not_connected():
@@ -161,23 +211,29 @@ class _Msg:
 
 
 class _State:
-    def __init__(self):
-        self.state, self.cleared = None, False
+    def __init__(self, **data):
+        self.state, self.cleared, self.data = None, False, data
 
     async def set_state(self, state):
         self.state = state
 
+    async def get_data(self):
+        return dict(self.data)
+
+    async def update_data(self, **kw):
+        self.data.update(kw)
+
     async def clear(self):
-        self.state, self.cleared = None, True
+        self.state, self.cleared, self.data = None, True, {}
 
 
-def _start(monkeypatch, client, storage=None, personal=None, proxy=None):
+def _start(monkeypatch, client, storage=None, personal=None, proxy=None, role="worker"):
     """phone_input with `client` as the new sign-in's client; (state, pool, msg)."""
     storage = storage or _Storage()
     pool = ns(storage=storage, count=lambda: len(storage.added))
     monkeypatch.setattr(sign_in, "new_client", lambda p: (client, ns(lang_pack="android")))
-    monkeypatch.setattr(router.tdata_import, "load_proxies", lambda path: [proxy] if proxy else [])
-    state, msg = _State(), _Msg("+7 999 123 45 67")
+    monkeypatch.setattr(sign_in.tdata_import, "load_proxies", lambda path: [proxy] if proxy else [])
+    state, msg = _State(role=role), _Msg("+7 999 123 45 67")
 
     async def go():
         await router.phone_input(msg, state, pool, personal)
@@ -207,7 +263,7 @@ def test_signs_in_saves_and_joins_the_pool(monkeypatch, tmp_path):
     assert saved["auth_key"] == "KEY" and saved["proxy"]["ip"] == "1.1.1.1" and saved["password"] is None
     assert saved["application"]["lang_pack"] == "android" and saved["account"]["user_id"] == 555
     assert pool.storage.added == ["sessions/79991234567.jsession"]
-    assert sign_in._logins == {} and not client.connected and state.cleared
+    assert logins._logins == {} and not client.connected and state.cleared
     assert "Аккаунт добавлен" in reply.answers[-1]
 
 
@@ -230,18 +286,31 @@ def test_wrong_code_keeps_the_sign_in(monkeypatch):
     client = _Client([errors.PhoneCodeInvalidError(request=None)])
     state, pool, _ = _start(monkeypatch, client)
     reply = _send(router.code_input, "11111", state, pool)
-    assert "Неверный код" in reply.answers[-1] and 7 in sign_in._logins and client.connected
+    assert "Неверный код" in reply.answers[-1] and 7 in logins._logins and client.connected
 
 
 def test_expired_code_offers_a_new_one(monkeypatch):
     client = _Client([errors.PhoneCodeExpiredError(request=None)])
     state, pool, _ = _start(monkeypatch, client)
     reply = _send(router.code_input, "11111", state, pool)
-    assert "истёк" in reply.answers[-1] and 7 in sign_in._logins
+    assert "истёк" in reply.answers[-1] and 7 in logins._logins
 
     callback = ns(message=_Msg(), answer=lambda *a, **k: asyncio.sleep(0))
     asyncio.run(router.phone_resend(callback, state))
     assert client.codes_sent == 2 and state.state == AddByPhone.code
+
+
+def test_a_hung_resend_is_timed_out(monkeypatch):
+    monkeypatch.setattr(sign_in, "FETCH_TIMEOUT", 0.01)
+    client = _Client()
+    state, _, _ = _start(monkeypatch, client)
+
+    async def hang(phone):
+        await asyncio.sleep(1)
+    client.send_code_request = hang
+    callback = ns(message=_Msg(), answer=lambda *a, **k: asyncio.sleep(0))
+    asyncio.run(router.phone_resend(callback, state))
+    assert callback.message.answers[-1] == "⚠️ Код не отправлен: TimeoutError" and 7 in logins._logins
 
 
 @pytest.mark.parametrize("where", ["workers", "personal"])
@@ -251,7 +320,7 @@ def test_known_number_gets_no_code(monkeypatch, where):
     personal = _Storage(phones={"+79991234567"}) if where == "personal" else None
     state, _, msg = _start(monkeypatch, client, storage=storage, personal=personal)
     assert client.codes_sent == 0 and not client.connected and state.cleared
-    assert sign_in._logins == {}
+    assert logins._logins == {}
 
 
 def test_full_proxies_get_no_code(monkeypatch):
@@ -259,6 +328,18 @@ def test_full_proxies_get_no_code(monkeypatch):
     client = _Client()
     state, _, msg = _start(monkeypatch, client, storage=_Storage(proxies=[proxy] * 3), proxy=proxy)
     assert client.codes_sent == 0 and "прокси заняты" in msg.answers[-1]
+
+
+def test_a_file_on_disk_is_not_overwritten(monkeypatch, tmp_path):
+    # the account is not loaded (its connect failed at the menu's start), but its file is there
+    (tmp_path / "sessions").mkdir()
+    existing = tmp_path / "sessions" / "79991234567.jsession"
+    existing.write_text("OLD")
+    client = _Client()
+    state, pool, _ = _start(monkeypatch, client)
+    reply = _send(router.code_input, "12345", state, pool)
+    assert existing.read_text() == "OLD" and client.logged_out and pool.storage.added == []
+    assert "не сохранён" in reply.answers[-1]
 
 
 def test_personal_account_found_after_sign_in_is_logged_out(monkeypatch, tmp_path):
@@ -270,12 +351,67 @@ def test_personal_account_found_after_sign_in_is_logged_out(monkeypatch, tmp_pat
     assert client.logged_out and pool.storage.added == [] and not (tmp_path / "sessions").exists()
 
 
+def test_the_role_is_asked_before_the_number():
+    callback = ns(message=_Msg(), answer=lambda *a, **k: asyncio.sleep(0))
+    state = _State()
+    asyncio.run(router.phone_role(callback, router.ChoiceCB(scope="phone_role", value="personal"), state))
+    assert state.state == AddByPhone.phone and state.data == {"role": "personal"}
+
+
+def test_personal_signs_in_without_a_proxy_and_stays_out_of_the_pool(monkeypatch, tmp_path):
+    proxy = Proxy("socks5", "1.1.1.1", 1080, "u", "p")
+    client, personal = _Client(), _Storage()
+    state, pool, _ = _start(monkeypatch, client, personal=personal, proxy=proxy, role="personal")
+    reply = _send(router.code_input, "1 2 3 4 5", state, pool, personal)
+
+    saved = json.loads((tmp_path / "personal_sessions" / "79991234567.jsession").read_text())
+    assert saved["proxy"] is None and saved["account"]["user_id"] == 555
+    assert personal.added == [str(tmp_path / "personal_sessions" / "79991234567.jsession")]
+    assert pool.storage.added == []
+    assert not (tmp_path / "sessions").exists() and "Личный аккаунт добавлен" in reply.answers[-1]
+
+
+def test_personal_2fa_password_is_not_kept(monkeypatch, tmp_path):
+    client, personal = _Client([errors.SessionPasswordNeededError(request=None)]), _Storage()
+    state, pool, _ = _start(monkeypatch, client, personal=personal, role="personal")
+    _send(router.code_input, "12345", state, pool, personal)
+    reply = _send(router.password_input, "secret", state, pool, personal)
+
+    saved = json.loads((tmp_path / "personal_sessions" / "79991234567.jsession").read_text())
+    assert saved["password"] is None and "пароль не сохранён" in reply.answers[-1]
+
+
+@pytest.mark.parametrize("where", ["workers", "personal"])
+def test_known_number_gets_no_personal_code(monkeypatch, where):
+    client = _Client()
+    storage = _Storage(phones={"79991234567"}) if where == "workers" else _Storage()
+    personal = _Storage(phones={"+79991234567"}) if where == "personal" else _Storage()
+    state, _, msg = _start(monkeypatch, client, storage=storage, personal=personal, role="personal")
+    assert client.codes_sent == 0 and state.cleared and logins._logins == {}
+
+
+def test_codes_offer_the_personal_accounts_first():
+    worker, me = ns(), ns()
+    workers = ns(sessions=[worker], jsessions_paths={}, get_session_path=lambda c: "sessions/w.session")
+    personal = ns(sessions=[me], jsessions_paths={}, get_session_path=lambda c: "personal_sessions/me.session")
+    callback = ns(message=ns(), answer=lambda *a, **k: asyncio.sleep(0))
+    sent = []
+
+    async def answer(text, **kw):
+        sent.append([b.text for row in kw["reply_markup"].inline_keyboard for b in row])
+    callback.message.answer = answer
+    state = _State()
+    asyncio.run(router.codes_start(callback, state, ns(storage=workers), personal))
+    assert sent == [["👤 me.session", "🤖 w.session"]]
+    assert state.data["code_paths"] == ["personal_sessions/me.session", "sessions/w.session"]
+
+
 def test_cancel_closes_the_sign_in_at_once(monkeypatch):
     from bot.routers import menu
 
     client = _Client()
     state, pool, _ = _start(monkeypatch, client)
-    assert client.connected and 7 in sign_in._logins
+    assert client.connected and 7 in logins._logins
 
     class _FormState(_State):
         async def get_state(self):
@@ -283,16 +419,16 @@ def test_cancel_closes_the_sign_in_at_once(monkeypatch):
 
     msg = _Msg("/cancel")
     asyncio.run(menu.cancel(msg, _FormState(), ns(active=False)))
-    assert not client.connected and sign_in._logins == {} and msg.answers[-1] == "Отменено."
+    assert not client.connected and logins._logins == {} and msg.answers[-1] == "Отменено."
 
 
 def test_abandoned_sign_in_is_closed(monkeypatch):
-    monkeypatch.setattr(sign_in, "LOGIN_TIMEOUT", 0)
+    monkeypatch.setattr(logins, "LOGIN_TIMEOUT", 0)
     client = _Client()
 
     async def go():
-        sign_in.open_login(7, sign_in.Login(client, "79991234567", None, ns(lang_pack="")))
+        logins.open_login(7, sign_in.Login(client, "79991234567", None, ns(lang_pack="")))
         client.connected = True
         await asyncio.sleep(0.01)
     asyncio.run(go())
-    assert sign_in._logins == {} and not client.connected
+    assert logins._logins == {} and not client.connected

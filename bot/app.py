@@ -10,7 +10,7 @@ from modules import instance_lock
 from modules.config import load_env
 from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
-from modules.scraper_creds import personal_storage
+from modules.scraper_creds import PERSONAL_DIR, personal_storage
 from modules.storages.sessions_storage import SessionsStorage
 
 from bot.config import BotConfig
@@ -130,6 +130,7 @@ async def run_bot():
     # the scraper's jobs run on their own client in their own slot, so a multi-day scrape
     # doesn't hold up the other tasks; personal accounts are scraper-only, never workers
     dp["scrapes"] = JobManager()
+    os.makedirs(PERSONAL_DIR, exist_ok=True)  # a personal account added by phone lands there
     dp["personal"] = personal_storage(settings.api_id, settings.api_hash)
     dp["admins"] = config.admins  # who autoreply notifies
     dp.startup.register(announce_start)  # first: before "continuing the scrape"

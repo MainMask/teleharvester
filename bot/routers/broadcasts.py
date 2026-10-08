@@ -128,6 +128,10 @@ async def mail_run(
     data = await state.get_data()
     await state.clear()
 
+    if "recipients" not in data and "path" not in data:  # a stale «Пропускать?» button after a state clear
+        await message.answer("Флоу устарел, начните заново.")
+        return
+
     instance, bot_function = resolve(functions, "pmmailing")
 
     if "recipients" in data:  # list supplied inline or via an uploaded .txt

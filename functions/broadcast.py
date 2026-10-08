@@ -276,23 +276,25 @@ class Broadcast(TelethonFunction):
         finally:
             session.remove_event_handler(handler, events.NewMessage)
 
-    def ask(self):
-        for index, label in enumerate(self.modes):
+    def ask(self, modes=(0, 1, 3, 4)):
+        """CLI: the campaign's settings. `modes`: the indexes of self.modes that make sense for the
+        caller (the CLI sends config text only, so "с медиа" is never one of them)."""
+        for number, mode in enumerate(modes, 1):
             console.print(
                 "[bold white][{index}] {description}[/]"
-                .format(index=index + 1, description=label),
+                .format(index=number, description=self.modes[mode]),
             )
 
         choice = console.input(
             "[bold white]>> [/]"
         )
 
-        while not (choice.isdigit() and 1 <= int(choice) <= len(self.modes)):
+        while not (choice.isdigit() and 1 <= int(choice) <= len(modes)):
             choice = console.input(
                 "[bold white]>> [/]"
             )
 
-        self.choice = int(choice) - 1
+        self.choice = modes[int(choice) - 1]
 
         if self.choice == 4:
             self.sticker_set = console.input("[bold red]ссылка на стикерпак (например https://t.me/addstickers/AlbinoEmoji)> [/]")

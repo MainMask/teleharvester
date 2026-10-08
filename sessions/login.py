@@ -1,34 +1,19 @@
-import json
+"""An account's login codes from the last minutes: the terminal menu's «Код входа»
+(functions/sign_in.py). With a session file — a worker's or a personal one — its codes at once."""
+import os
 import sys
 
-sys.path.append("..")
-
-from telethon import events
-
-from modules.storages.sessions_storage import SessionsStorage
-from modules.types.json_session import JsonSession
-
-if len(sys.argv) != 2:
-    print("Использование: python login.py <файл_сессии>")
+if len(sys.argv) > 2:
+    print("Использование: python login.py [файл_сессии]")
     sys.exit(1)
 
-name = sys.argv[1]
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# the file as given from the cwd, seen from the root
+path = os.path.relpath(os.path.abspath(sys.argv[1]), ROOT) if len(sys.argv) == 2 else None
+sys.path.append(ROOT)
+os.chdir(ROOT)  # sessions/, personal_sessions/ are relative to the root
 
-with open(name) as fileobj:
-    session_settings = json.load(fileobj)
+from functions.sign_in import LoginCodesFunc, run_standalone
 
-session = JsonSession(dict_settings=session_settings)
-
-client = SessionsStorage.build_jsession_client(session)
-
-with client:
-    print("Телефон:", client.get_me().phone)
-
-
-@client.on(events.NewMessage)
-async def handler(msg):
-    if msg.sender_id == 777000:  # incoming private messages have no from_id (layer 119+)
-        print(msg.text)
-
-client.start()
-client.run_until_disconnected()
+if __name__ == "__main__":
+    run_standalone(LoginCodesFunc, *([path] if path else []))

@@ -28,6 +28,31 @@ class TelethonFunction(BaseFunction):
             raise AccountLimited("сессия мертва (бан или выход)")
         return me
 
+    async def resolve_chat(self, session, peer):
+        """A private link's chat (PeerChannel: no username to look up) resolves only from the session's
+        cache, empty in a fresh process and after each release: on a miss the dialogs are loaded once,
+        as the scraper's _warm_channel does. Any other peer is returned as is."""
+        if not isinstance(peer, types.PeerChannel):
+            return peer
+        try:
+            return await session.get_input_entity(peer)
+        except ValueError:
+            await session.get_dialogs()  # their entities land in the cache
+            return await session.get_input_entity(peer)
+
+    async def resolve_message(self, session, peer, message_id, comment=None):
+        """(chat, message id) to act on: the post itself, or with `comment` (a …?comment=<id>
+        link, see comment_id) that comment, which lives in the channel's discussion group."""
+        peer = await self.resolve_chat(session, peer)
+        if comment is None:
+            return peer, message_id
+        full = await session(functions.channels.GetFullChannelRequest(peer))
+        linked = full.full_chat.linked_chat_id
+        chat = next((c for c in full.chats if c.id == linked), None) if linked else None
+        if chat is None:
+            raise ValueError("у канала нет чата обсуждения")
+        return chat, comment
+
     async def request_each(self, session, report, request, done: str, failed: str) -> bool:
         """One request on one worker, reported under its name: `done`, or `failed: <error>`;
         True if it went through."""

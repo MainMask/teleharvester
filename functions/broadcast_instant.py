@@ -29,7 +29,7 @@ class InstantBroadcastFunc(TelethonFunction):
         link = console.input("[bold red]ссылка> [/]")
         broadcast = Broadcast(self.storage, self.settings)
         broadcast.ask_accounts_count()
-        broadcast.ask()
+        broadcast.ask(modes=(0, 4))  # no trigger: no reply to it, and every worker sends
 
         await asyncio.gather(*[
             self._one(broadcast, session, link, console_report)

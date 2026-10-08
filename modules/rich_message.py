@@ -85,6 +85,20 @@ class RichContent:
             self.temp_dir = None
 
 
+# The recipient or the chat refuses this worker whatever the content: a retry without the custom
+# emoji would only double the failed requests (and report a Premium problem that isn't there).
+_RECIPIENT_ERRORS = (
+    errors.UserPrivacyRestrictedError,
+    errors.PeerIdInvalidError,
+    errors.UserIsBlockedError,
+    errors.YouBlockedUserError,
+    errors.InputUserDeactivatedError,
+    errors.ChatWriteForbiddenError,
+    errors.ChannelPrivateError,
+    errors.ChatAdminRequiredError,
+)
+
+
 async def _send_media(session, peer, content, entities, safe_call, cached, **kwargs):
     if len(content.media) == 1:
         item = content.media[0]
@@ -165,7 +179,7 @@ async def send(session, peer, content, safe_call, report=None, **kwargs):
     entities = await _resolve_mentions(session, content.entities)
     try:
         await _send_once(session, peer, content, entities, safe_call, **kwargs)
-    except AccountLimited:
+    except (AccountLimited, *_RECIPIENT_ERRORS):
         raise
     except Exception:
         if not has_custom_emoji(entities):

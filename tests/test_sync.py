@@ -570,6 +570,33 @@ def test_verify_on_a_personal_account_warns_only_about_limits():
     assert warning.startswith("⚠️ Это ваш личный аккаунт") and "username" not in warning  # no base here
 
 
+def test_a_personal_scrape_holds_its_account_too():
+    """Its login codes (🔑 Код входа) must not connect a second client to the scraped key."""
+    from bot.routers import scraping as router
+    from bot.services.jobs import JobManager
+
+    pool, account = _pool(), ns(path="personal_sessions/me.jsession", label="me", personal=True)
+
+    async def say(text):
+        raise AssertionError(text)
+    assert asyncio.run(router._take_slot(JobManager(), pool, account, "Скрап", say, say)) is not None
+    assert pool.scraping is account
+
+
+def test_no_scrape_starts_on_a_personal_account_whose_codes_are_read():
+    from bot.routers import scraping as router
+    from bot.services.jobs import JobManager
+
+    pool, account, said = _pool(), ns(path="personal_sessions/me.jsession", label="me", personal=True), []
+    pool.reading_codes[account.path] += 1
+
+    async def say(text):
+        said.append(text)
+    scrapes = JobManager()
+    assert asyncio.run(router._take_slot(scrapes, pool, account, "Скрап", say, say)) is None
+    assert said == [router.PERSONAL_BUSY] and not scrapes.active and pool.scraping is None
+
+
 def test_the_verify_stop_says_stopped(monkeypatch, tmp_path):
     from bot.routers import scraping as router
     from bot.services import scraping
@@ -675,8 +702,9 @@ def test_a_new_scrape_drops_an_abandoned_ones_settings():
 
 def test_a_broken_marker_reads_as_none(monkeypatch, tmp_path):
     from bot.routers import scraping as router
+    from modules import scraped_files
 
-    monkeypatch.setattr(router, "MARKER_PATH", str(tmp_path / "bot_scrape.json"))
+    monkeypatch.setattr(scraped_files, "SCRAPE_MARKER", str(tmp_path / "bot_scrape.json"))
     (tmp_path / "bot_scrape.json").write_text("{half-writ")
     assert router._read_marker() is None
 
@@ -768,7 +796,7 @@ def test_cli_accounts_list_by_username(monkeypatch):
 
     printed = []
     monkeypatch.setattr(accounts.console, "print", lambda table, *a, **k: printed.append(table))
-    asyncio.run(accounts.AccountsFunc(_Storage(), ns()).execute())
+    asyncio.run(accounts.AccountsFunc(_Storage(), ns(api_id=1, api_hash="h")).execute())
 
     usernames = list(printed[0].columns[2].cells)
     assert usernames == ["@Curator1", "@Curator2", "@Curator10", "—"]
@@ -842,7 +870,7 @@ def test_cli_menu_is_the_bot_s_menu(monkeypatch):
     assert len(entries) == len(functions)  # nothing lost, nothing repeated
     assert entries[-1][0] == "Прочее" and entries[-1][2] == "Some new thing"
     workers = [e[2] for e in entries if e[0] == "🤖 Воркеры"]
-    assert workers == ["Список аккаунтов", "Прокси"]
+    assert workers == ["Список аккаунтов", "Прокси", "Добавить по номеру", "Код входа", "Убрать личный аккаунт"]
 
     printed = []
     monkeypatch.setattr(main.console, "print", lambda text="", *a, **k: printed.append(text))
@@ -902,7 +930,7 @@ def test_the_marker_is_written_atomically(tmp_path):
     from bot.routers import scraping as router
 
     router._write_marker({"name": "n"})
-    assert router._read_marker() == {"name": "n"} and not os.path.exists(router.MARKER_PATH + ".tmp")
+    assert router._read_marker() == {"name": "n"} and not os.path.exists(router.scraped_files.SCRAPE_MARKER + ".tmp")
 
 
 def test_a_crashed_scrape_process_says_the_data_is_kept(monkeypatch, tmp_path):
@@ -1066,7 +1094,8 @@ def test_picked_workers_reach_the_job():
     assert seen == [[_B]]
 
 
-def test_all_picked_runs_on_the_whole_pool():
+def test_all_picked_runs_on_the_shown_workers_only():
+    """«Все» is the workers the picker showed: one added meanwhile (by phone, tdata) was never picked."""
     from bot.routers import profile
 
     seen = []
@@ -1080,7 +1109,7 @@ def test_all_picked_runs_on_the_whole_pool():
     functions = {"HideLastSeenFunc": object()}
     asyncio.run(profile.lastseen_start(_Callback(), state, pool, functions, _Manager()))
     _pick("go", state, pool, _Manager(), functions)
-    assert seen == [None] and state.state is None
+    assert seen == [[_A, _B]] and state.state is None
 
 
 def test_delegate_keeps_only_the_picked_workers(monkeypatch):

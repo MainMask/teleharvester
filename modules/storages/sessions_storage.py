@@ -215,7 +215,7 @@ class SessionsStorage:
             "string_sessions_skipped": len(self.full_sessions) - len(paths),
         }
 
-    def _forget_session(self, path: str):
+    def forget_session(self, path: str):
         """Drop a session from every index, so no stale reference survives a removal."""
         self.full_sessions.pop(path, None)
         self.usernames.pop(path, None)
@@ -242,13 +242,13 @@ class SessionsStorage:
             # disconnect a forgotten client, or its keepalive/update tasks run on forever;
             # connect() may have succeeded before the check
             await session.disconnect()
-            self._forget_session(path)
+            self.forget_session(path)
             return
 
         except Exception as err:
             console.log(f"Сессия {path} вернула ошибку: {err}. Пропускаю.")
             await session.disconnect()
-            self._forget_session(path)
+            self.forget_session(path)
             return
 
         if not authorized:
@@ -262,7 +262,7 @@ class SessionsStorage:
     def move_to_inactive(self, path: str):
         """Drop a dead (banned / logged out) session from the pool and move its file
         to sessions/inactive/."""
-        self._forget_session(path)
+        self.forget_session(path)
 
         inactive_dir = os.path.join(os.path.dirname(path), "inactive")
         os.makedirs(inactive_dir, exist_ok=True)

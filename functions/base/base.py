@@ -1,5 +1,6 @@
 import asyncio
 import random
+from urllib.parse import parse_qs, urlparse
 from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Prompt
@@ -121,6 +122,12 @@ class BaseFunction:
         # the peer is the segment right after the host (a topic id may follow it)
         host = next((i for i, p in enumerate(parts) if p.endswith(("t.me", "telegram.me"))), None)
         return (parts[host + 1] if host is not None else parts[-2]), message_id
+
+    @staticmethod
+    def comment_id(link) -> int | None:
+        """The comment a t.me post link points at (…/<post>?comment=<id>), or None."""
+        comment = parse_qs(urlparse(link.strip()).query).get("comment")
+        return int(comment[0]) if comment and comment[0].isdigit() else None
 
     async def safe_call(self, make_awaitable):
         """Run make_awaitable() (a no-arg callable returning a coroutine), waiting out

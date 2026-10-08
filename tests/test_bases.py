@@ -738,6 +738,16 @@ def test_output_path_next_to_the_input():
     assert scraped_files.output_path("db/my file.parquet", "links") == os.path.join("db", "my file_links")
 
 
+def test_missed_path_for_a_file_a_folder_and_a_glob(tmp_path):
+    posts = tmp_path / "Omni_posts.parquet"
+    posts.write_text("")
+    assert scraped_files.missed_path(str(posts), "@omni") == str(tmp_path / "Omni_posts_missed.parquet")
+    # a folder or a glob: in that folder, named after the channel (never "*" in a file name)
+    assert scraped_files.missed_path(str(tmp_path), "@omni") == str(tmp_path / "omni_missed.parquet")
+    assert scraped_files.missed_path(str(tmp_path / "*_posts*.parquet"), "-1001629147115") == \
+        str(tmp_path / "c1629147115_missed.parquet")
+
+
 def test_analysis_links_by_button(tmp_path, monkeypatch):
     from scraper import analysis
 

@@ -9,14 +9,16 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.callbacks import MenuAction, MenuCB
+from bot.callbacks import ChoiceCB, MenuAction, MenuCB
+from bot.keyboards.common import choice_kb
 from bot.keyboards.menu import WORKERS_BUTTON, main_menu, workers_kb
 from bot.routers._common import ensure_workers, require_text
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import ImportTdata, SetDelay, SetProfilePause, SetProxy
 from functions.base.base import BaseFunction
-from modules import restricted_workers, tdata_import
+from modules import login as sign_in, restricted_workers, scraped_files, tdata_import
+from modules.scraper_creds import find_account, scrape_accounts
 from modules.storages.sessions_storage import profile_order
 from modules.settings import Settings
 from modules.types.proxy import ACCOUNTS_PER_PROXY, parse_proxies
@@ -57,7 +59,7 @@ def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str 
             f"👤 {username} · 🆔 <code>{me.id}</code>{mark}")
 
 
-async def _send_chunked(message: Message, header: str, lines: list[str], sep: str = "\n\n"):
+async def send_chunked(message: Message, header: str, lines: list[str], sep: str = "\n\n"):
     """Send header + cards (blank line between, or `sep`) in message-sized chunks."""
     chunks, current = [], header
     for line in lines:
@@ -72,15 +74,16 @@ async def _send_chunked(message: Message, header: str, lines: list[str], sep: st
 
 
 WORKERS_HELP = (
-    "<b>📋 Список аккаунтов</b> — имя, username и номер каждого воркера, ограничения от @SpamBot\n"
+    "<b>📋 Список аккаунтов</b> — имя, username и номер каждого воркера, ограничения от @SpamBot; "
+    "личные аккаунты (и их удаление)\n"
     "<b>👤 Профиль</b> — имя, username, bio, фото, видимость\n"
     "<b>🔐 Безопасность</b> — 2FA и сброс чужих сессий\n"
     "<b>🩺 Проверка и статистика</b> — ограничения от @SpamBot, страны номеров, очистка\n"
     "<b>🌐 Прокси</b> — раздать прокси всем аккаунтам\n"
     "<b>⏱ Задержка</b> — пауза между действиями воркера в рассылках и вступлениях\n"
     "<b>💬 Автоответ</b> — ответ тем, кто ответил на рассылку в ЛС, и их сообщения сюда\n"
-    "<b>📲 Добавить по номеру</b> — войти в аккаунт по номеру и коду\n"
-    "<b>🔑 Код входа</b> — коды от Telegram, пришедшие воркеру (для входа с другого устройства)\n"
+    "<b>📲 Добавить по номеру</b> — войти по номеру и коду: воркер или личный аккаунт (только для скрапа)\n"
+    "<b>🔑 Код входа</b> — коды от Telegram, пришедшие воркеру или личному аккаунту (для входа с другого устройства)\n"
     "<b>📥 Загрузить tdata</b> — добавить аккаунт из Telegram Desktop"
 )
 
@@ -106,12 +109,17 @@ async def back_to_workers(callback: CallbackQuery, state: FSMContext, pool: Work
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.LIST))
-async def list_accounts(callback: CallbackQuery, pool: WorkerPool, manager: JobManager):
+async def list_accounts(callback: CallbackQuery, pool: WorkerPool, manager: JobManager, personal):
     await callback.answer()
-    await accounts(callback.message, pool, manager)
+    await accounts(callback.message, pool, manager, personal)
 
 
-async def accounts(message: Message, pool: WorkerPool, manager: JobManager):
+async def accounts(message: Message, pool: WorkerPool, manager: JobManager, personal):
+    await _list_workers(message, pool, manager)
+    await _list_personal(message, personal)
+
+
+async def _list_workers(message: Message, pool: WorkerPool, manager: JobManager):
     count = pool.count()
 
     if count == 0:
@@ -161,7 +169,103 @@ async def accounts(message: Message, pool: WorkerPool, manager: JobManager):
     header = f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>"
     if restricted := sum(1 for group, _ in checks.values() if group):
         header += f" · ограничены: <b>{restricted}</b>"
-    await _send_chunked(message, header, lines)
+    await send_chunked(message, header, lines)
+
+
+# --- personal accounts (personal_sessions/): listed from their files, removable -----------
+
+async def _list_personal(message: Message, personal):
+    """The personal accounts, as stored: one is never connected just to be listed."""
+    listed = scrape_accounts(None, personal)
+    if not listed:
+        return
+    lines = [f"{i}. {html.escape(account.label)}" for i, account in enumerate(listed, 1)]
+    await message.answer(
+        f"👤 <b>Личные</b> (только для скрапа): <b>{len(listed)}</b>\n\n" + "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=choice_kb("prm_start", [("🗑 Убрать личный аккаунт", "go")]),
+    )
+
+
+async def _personal_at(personal, state: FSMContext, value: str):
+    paths = (await state.get_data()).get("prm_paths", [])
+    index = int(value)
+    return find_account(scrape_accounts(None, personal), paths[index]) if 0 <= index < len(paths) else None
+
+
+async def _confirm_removal(message: Message, account, index: int):
+    await message.answer(
+        f"Убрать личный аккаунт {html.escape(account.label)}?\n\n"
+        f"Бот завершит авторизацию из этого файла и удалит его: <code>{html.escape(account.path)}</code>. "
+        "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
+        "тот Desktop тоже выйдет из аккаунта.",
+        parse_mode="HTML",
+        reply_markup=choice_kb("prm_ok", [("🗑 Да, убрать", str(index)), ("Отмена", "no")]),
+    )
+
+
+def _removal_blocked(pool: WorkerPool, path: str) -> str | None:
+    """Why the personal account can't be removed now, or None."""
+    if pool.scraping is not None and pool.scraping.path == path:
+        return "⛔ На этом аккаунте идёт скрап — уберите его после окончания."
+    if pool.busy(path):
+        return "⛔ Бот сейчас читает коды входа этого аккаунта — повторите через несколько секунд."
+    if scraped_files.unfinished_scrape(path):
+        return "⛔ На этом аккаунте есть незавершённый скрап — продолжить его можно только на нём."
+    return None
+
+
+@router.callback_query(ChoiceCB.filter(F.scope == "prm_start"))
+async def personal_remove_start(callback: CallbackQuery, state: FSMContext, personal):
+    await callback.answer()
+    await state.clear()
+    listed = scrape_accounts(None, personal)
+    if not listed:
+        await callback.message.answer("Личных аккаунтов нет.")
+        return
+    await state.update_data(prm_paths=[account.path for account in listed])  # buttons carry an index
+    if len(listed) == 1:
+        await _confirm_removal(callback.message, listed[0], 0)
+        return
+    await callback.message.answer("Какой личный аккаунт убрать?", reply_markup=choice_kb(
+        "prm_pick", [(account.label, str(i)) for i, account in enumerate(listed)]))
+
+
+@router.callback_query(ChoiceCB.filter(F.scope == "prm_pick"))
+async def personal_remove_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, personal):
+    await callback.answer()
+    account = await _personal_at(personal, state, callback_data.value)
+    if account is None:  # a stale button: the list changed or another flow cleared it
+        await callback.message.answer("Список устарел — откройте 📋 Список аккаунтов заново.")
+        return
+    await _confirm_removal(callback.message, account, int(callback_data.value))
+
+
+@router.callback_query(ChoiceCB.filter(F.scope == "prm_ok"))
+async def personal_remove(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
+                          pool: WorkerPool, personal):
+    await callback.answer()
+    if callback_data.value == "no":
+        await state.clear()
+        await callback.message.answer("Отменено.")
+        return
+    account = await _personal_at(personal, state, callback_data.value)
+    if account is None:
+        await callback.message.answer("Список устарел — откройте 📋 Список аккаунтов заново.")
+        return
+    if reason := _removal_blocked(pool, account.path):
+        await callback.message.answer(reason)
+        return
+
+    await state.clear()
+    logged_out = await sign_in.remove_personal(personal, account)
+    label = html.escape(account.label)
+    await callback.message.answer(
+        f"✅ Личный аккаунт {label} убран: сессия бота завершена, файл удалён." if logged_out else
+        f"⚠️ Файл личного аккаунта {label} удалён, но завершить сессию бота не удалось — "
+        "завершите её вручную: Telegram → Настройки → Устройства.",
+        reply_markup=main_menu(),
+    )
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.PROXY))

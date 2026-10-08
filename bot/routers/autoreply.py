@@ -15,7 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.menu import main_menu
 from bot.routers._common import require_text
-from bot.routers.accounts import _send_chunked
+from bot.routers.accounts import send_chunked
 from bot.services import autoreply
 from bot.services.delegation import WorkerPool
 from bot.states import SetAutoreplyText
@@ -112,7 +112,7 @@ async def autoreply_workers(callback: CallbackQuery, pool: WorkerPool):
     """The full per-worker list (the screen shows the top TOP_WORKERS), in message-sized chunks."""
     await callback.answer()
     stats = autoreply.reply_stats(autoreply.load_replied(), datetime.now())
-    await _send_chunked(callback.message, "📊 <b>Ответили на рассылку — по воркерам</b>",
+    await send_chunked(callback.message, "📊 <b>Ответили на рассылку — по воркерам</b>",
                         _worker_lines(stats, pool), sep="\n")
 
 

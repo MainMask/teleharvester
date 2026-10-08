@@ -120,7 +120,8 @@ async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
             await callback.answer("Отметьте хотя бы одного воркера", show_alert=True)
             return
         await callback.answer()
-        await state.update_data(workers=None if len(picked) == len(paths) else [paths[i] for i in picked])
+        # the paths, «all» too: a worker added meanwhile (by phone, tdata) was never shown nor picked
+        await state.update_data(workers=[paths[i] for i in picked])
         await callback.message.edit_text(f"Воркеры: {len(picked)} из {len(paths)}")
         await _NEXT[data["pick_key"]](callback.message, state,
                                       dict(pool=pool, functions=functions, manager=manager))
@@ -155,7 +156,7 @@ async def workers_pick_stale(callback: CallbackQuery):
 
 
 async def _picked(state: FSMContext) -> list[str] | None:
-    """The session paths of the workers picked for the job; None: all of them."""
+    """The session paths of the workers picked for the job."""
     return (await state.get_data()).get("workers")
 
 

@@ -122,6 +122,8 @@ class SpamBlockFunc(TelethonFunction):
             else:
                 date = release_date(text)
 
+                # a restricted worker is a problem the admin must see, as a dead one: «⚠️ Ошибок»
+                self.progress_failed()
                 if date is None:
                     # excluded from mailing/contacts; its people wait for the admin's decision
                     # (the button after a status check), then go to other workers
@@ -243,7 +245,7 @@ class SpamBlockFunc(TelethonFunction):
                     session_path,
                     os.path.join(path, session_name)
                 )
-                self.storage._forget_session(session_path)  # no stale path for a later move
+                self.storage.forget_session(session_path)  # no stale path for a later move
 
         return kept
 

@@ -1,3 +1,5 @@
+from collections import Counter
+
 from telethon import TelegramClient
 
 from .registry import RISKY, BotFunction
@@ -17,11 +19,13 @@ class WorkerPool:
 
     def __init__(self, sessions_storage):
         self.storage = sessions_storage
-        # the ScrapeAccount of the worker the scraper runs on (bot/routers/scraping.py):
+        # the ScrapeAccount (a worker or a personal one) the scraper runs on (bot/routers/scraping.py):
         # new jobs run without it, so one account never scrapes and mails at once
         self.scraping = None
         self.in_job: list = []  # the workers of the job run() is running: no scrape starts on them
         self.polling = None  # the session path autoreply is polling now: no scrape starts on it either
+        # the session paths 🔑 Код входа is reading now (path -> reads in flight: a double 🔄): nor on them
+        self.reading_codes: Counter = Counter()
 
     @property
     def workers(self) -> list:
@@ -39,8 +43,9 @@ class WorkerPool:
                 )
 
     def busy(self, path: str) -> bool:
-        """The worker (session path) is in the job run() is running, or autoreply polls it."""
-        return path == self.polling or any(self.storage.get_session_path(worker) == path for worker in self.in_job)
+        """The account (session path) is in the job run() is running, autoreply polls it or its
+        login codes are being read."""
+        return path == self.polling or self.reading_codes[path] > 0 or any(self.storage.get_session_path(worker) == path for worker in self.in_job)
 
     def delegate(self, func_instance, only=None) -> list:
         """Point a function at the workers (never the host) but the one the scraper runs

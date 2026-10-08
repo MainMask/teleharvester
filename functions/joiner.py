@@ -48,7 +48,7 @@ class JoinerFunc(TelethonFunction):
                 if isinstance(updates, types.messages.ChatInviteJoinResultWebView):
                     await emit(f"[!] [аккаунт {index + 1}] чат требует подтверждения вступления в web-app бота")
                     return False
-                # the joined chat for the follow-up broadcast (a joinchat link is no peer);
+                # the joined chat for the follow-up broadcast (an invite link is no peer);
                 # the result wraps the Updates on this layer, UpdatesTooLong has no chats
                 chats = getattr(getattr(updates, "updates", updates), "chats", None)
                 return chats[0] if chats else link
@@ -107,7 +107,6 @@ class JoinerFunc(TelethonFunction):
     async def run(self, mode, link, delay, report, captcha=False):
         """Simplified join for the bot: join `mode` into `link` on every worker."""
         self.delay_range = delay
-        link = link.replace("+", "joinchat/")
 
         joined = 0
         self.progress_total(len(self.sessions))
@@ -174,8 +173,6 @@ class JoinerFunc(TelethonFunction):
             mode = console.input("[bold red]режим> [/]")
 
         link = console.input("[bold red]ссылка> [/]")
-        
-        link = link.replace("+", "joinchat/")
 
         speed = Prompt.ask(
             "[bold red]скорость (normal — по очереди, fast — все сразу)>[/]",
@@ -186,7 +183,7 @@ class JoinerFunc(TelethonFunction):
 
         if broadcast:
             broadcast_func = Broadcast(self.storage, self.settings)
-            function_index = broadcast_func.ask()
+            function_index = broadcast_func.ask(modes=(0, 1, 4))  # no trigger message to reply to
 
         else:
             function_index = None

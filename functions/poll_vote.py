@@ -8,7 +8,7 @@ from functions.base.base import console_report
 class PollVoteFunc(TelethonFunction):
     """Vote in poll"""
 
-    async def vote(self, session, channel, post_id, option_number, report):
+    async def vote(self, session, channel, post_id, option_number, report, comment=None):
         async with self.storage.ainitialize_session(session):
             try:
                 me = await self.get_me(session)
@@ -18,6 +18,7 @@ class PollVoteFunc(TelethonFunction):
                 return False
 
             try:
+                channel, post_id = await self.resolve_message(session, channel, post_id, comment)
                 message = await session.get_messages(channel, ids=post_id)
                 option = message.poll.poll.answers[option_number].option
 
@@ -41,9 +42,10 @@ class PollVoteFunc(TelethonFunction):
 
     async def run(self, link, option_number, report):
         channel, post_id = self.parse_message_link(link)
+        comment = self.comment_id(link)  # a poll in a comment: its link carries ?comment=
 
         results = await self.run_sequential(
-            lambda session, report: self.vote(session, channel, post_id, option_number, report),
+            lambda session, report: self.vote(session, channel, post_id, option_number, report, comment),
             report,
             pause=self.settings.delay,
         )

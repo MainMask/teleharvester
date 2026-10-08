@@ -250,9 +250,10 @@ async def import_all(workers_dir: str = "tdata_import", sessions_dir: str = "ses
             try:
                 with open(os.path.join(sessions_dir, name)) as fileobj:
                     proxy = json.load(fileobj).get("proxy")
-            except (OSError, ValueError):  # a broken file is skipped by SessionsStorage too
+                used.append(Proxy(**proxy) if proxy else None)
+            # a broken file is skipped by SessionsStorage too
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 continue
-            used.append(Proxy(**proxy) if proxy else None)
 
     assigned = []
     try:
