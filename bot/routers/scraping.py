@@ -189,10 +189,10 @@ async def _take_slot(scrapes: JobManager, pool: WorkerPool, account, label: str,
 
 async def _free_slot(scrapes: JobManager, pool: WorkerPool, stop: threading.Event, status):
     """The job is over: its ⏹, its slot and its worker are free."""
-    _disarm_stop(stop)
     scrapes.release()
     pool.scraping = None
     await _drop_button(status)
+    _disarm_stop(stop)  # last: stop_for_shutdown waits for it
 
 
 def _write_marker(marker: dict):
@@ -543,9 +543,11 @@ async def resume_after_restart(bot, scrapes: JobManager, pool: WorkerPool, perso
     if meta is None:  # finished or removed meanwhile
         _drop_marker()
         return
-    # progress since the last automatic resume, by the checkpoint's post count
+    # progress since the last automatic resume, by the checkpoint's post count; a clean
+    # shutdown (systemd / needrestart restarts) is no crash and doesn't count as a stall
     t_index = meta.get("t_index", 0)
-    stalls = marker.get("stalls", 0) + 1 if marker.get("t_index") == t_index else 0
+    clean = marker.pop("clean_shutdown", False)
+    stalls = marker.get("stalls", 0) + (not clean) if marker.get("t_index") == t_index else 0
     if stalls >= MAX_STALLED_RESUMES:
         _drop_marker()
         try:
@@ -583,8 +585,17 @@ async def stop_for_shutdown():
     so the next start continues it."""
     global _shutting_down
     _shutting_down = True
+    marker = _read_marker()
+    if marker is not None:  # see resume_after_restart: a crash never gets here
+        _write_marker({**marker, "clean_shutdown": True})
     if _job_stop is not None:
         _job_stop.set()
+        # its last bot call (_free_slot) must come before aiogram closes the bot's session, or
+        # it opens a new one nobody closes; within systemd's TimeoutStopSec (30 s)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + scraping.CHILD_STOP_GRACE + 5
+        while _job_stop is not None and loop.time() < deadline:
+            await asyncio.sleep(0.1)
 
 
 # =============================== members ===============================

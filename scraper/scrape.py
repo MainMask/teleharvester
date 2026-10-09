@@ -947,6 +947,9 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
                     id_hi = id_lo = 0
                 id_span = id_hi - id_lo
                 sess_start_id = last_id or id_hi  # last_id = resume cursor, else 0
+                if params.on_progress is not None:  # before the first post: one may take minutes (reactors)
+                    cf = min(max((id_hi - last_id) / id_span, 0.0), 1.0) if id_span > 0 and last_id else 0.0
+                    params.on_progress((i + cf) / n_channels, None, t_index)
                 while True:
                     try:
                         async for message in client.iter_messages(

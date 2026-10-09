@@ -442,15 +442,24 @@ def test_a_bot_shutdown_checkpoints_silently_and_keeps_the_marker(monkeypatch):
     from bot.routers import scraping as router
     from bot.services.jobs import JobManager
 
-    async def shutdown(params):
-        await router.stop_for_shutdown()
-        assert params.stop.is_set()
+    async def checkpoints_on_stop(params):
+        while not params.stop.is_set():
+            await asyncio.sleep(0.01)
         raise SystemExit(1)
 
-    _scrapes(monkeypatch, shutdown)
+    _scrapes(monkeypatch, checkpoints_on_stop)
     bot = _SBot()
     params = router._scrape_params({**_SCRAPE, "date_max": "31.01.2024"})
-    asyncio.run(router._run_scrape(bot, 1, JobManager(), _pool(), None, params))
+
+    async def scenario():
+        run = asyncio.create_task(router._run_scrape(bot, 1, JobManager(), _pool(), None, params))
+        await asyncio.sleep(0.05)
+        await router.stop_for_shutdown()
+        # returns once the job is over: its last bot call came before aiogram closes the session
+        assert router._job_stop is None
+        await run
+
+    asyncio.run(scenario())
     assert not any("прерван" in t or "остановлен" in t for t in _sent(bot))  # the bot is going down
     assert router._read_marker() is not None
 
@@ -903,6 +912,27 @@ def test_auto_resume_gives_up_after_restarts_without_progress(monkeypatch, tmp_p
 
     assert calls == [] and router._read_marker() is None
     assert _sent(bot)[0].startswith("⚠️ Автопродолжение скрапа «n» отключено")
+
+
+def test_restarts_after_a_clean_shutdown_dont_count_as_stalls(monkeypatch, tmp_path):
+    from bot.routers import scraping as router
+    from bot.services.jobs import JobManager
+
+    seen = []
+    _scrapes(monkeypatch, lambda params: seen.append(router._read_marker()))
+    _checkpoint(tmp_path)  # 42 posts, as in the marker: no progress since
+    router._write_marker({"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
+                          "t_index": 42, "stalls": 1})
+    asyncio.run(router.stop_for_shutdown())  # e.g. needrestart after a library upgrade
+    router._shutting_down = False
+
+    async def scenario():
+        await router.resume_after_restart(_SBot(), JobManager(), _pool(), None)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    [marker] = seen
+    assert (marker["t_index"], marker["stalls"]) == (42, 1) and "clean_shutdown" not in marker
 
 
 def test_auto_resume_with_progress_counts_afresh(monkeypatch, tmp_path):

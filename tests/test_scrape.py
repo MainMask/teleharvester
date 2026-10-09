@@ -381,7 +381,8 @@ def test_progress_lines_are_throttled(fake_client, tmp_path, capsys):
 def test_on_progress_gets_fraction_eta_and_posts(fake_client, tmp_path):
     calls = []
     scrape.run(Credentials(1, "h", ""), _params(tmp_path, on_progress=lambda *a: calls.append(a)))
-    assert calls == [(0.0, None, 1), (0.5, None, 2)]  # ETA still "estimating" in the first 30 s
+    # the first before any post; ETA still "estimating" in the first 30 s
+    assert calls == [(0.0, None, 0), (0.0, None, 1), (0.5, None, 2)]
 
 
 def test_scrape_no_comments_flag(fake_client, tmp_path):
@@ -807,6 +808,18 @@ def test_resume_flag_reloads_checkpoint(monkeypatch, tmp_path, capsys):
     assert "Resuming" in capsys.readouterr().out
     assert ResumeClient.calls[0][1] == 20
     assert list(pd.read_parquet(path)["Message ID"]) == ["30", "20", "15"]
+
+
+def test_resume_reports_progress_before_the_first_post(monkeypatch, tmp_path):
+    monkeypatch.setattr(scrape, "TelegramClient", ResumeClient)
+    _seed_checkpoint(tmp_path, [_CK_ROW_30, _CK_ROW_20],
+                     _resume_meta(tmp_path, last_id=20, t_index=2))
+    calls = []
+
+    scrape.run(Credentials(1, "h", ""), _params(tmp_path, resume=True, on_progress=lambda *a: calls.append(a)))
+
+    frac, eta, posts = calls[0]
+    assert posts == 2 and eta is None and frac > 0  # the checkpoint's count, at its cursor
 
 
 def test_resume_flag_skips_completed_channel(monkeypatch, tmp_path):
