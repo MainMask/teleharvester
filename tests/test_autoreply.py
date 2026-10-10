@@ -229,6 +229,20 @@ def test_failed_reply_is_still_forwarded_and_the_next_chat_handled():
     assert "автоответ отправлен" in notes[1][0] and "второй" in notes[1][0]
 
 
+def test_a_settings_refusal_is_named_in_the_notice():
+    from telethon.errors import ForbiddenError
+
+    client = FakeClient([dialog(user(5))])
+
+    async def send(entity, text, **kwargs):
+        raise ForbiddenError(None, "PRIVACY_PREMIUM_REQUIRED")
+
+    client.send_message = send
+    replied, notes = run_poll(FakePool([client]))
+
+    assert replied == {} and "НЕ отправлен: пишут только контакты и Premium" in notes[0][0]
+
+
 def test_one_failing_chat_does_not_stop_the_worker():
     client = FakeClient([dialog(user(5), msg_id=7), dialog(user(6), msg_id=8)])
     real_history = client.get_messages

@@ -98,6 +98,29 @@ _RECIPIENT_ERRORS = (
     errors.ChatAdminRequiredError,
 )
 
+PREMIUM_ONLY = "пишут только контакты и Premium"
+
+
+def paid_reason(stars) -> str:
+    return f"платные сообщения: {stars} ⭐"
+
+
+def refusal_reason(err) -> str | None:
+    """Why the recipient's own settings refuse this worker, or None for any other error.
+
+    Telethon 1.45 has no class for these two: they arrive as a bare RPCError (its message
+    is the Telegram error code). Like _RECIPIENT_ERRORS, no content change gets through.
+    """
+    if not isinstance(err, errors.RPCError):
+        return None
+    message = err.message or ""
+    if message == "PRIVACY_PREMIUM_REQUIRED":
+        return PREMIUM_ONLY
+    if message.startswith("ALLOW_PAYMENT_REQUIRED"):  # ALLOW_PAYMENT_REQUIRED_<stars>
+        stars = message.removeprefix("ALLOW_PAYMENT_REQUIRED").lstrip("_")
+        return paid_reason(stars) if stars.isdigit() else "платные сообщения"
+    return None
+
 
 async def _send_media(session, peer, content, entities, safe_call, cached, **kwargs):
     if len(content.media) == 1:
@@ -181,8 +204,8 @@ async def send(session, peer, content, safe_call, report=None, **kwargs):
         await _send_once(session, peer, content, entities, safe_call, **kwargs)
     except (AccountLimited, *_RECIPIENT_ERRORS):
         raise
-    except Exception:
-        if not has_custom_emoji(entities):
+    except Exception as err:
+        if not has_custom_emoji(entities) or refusal_reason(err):
             raise
         if report:
             await report("кастомные эмодзи не отправлены (нужен Premium), повторяю без них")

@@ -4,6 +4,7 @@ from datetime import datetime
 
 from telethon import types
 from telethon.errors import PeerIdInvalidError
+from telethon.tl.functions.users import GetRequirementsToContactRequest
 from rich.prompt import Prompt, Confirm
 from modules.console import console
 from rich.table import Table
@@ -26,6 +27,10 @@ LIMITS_PATH = os.path.join("stats", "account_limits.json")
 # run); acceptable for a dedup/stat ledger. account_limits.json stays per-send: it
 # is small (pruned to today) and its per-send write guards the daily cap on a crash.
 STATS_SAVE_EVERY = 25
+
+# Recipients asked about in one users.getRequirementsToContact call (Telegram documents no
+# limit; a failed call leaves its batch unchecked (reported once), see check_requirements).
+REQUIREMENTS_BATCH = 100
 
 
 class PmMailingFunc(TelethonFunction):
@@ -97,6 +102,100 @@ class PmMailingFunc(TelethonFunction):
 
         return self._me_cache[id(session)]
 
+    async def check_requirements(self, session, recipient, me):
+        """Ask Telegram what this worker needs to write to `recipient` and the base's
+        next people in its queue (one request for up to REQUIREMENTS_BATCH): the answer
+        depends on the worker (its Premium, its contacts), so it is cached per worker.
+        A failed check leaves the batch unknown: they are sent to as without it."""
+        rows, start = self._positions.get(id(recipient), ([recipient], 0))
+        batch = []
+        for row in rows[start:]:
+            if len(batch) == REQUIREMENTS_BATCH:
+                break
+            if row.get("owner_id") in (None, me.id) and (id(session), row["user_id"]) not in self._requirements:
+                batch.append(row)
+
+        request = GetRequirementsToContactRequest(
+            [types.InputUser(row["user_id"], row["access_hash"]) for row in batch]
+        )
+        try:
+            result = await self.safe_call(lambda: session(request))
+            if len(result) != len(batch):
+                raise ValueError(f"{len(result)} ответов на {len(batch)} получателей")
+        except AccountLimited:
+            raise
+        except Exception as err:
+            result = [None] * len(batch)
+            if not self._check_failed:
+                self._check_failed = True
+                await self._report(f"проверка настроек получателей не удалась, отправляю без неё: {err}")
+
+        for row, requirement in zip(batch, result):
+            self._requirements[(id(session), row["user_id"])] = requirement
+
+    async def contact_requirement(self, session, recipient, me):
+        """Why the recipient's settings refuse this worker (see check_requirements), or None."""
+        key = (id(session), recipient["user_id"])
+        if key not in self._requirements:
+            await self.check_requirements(session, recipient, me)
+
+        requirement = self._requirements[key]
+        if isinstance(requirement, types.RequirementToContactPaidMessages):
+            return rich_message.paid_reason(requirement.stars_amount)
+        if isinstance(requirement, types.RequirementToContactPremium) and not me.premium:
+            return rich_message.PREMIUM_ONLY
+        return None
+
+    def hand_to_premium(self, recipient, me) -> bool:
+        """Keep a "Premium only" refusal for the run's Premium workers (see premium_pass)
+        when another worker may take this recipient at all: one of the shared queue."""
+        if self._premium_pass or me.premium:
+            return False
+        if not (isinstance(recipient, str) or id(recipient) in self._shared_ids):
+            return False  # the base owner's only, or a worker's own contact
+        if not self.premium_candidates():
+            return False
+        self._for_premium.append(recipient)
+        return True
+
+    def premium_candidates(self):
+        """The shared queue's workers that may have Premium: not out this run, and not
+        polled without it (one not polled yet is asked in the pass)."""
+        return [s for s in self._shared_sessions if id(s) not in self._out
+                and (id(s) not in self._me_cache or self._me_cache[id(s)].premium)]
+
+    async def send_tracked(self, session, recipient):
+        """send_one, remembering the workers that ran out this run (no Premium pass for them)."""
+        try:
+            return await self.send_one(session, recipient)
+        except AccountLimited:
+            self._out.add(id(session))
+            raise
+
+    async def send_premium(self, session, recipient):
+        """send_one for the Premium pass: a worker without Premium passes the recipient on."""
+        if not (await self.account(session)).premium:
+            raise AccountLimited("нет Premium")
+        return await self.send_one(session, recipient)
+
+    async def premium_pass(self, report):
+        """The shared queue's "Premium only" refusals, again, by the Premium workers still free."""
+        recipients, self._premium_pass = self._for_premium, True
+        candidates = self.premium_candidates()  # one polled without Premium isn't even connected
+        done = 0
+        if candidates:
+            await report(f"Ищу Premium-воркера для {len(recipients)} получателей «только Premium»")
+            self.progress_extend(len(recipients))  # their first pass is already counted
+            # a requirements check now takes the next of these, not the rest of their first queue
+            self._positions.update({id(row): (recipients, i) for i, row in enumerate(recipients)
+                                    if isinstance(row, dict)})
+            done = await self.run_with_rotation(recipients, self.send_premium, candidates)
+        if left := len(recipients) - done:
+            self._premium_only += left
+            if candidates:
+                self.progress_drop(left)
+            await report(f"Нет свободного Premium-воркера: {left} получателей «только Premium» не отправлены")
+
     async def pause_between_accounts(self, account_key, name):
         if account_key in self._active_accounts:
             return
@@ -127,6 +226,20 @@ class PmMailingFunc(TelethonFunction):
 
         await self.pause_between_accounts(account_key, name)
 
+        # a base row with this worker's own hash: checkable before any send (a username or a
+        # phone would cost a resolve each; those learn it from the send's error instead)
+        if isinstance(recipient, dict) and not foreign:
+            reason = await self.contact_requirement(session, recipient, me)
+            if reason:
+                if reason != rich_message.PREMIUM_ONLY:
+                    self._paid += 1
+                elif self.hand_to_premium(recipient, me):
+                    reason += ", передаю Premium-воркеру"
+                else:
+                    self._premium_only += 1
+                await self._report(f"[{name}] пропущено: {self.recipient_label(recipient)} — {reason}")
+                return SKIPPED
+
         try:
             peer = await self.resolve_peer(session, recipient, foreign)
 
@@ -141,8 +254,14 @@ class PmMailingFunc(TelethonFunction):
         except AccountLimited:
             raise
         except Exception as err:
+            reason = rich_message.refusal_reason(err)
+            if reason == rich_message.PREMIUM_ONLY and self.hand_to_premium(recipient, me):
+                await self._report(f"[{name}] не отправлено: {self.recipient_label(recipient)} "
+                                   f"— {reason}, передаю Premium-воркеру")
+                return
             self.progress_failed()
-            await self._report(f"[{name}] не отправлено: {self.recipient_label(recipient)} {err}")
+            await self._report(f"[{name}] не отправлено: {self.recipient_label(recipient)} "
+                               + (f"— {reason}" if reason else str(err)))
             return
 
         self.record_success(key)
@@ -184,6 +303,13 @@ class PmMailingFunc(TelethonFunction):
         self._unsaved = 0
         self._skipped = 0
         self._capped = set()
+        self._requirements = {}  # (id(session), user_id) -> RequirementToContact*, None: unknown
+        self._check_failed = False
+        self._premium_only = self._paid = 0
+        self._for_premium = []  # "Premium only" refusals of the shared queue, see premium_pass
+        self._premium_pass = False
+        self._out = set()  # id(session) of the workers that ran out this run
+        self._shared_sessions = []
         self.delay_range = delay
         self.progress_prepare()
 
@@ -194,14 +320,19 @@ class PmMailingFunc(TelethonFunction):
 
         try:
             processed = waiting = 0
-            *own, (shared_sessions, shared) = self.split_queues(recipients, contacts_ledger.load())
+            queues = self.split_queues(recipients, contacts_ledger.load())
+            # where each base row stands in its queue: a requirements check takes the people after it
+            self._positions = {id(row): (rows, i) for _, rows in queues
+                               for i, row in enumerate(rows) if isinstance(row, dict)}
+            *own, (shared_sessions, shared) = queues
+            self._shared_ids = {id(row) for row in shared if isinstance(row, dict)}
             for (worker,), queue in own:
                 if worker in self.on_hold:  # on hold (scraping, or left out of a CLI run): its people wait, as for a daily cap
                     waiting += len(queue)
                     await report(f"{len(queue)} получателей ждут своего воркера: он не участвует в этом запуске.")
                     self.progress_drop(len(queue))
                     continue
-                done = await self.run_with_rotation(queue, self.send_one, [worker])
+                done = await self.run_with_rotation(queue, self.send_tracked, [worker])
                 processed += done
                 rest = queue[done:]
                 if not rest:
@@ -212,17 +343,25 @@ class PmMailingFunc(TelethonFunction):
                 # its people move only when it is out for good, not for a daily cap or a wait
                 if id(worker) not in self._capped and await self.worker_gone(worker, report):
                     shared = shared + rest
+                    self._shared_ids.update(id(row) for row in rest)
                     await report(f"Воркер выбыл: {len(rest)} его получателей переданы другим воркерам.")
                 else:
                     waiting += len(rest)
                     await report(f"{len(rest)} получателей ждут своего воркера до следующего запуска.")
                     self.progress_drop(len(rest))  # not this run: out of the total
-            processed += await self.run_with_rotation(shared, self.send_one, shared_sessions)
+            self._shared_sessions = shared_sessions
+            processed += await self.run_with_rotation(shared, self.send_tracked, shared_sessions)
+            if self._for_premium:
+                await self.premium_pass(report)
         finally:
             self.flush_stats()  # persist the tail on any exit (success, error, cancel)
 
         if self._skipped:
             await report(f"Пропущено без username (база другого аккаунта): {self._skipped}")
+
+        if self._premium_only or self._paid:
+            await report(f"Пропущено по настройкам получателя: только Premium — {self._premium_only}, "
+                         f"платные — {self._paid}")
 
         if processed + waiting < len(recipients):
             await report(

@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import types
 
-from telethon.errors import ChatWriteForbiddenError
+from telethon.errors import ChatWriteForbiddenError, ForbiddenError
 
 from functions.broadcast import Broadcast
 from functions.pmbroadcast import PmBroadcastFunc
@@ -210,3 +210,20 @@ class TestBroadcastMediaUpload:
         asyncio.run(fn.broadcast(session, "chat", report))
 
         assert session.files == [str(photo), uploaded, uploaded]
+
+
+def test_pm_broadcast_names_a_recipients_settings_refusal(monkeypatch):
+    fn = PmBroadcastFunc(_storage([_Session("acc")]), types.SimpleNamespace(delay=[0]))
+
+    async def refused(*args, **kwargs):
+        raise ForbiddenError(None, "PRIVACY_PREMIUM_REQUIRED")
+
+    monkeypatch.setattr("functions.pmbroadcast.rich_message.send", refused)
+    reports = []
+
+    async def report(text):
+        reports.append(text)
+
+    asyncio.run(fn.run("user", RichContent(text="hi"), False, report))
+
+    assert "[acc] не отправлено: пишут только контакты и Premium" in reports

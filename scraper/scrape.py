@@ -1129,8 +1129,8 @@ def run(creds: Credentials, params: ScrapeParams) -> Path:
         print(SEP)
         print(f"Run stopped: {type(exc).__name__}{detail}")
         if rj.exists():
-            print(f"\nCheckpoint saved ({rj}): run the scrape again with the same name and "
-                  "output folder to continue it.\n")
+            print(f"\nCheckpoint saved ({rj}): run the scrape again with the same name "
+                  "to continue it.\n")
         raise SystemExit(1)
     # the requested window, not the saved posts' span: `verify` must check the whole of it
     attrs = {"scrape_window": {"date_min": params.date_min.date().isoformat(),

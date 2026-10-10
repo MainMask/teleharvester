@@ -20,7 +20,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from telethon import types
 
-from modules import json_file
+from modules import json_file, rich_message
 from modules.storages.sessions_storage import connect_client, release_client
 
 # logging, not the Rich console: under systemd Rich wraps a line at 80 columns into several
@@ -119,7 +119,7 @@ async def _handle_dialog(client, dialog, path: str, label: str, text: str, repli
             raise
         except Exception as err:  # this person can't be written to (blocked, privacy, a flood limit):
             # the admins still get what they wrote; their next message is another try
-            header = f"⚠️ Ответ на рассылку — автоответ НЕ отправлен: {err}"
+            header = f"⚠️ Ответ на рассылку — автоответ НЕ отправлен: {rich_message.refusal_reason(err) or err}"
         else:
             replied[key] = datetime.now().strftime(TIME_FORMAT)
             save_replied(replied)  # before anything else can fail: never answer twice

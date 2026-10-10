@@ -55,8 +55,9 @@ def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str 
 
     name = " ".join(filter(None, [me.first_name, me.last_name])) or "—"
     username = f"@{html.escape(me.username)}" if me.username else "—"  # plain: Telegram links it
+    premium = " · ⭐ Premium" if me.premium else ""
     return (f"<b>{index}. {html.escape(name)}</b>\n"
-            f"👤 {username} · 🆔 <code>{me.id}</code>{mark}")
+            f"👤 {username} · 🆔 <code>{me.id}</code>{premium}{mark}")
 
 
 async def send_chunked(message: Message, header: str, lines: list[str], sep: str = "\n\n"):

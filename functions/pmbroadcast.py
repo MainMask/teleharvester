@@ -41,7 +41,8 @@ class PmBroadcastFunc(TelethonFunction):
                 await report(f"[{me.first_name}] лимит: {err}")
             except Exception as err:
                 self.progress_failed()
-                await report(f"[{me.first_name}] не отправлено: {err}")
+                reason = rich_message.refusal_reason(err)
+                await report(f"[{me.first_name}] не отправлено: {reason or err}")
             else:
                 self.progress_ok()
                 await report(f"[{me.first_name}] отправлено.")

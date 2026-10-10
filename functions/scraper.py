@@ -34,12 +34,13 @@ class ScrapeFunc(TelethonFunction):
 
     def execute(self):
         personal = personal_storage(self.settings.api_id, self.settings.api_hash)
-        name = Prompt.ask("[bold red]имя для выходных файлов[/]")
-        out_dir = Prompt.ask("[bold red]папка вывода[/]", default=scraped_files.BASES_DIR)
+        # always the bases folder: the mailing, contacts, verify and analysis pick their files there
+        out_dir = scraped_files.BASES_DIR
+        name = Prompt.ask(f"[bold red]имя для выходных файлов (в {out_dir})[/]")
 
         meta = pending_resume(out_dir, name)
         if meta is not None and Confirm.ask(
-            f"[bold red]здесь есть незавершённый скрап '{self.safe(name)}' "
+            f"[bold red]под этим именем есть незавершённый скрап '{self.safe(name)}' "
             f"({self.safe(', '.join(meta['channels']))}, собрано постов: {meta.get('t_index', 0)}) — "
             "продолжить? (нет — начать заново, собранное удалится)[/]", default=True,
         ):
@@ -158,8 +159,8 @@ class MembersFunc(TelethonFunction):
             console.print("[bold red]Группы не указаны.[/]")
             return
 
-        name = Prompt.ask("[bold red]имя для выходных файлов[/]")
-        out_dir = Prompt.ask("[bold red]папка вывода[/]", default=scraped_files.BASES_DIR)
+        out_dir = scraped_files.BASES_DIR  # the bases folder, where the mailing picks its bases
+        name = Prompt.ask(f"[bold red]имя для выходных файлов (в {out_dir})[/]")
         try:
             path, _ = members_run(build_credentials(account.client),
                                   MembersParams(chats=chats, name=name, out_dir=Path(out_dir)))

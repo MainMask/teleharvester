@@ -13,6 +13,10 @@ def ns(**kw):
     return types.SimpleNamespace(**kw)
 
 
+def _me(premium=False, **kw):  # a live profile: Telegram's User always carries `premium`
+    return ns(premium=premium, **kw)
+
+
 class _Msg:
     def __init__(self):
         self.replies = []
@@ -81,8 +85,8 @@ class _Manager:
 
 def test_lists_each_account(tmp_path):
     workers = [
-        _Client(ns(first_name="Meggan", last_name="Page", id=111, username="meg")),
-        _Client(ns(first_name="Ivan", last_name=None, id=222, username=None)),
+        _Client(_me(first_name="Meggan", last_name="Page", id=111, username="meg")),
+        _Client(_me(first_name="Ivan", last_name=None, id=222, username=None)),
     ]
     pool = _Pool(workers, _Storage())
     manager = _Manager(free=True)
@@ -98,9 +102,23 @@ def test_lists_each_account(tmp_path):
     assert manager.released is True
 
 
+def test_premium_workers_are_marked(tmp_path):
+    workers = [
+        _Client(_me(first_name="Prem", last_name=None, id=1, username="prem", premium=True)),
+        _Client(_me(first_name="Plain", last_name=None, id=2, username="plain")),
+    ]
+    msg = _Msg()
+
+    asyncio.run(accounts.accounts(msg, _Pool(workers, _Storage()), _Manager(free=True), None))
+
+    joined = "\n".join(msg.replies)
+    assert "👤 @prem · 🆔 <code>1</code> · ⭐ Premium" in joined
+    assert "👤 @plain · 🆔 <code>2</code>\n" in joined
+
+
 def test_sorted_by_username(tmp_path):
     def client(username, uid):
-        return _Client(ns(first_name="Acc", last_name=None, id=uid, username=username))
+        return _Client(_me(first_name="Acc", last_name=None, id=uid, username=username))
 
     workers = [client("Curator2", 2), _Client(fail=True), client(None, 99), client("Curator10", 10),
                client("Curator1", 1), client("Curator4", 4)]
@@ -118,7 +136,7 @@ def test_sorted_by_username(tmp_path):
 
 
 def test_busy_shows_only_count(tmp_path):
-    pool = _Pool([_Client(ns(first_name="A", last_name=None, id=1, username=None))], _Storage())
+    pool = _Pool([_Client(_me(first_name="A", last_name=None, id=1, username=None))], _Storage())
     manager = _Manager(free=False)
     msg = _Msg()
 
@@ -158,9 +176,9 @@ def test_scraping_worker_is_not_polled(tmp_path):
             polled.append(self.path)
             return await super().get_me()
 
-    free = _Tracked(ns(first_name="Free", last_name=None, id=1, username="free"))
+    free = _Tracked(_me(first_name="Free", last_name=None, id=1, username="free"))
     free.path = "sessions/free.jsession"
-    busy = _Tracked(ns(first_name="Busy", last_name=None, id=2, username="busy"))
+    busy = _Tracked(_me(first_name="Busy", last_name=None, id=2, username="busy"))
     busy.path = "sessions/busy.jsession"
     stored = ns(account=ns(account=ns(first_name="Busy", last_name=None,
                                        phone_number="79990002233", user_id=2)))
@@ -187,7 +205,7 @@ def test_empty_pool(tmp_path):
 
 
 def test_names_are_html_escaped(tmp_path):
-    workers = [_Client(ns(first_name="A&lt;B", last_name="<i>", id=1, username=None))]
+    workers = [_Client(_me(first_name="A&lt;B", last_name="<i>", id=1, username=None))]
     pool = _Pool(workers, _Storage())
     msg = _Msg()
 
@@ -205,7 +223,7 @@ def test_slow_connect_is_timed_out(monkeypatch, tmp_path):
             yield
 
     monkeypatch.setattr(accounts, "GET_ME_TIMEOUT", 0.05)
-    pool = _Pool([_Client(ns(first_name="A", last_name=None, id=1, username=None))], _SlowStorage())
+    pool = _Pool([_Client(_me(first_name="A", last_name=None, id=1, username=None))], _SlowStorage())
     manager = _Manager(free=True)
     msg = _Msg()
 
@@ -224,7 +242,7 @@ def test_polled_workers_are_busy_meanwhile(tmp_path):
             seen.append(list(pool.in_job))  # a scrape asking pool.busy() now must be refused
             return await super().get_me()
 
-    workers = [_Seen(ns(first_name="A", last_name=None, id=1, username="a"))]
+    workers = [_Seen(_me(first_name="A", last_name=None, id=1, username="a"))]
     pool = _Pool(workers, _Storage())
     pool.in_job = []
     asyncio.run(accounts.accounts(_Msg(), pool, _Manager(free=True), None))
@@ -234,15 +252,15 @@ def test_polled_workers_are_busy_meanwhile(tmp_path):
 def test_restrictions_are_shown(tmp_path):
     from modules import restricted_workers
 
-    until = _Client(ns(first_name="Until", last_name=None, id=1, username="until"))
+    until = _Client(_me(first_name="Until", last_name=None, id=1, username="until"))
     until.path = "sessions/until.jsession"
     forever = _Client(fail=True)  # a stored card gets the mark too
     forever.path = "sessions/forever.jsession"
     stored = ns(account=ns(account=ns(first_name="Forever", last_name=None,
                                        phone_number="79990003344", user_id=2)))
-    clean = _Client(ns(first_name="Clean", last_name=None, id=3, username="clean"))
+    clean = _Client(_me(first_name="Clean", last_name=None, id=3, username="clean"))
     clean.path = "sessions/clean.jsession"
-    new = _Client(ns(first_name="New", last_name=None, id=4, username="new"))
+    new = _Client(_me(first_name="New", last_name=None, id=4, username="new"))
     new.path = "sessions/new.jsession"
     restricted_workers.save_status({until.path: "12 Nov 2026", clean.path: "active"})
     restricted_workers.save([forever.path])
@@ -262,7 +280,7 @@ def test_restricted_go_to_the_bottom(tmp_path):
     from modules import restricted_workers
 
     def client(name, uid):
-        c = _Client(ns(first_name=name, last_name=None, id=uid, username=name))
+        c = _Client(_me(first_name=name, last_name=None, id=uid, username=name))
         c.path = f"sessions/{name}.jsession"
         return c
 

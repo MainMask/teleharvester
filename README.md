@@ -298,7 +298,7 @@ that job (what a scrape checkpointed is kept), never the bot. Their status messa
 **📊 Прогресс** and **⏹ Стоп** — a scrape stops at a checkpoint (continued later), *group members*
 saves the members listed so far. A bot restart (e.g.
 `systemctl restart`) checkpoints the running scrape and **continues it automatically** on the next
-start; after a long flood ban start *Скрап канала/группы* again with the same name and output folder
+start; after a long flood ban start *Скрап канала/группы* again with the same name
 and the bot offers to **continue** it (the terminal menu does the same). Prompts with a default take
 `-` for it.
 
@@ -419,7 +419,7 @@ the input.
 
 **Interruptions.** A dropped connection is retried for hours. If a run still stops (a long outage,
 a flood ban, a restart, `Ctrl-C`, ⏹), it keeps a checkpoint in `<name>_partial/`: start the same
-scrape again — the same name and output folder — and it offers to continue from there with the
+scrape again — the same name — and it offers to continue from there with the
 interrupted run's account, channels, dates and settings.
 
 **Giant runs.** The scrape is memory-bounded: it checkpoints and frees its buffers as it goes, and

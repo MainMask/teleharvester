@@ -45,6 +45,11 @@ class Progress:
         if self.total is not None and n > 0:
             self.total = max(self.total - n, self.done)
 
+    def extend(self, n: int):
+        """Add to the total the steps of items the job takes again (a second pass)."""
+        if self.total is not None:
+            self.total += n
+
     def update(self, done: int, total: int):
         """Absolute done/total from a job that counts on its own (verify, from its thread)."""
         if total != self.total:

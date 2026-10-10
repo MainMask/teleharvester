@@ -4,6 +4,7 @@ prompts and capture the scraper calls, without network or Telegram."""
 from pathlib import Path
 
 from functions import scraper, scraper_analysis
+from modules import scraped_files
 from scraper import analysis
 
 
@@ -57,7 +58,7 @@ def test_scrape_func_builds_params_from_prompts(monkeypatch):
 
     _answers(
         monkeypatch, scraper,
-        texts=["Test", "out/dir", "@a, @b", "01.01.2024", "31.01.2024", "", "500"],
+        texts=["Test", "@a, @b", "01.01.2024", "31.01.2024", "", "500"],
         bools=[True, False, True],
     )
 
@@ -65,7 +66,7 @@ def test_scrape_func_builds_params_from_prompts(monkeypatch):
 
     p = captured["params"]
     assert p.channels == ["@a", "@b"]
-    assert p.name == "Test" and p.out_dir == Path("out/dir")
+    assert p.name == "Test" and p.out_dir == Path(scraped_files.BASES_DIR)
     assert p.max_messages == 500
     assert (p.with_comments, p.with_reactors, p.with_participants, p.resume) == (True, False, True, False)
     assert p.date_min.strftime("%d.%m.%Y") == "01.01.2024"
@@ -79,7 +80,7 @@ def test_scrape_func_stops_on_empty_channels(monkeypatch):
     called = []
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
     monkeypatch.setattr(scraper, "scrape_run", lambda *a: called.append(a))
-    _answers(monkeypatch, scraper, texts=["Test", "out/dir", "   ,  "])  # stops at the channels
+    _answers(monkeypatch, scraper, texts=["Test", "   ,  "])  # stops at the channels
 
     scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
     assert called == []  # no run attempted
@@ -97,7 +98,8 @@ def test_scrape_func_continues_an_interrupted_scrape(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
     monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
-    _answers(monkeypatch, scraper, texts=["Test", str(tmp_path)], bools=[True])  # no other questions
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    _answers(monkeypatch, scraper, texts=["Test"], bools=[True])  # no other questions
 
     scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
 
@@ -241,7 +243,8 @@ def test_scrape_func_continues_on_the_checkpoint_s_own_account(monkeypatch, tmp_
     captured = {}
     monkeypatch.setattr(scraper, "pick_session", lambda *a: (_ for _ in ()).throw(AssertionError("asked")))
     monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(creds=creds, params=params))
-    _answers(monkeypatch, scraper, texts=["Test", str(tmp_path)], bools=[True])
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    _answers(monkeypatch, scraper, texts=["Test"], bools=[True])
 
     scraper.ScrapeFunc(storage, FakeSettings()).execute()
     assert captured["params"].account == "sessions/acc.jsession"
@@ -253,7 +256,8 @@ def test_scrape_func_won_t_continue_on_another_account(monkeypatch, tmp_path):
     printed, ran = [], []
     monkeypatch.setattr(scraper.console, "print", lambda *a, **k: printed.append(str(a[0])))
     monkeypatch.setattr(scraper, "scrape_run", lambda *a: ran.append(1))
-    _answers(monkeypatch, scraper, texts=["Test", str(tmp_path)], bools=[True])
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    _answers(monkeypatch, scraper, texts=["Test"], bools=[True])
 
     scraper.ScrapeFunc(FakeStorage([]), FakeSettings()).execute()
     assert ran == [] and any("не найден" in p for p in printed)
@@ -283,7 +287,7 @@ def test_members_func_notes_a_personal_account(monkeypatch, tmp_path):
                         lambda *a: ScrapeAccount("personal_sessions/me.jsession", _ACCOUNT, "Me", True))
     monkeypatch.setattr(scraper.console, "print", lambda *a, **k: printed.append(str(a[0])))
     monkeypatch.setattr(scraper, "members_run", lambda creds, params: (tmp_path / "x.parquet", []))
-    _answers(monkeypatch, scraper, texts=["@grp", "Grp", str(tmp_path)])
+    _answers(monkeypatch, scraper, texts=["@grp", "Grp"])
 
     scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()
     assert any("только по " in p for p in printed)
@@ -301,7 +305,7 @@ def test_members_func_reports_a_logged_out_account(monkeypatch, tmp_path):
         raise SystemExit("the worker's session is no longer authorized - re-add the account")
 
     monkeypatch.setattr(scraper, "members_run", dead)
-    _answers(monkeypatch, scraper, texts=["@grp", "Grp", str(tmp_path)])
+    _answers(monkeypatch, scraper, texts=["@grp", "Grp"])
 
     scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()  # no SystemExit out of the menu
     assert any("no longer authorized" in p for p in printed)
@@ -317,10 +321,23 @@ def test_declining_to_continue_warns_the_saved_posts_go(monkeypatch, tmp_path):
         "date_min": "2024-01-01T00:00:00+00:00", "date_max": "2024-01-31T23:59:59+00:00"}))
     asked = []
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: None)
-    _answers(monkeypatch, scraper, texts=["Test", str(tmp_path)])  # then pick_session gives up
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    _answers(monkeypatch, scraper, texts=["Test"])  # then pick_session gives up
     monkeypatch.setattr(scraper.Confirm, "ask", lambda text, **k: asked.append(text) or False)
 
     scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
 
     # a fresh scrape under the same name clears the checkpoint: as the bot's button says
     assert "удалится" in asked[0]
+
+
+def test_members_func_writes_to_the_bases_folder(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    monkeypatch.setattr(scraper, "pick_session", lambda *a: _PICKED)
+    monkeypatch.setattr(scraper, "members_run",
+                        lambda creds, params: captured.update(params=params) or (tmp_path / "x.parquet", []))
+    _answers(monkeypatch, scraper, texts=["@grp", "Grp"])  # no output folder is asked
+
+    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()
+    assert captured["params"].out_dir == tmp_path and captured["params"].name == "Grp"

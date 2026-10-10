@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from telethon import errors, types
 
 from modules.rich_message import (
+    PREMIUM_ONLY,
     MediaItem,
     RichContent,
     _send_once,
@@ -12,6 +13,7 @@ from modules.rich_message import (
     convert_entities,
     has_custom_emoji,
     strip_custom_emoji,
+    refusal_reason,
 )
 
 
@@ -200,3 +202,23 @@ class TestCustomEmojiRetry:
         except ValueError:
             pass
         assert worker.calls == 2 and "Premium" in reports[0]
+
+
+class TestRecipientSettingsRefusal:
+    """PRIVACY_PREMIUM_REQUIRED / ALLOW_PAYMENT_REQUIRED_<N> have no Telethon class: a bare RPCError."""
+
+    def test_reasons(self):
+        assert refusal_reason(errors.ForbiddenError(None, "PRIVACY_PREMIUM_REQUIRED")) == PREMIUM_ONLY
+        assert refusal_reason(errors.BadRequestError(None, "ALLOW_PAYMENT_REQUIRED_100")) == "платные сообщения: 100 ⭐"
+        assert refusal_reason(errors.BadRequestError(None, "MESSAGE_EMPTY")) is None
+        assert refusal_reason(ValueError("PRIVACY_PREMIUM_REQUIRED")) is None
+
+    def test_a_refusing_recipient_is_not_asked_twice(self):
+        for error in (errors.ForbiddenError(None, "PRIVACY_PREMIUM_REQUIRED"),
+                      errors.BadRequestError(None, "ALLOW_PAYMENT_REQUIRED_100")):
+            worker, reports = _Refusing(error), []
+            try:
+                _send_rich(worker, reports)
+            except errors.RPCError:
+                pass
+            assert worker.calls == 1 and reports == []

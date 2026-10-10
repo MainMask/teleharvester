@@ -221,33 +221,23 @@ async def scrape_start(callback: CallbackQuery, state: FSMContext, pool: WorkerP
         return
     await state.clear()  # an abandoned run's keyword / limit / toggles would otherwise carry over
     await state.set_state(Scrape.name)
-    await callback.message.answer("Имя для выходных файлов:")
+    await callback.message.answer(f"Имя для выходных файлов (сохранятся в {DEFAULT_OUT}):")
 
 
 @router.message(Scrape.name)
-async def scrape_name(message: Message, state: FSMContext):
+async def scrape_name(message: Message, state: FSMContext, pool: WorkerPool, personal,
+                      scrapes: JobManager):
     name = await require_text(message)
     if name is None:
         return
-    await state.update_data(name=name)
-    await state.set_state(Scrape.out_dir)
-    await message.answer(f"Папка вывода («-» = {DEFAULT_OUT}):")
+    # always the bases folder: the mailing, contacts, verify and analysis pick their files there
+    await state.update_data(name=name, out_dir=DEFAULT_OUT)
 
-
-@router.message(Scrape.out_dir)
-async def scrape_out(message: Message, state: FSMContext, pool: WorkerPool, personal,
-                     scrapes: JobManager):
-    raw = await require_text(message)  # a sticker / photo must not fall back to the default folder
-    if raw is None:
-        return
-    out_dir = DEFAULT_OUT if raw == "-" else raw
-    await state.update_data(out_dir=out_dir)
-
-    meta = pending_resume(out_dir, (await state.get_data())["name"])
+    meta = pending_resume(DEFAULT_OUT, name)
     if meta is not None:  # an interrupted scrape under this name: offer to continue it
         await state.set_state(Scrape.resume)
         await message.answer(
-            f"Здесь есть незавершённый скрап «{meta['name']}»:\n"
+            f"Под этим именем есть незавершённый скрап «{meta['name']}»:\n"
             f"Каналы: {', '.join(meta['channels'])}\n"
             f"Период: {meta['date_min'][:10]} – {meta['date_max'][:10]}\n"
             f"Уже собрано постов: {meta.get('t_index', 0)}",
@@ -509,15 +499,15 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
             await menu(f"Скрап остановлен: {err}")
         elif _user_stopped:
             _drop_marker()
-            await menu("⏹ Скрап остановлен. Собранное сохранено: запустите скрап с тем же именем и "
-                       "папкой — бот предложит продолжить.")
+            await menu("⏹ Скрап остановлен. Собранное сохранено: запустите скрап с тем же именем "
+                       "— бот предложит продолжить.")
         elif not _shutting_down:  # interrupted: the marker stays for a restart to continue it
             await menu("Скрап прерван (сеть / флуд-бан). Собранное сохранено: запустите скрап "
-                       "с тем же именем и папкой — бот предложит продолжить.")
+                       "с тем же именем — бот предложит продолжить.")
         return
     except Exception as err:  # e.g. the scrape's process killed (out of memory)
         _drop_marker()
-        saved = (" Собранное сохранено: запустите скрап с тем же именем и папкой — бот предложит "
+        saved = (" Собранное сохранено: запустите скрап с тем же именем — бот предложит "
                  "продолжить.") if pending_resume(out_dir, params.name) else ""
         await menu(f"Ошибка скрапа: {err}.{saved}")
         return
@@ -555,7 +545,7 @@ async def resume_after_restart(bot, scrapes: JobManager, pool: WorkerPool, perso
                 marker["chat_id"],
                 f"⚠️ Автопродолжение скрапа «{marker['name']}» отключено: он падал при каждом запуске "
                 "на одном месте (вероятно, не хватает памяти на финальную сборку). Собранное сохранено — "
-                "продолжите вручную: скрап с тем же именем и папкой.")
+                "продолжите вручную: скрап с тем же именем.")
         except Exception:
             pass
         return

@@ -71,6 +71,10 @@ class BaseFunction:
         if self.progress is not None:
             self.progress.drop(n)
 
+    def progress_extend(self, n: int):  # n items get a second pass: n more steps in the total
+        if self.progress is not None:
+            self.progress.extend(n)
+
     # The job summary's counts: called next to the line reporting an item's or a worker's
     # outcome; totals, pauses and notes count nothing, whatever their wording.
     def progress_ok(self):

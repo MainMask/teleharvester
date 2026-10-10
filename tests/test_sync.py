@@ -417,7 +417,7 @@ def test_an_interrupted_scrape_keeps_its_marker_and_says_how_to_continue(monkeyp
     bot = _SBot()
     params = router._scrape_params({**_SCRAPE, "date_max": "31.01.2024"})
     asyncio.run(router._run_scrape(bot, 1, JobManager(), _pool(), None, params))
-    assert any("с тем же именем и папкой" in t for t in _sent(bot))
+    assert any("с тем же именем" in t for t in _sent(bot))
     assert router._read_marker() == {"out_dir": "out", "name": "n", "account": _ACC, "chat_id": 1}
 
 
@@ -532,15 +532,17 @@ def test_a_gone_account_is_reported_and_nothing_runs(monkeypatch):
 
 # --- the account question: workers and personal accounts ------------------------------------
 
-def test_one_account_is_taken_without_asking(tmp_path):
+def test_one_account_is_taken_without_asking(monkeypatch, tmp_path):
     from bot.routers import scraping as router
     from bot.services.jobs import JobManager
     from bot.states import Scrape
 
-    state = _State({"name": "n"})
-    msg = _SMsg(text=str(tmp_path))
-    asyncio.run(router.scrape_out(msg, state, _pool(), None, JobManager()))
+    monkeypatch.setattr(router, "DEFAULT_OUT", str(tmp_path))
+    state = _State({})
+    msg = _SMsg(text="n")  # the name: no output folder is asked, the bases folder is the one
+    asyncio.run(router.scrape_name(msg, state, _pool(), None, JobManager()))
     assert state.data["account"] == _ACC and state.state == Scrape.channels
+    assert state.data["name"] == "n" and state.data["out_dir"] == str(tmp_path)
     assert msg.answers[0][0].startswith("Каналы/группы")
 
 
@@ -656,9 +658,10 @@ def test_scrape_offers_to_continue_an_interrupted_one_on_its_account(monkeypatch
 
     calls = _scrapes(monkeypatch)
     _checkpoint(tmp_path)
-    state = _State({"name": "n"})
-    msg = _SMsg(text=str(tmp_path))
-    asyncio.run(router.scrape_out(msg, state, _pool(), None, JobManager()))
+    monkeypatch.setattr(router, "DEFAULT_OUT", str(tmp_path))
+    state = _State({})
+    msg = _SMsg(text="n")
+    asyncio.run(router.scrape_name(msg, state, _pool(), None, JobManager()))
 
     text, markup = msg.answers[0]
     assert state.state == Scrape.resume and "Уже собрано постов: 42" in text and "@a, @b" in text
@@ -979,14 +982,14 @@ def test_a_crashed_scrape_process_says_the_data_is_kept(monkeypatch, tmp_path):
     assert "не хватило памяти" in text and "Собранное сохранено" in text
 
 
-def test_a_sticker_for_the_output_folder_is_asked_again(tmp_path):
+def test_a_sticker_for_the_name_is_asked_again(tmp_path):
     from bot.routers import scraping as router
     from bot.services.jobs import JobManager
 
-    state = _State({"name": "n"})
+    state = _State({})
     msg = _SMsg(text=None)  # a sticker / photo: no text
-    asyncio.run(router.scrape_out(msg, state, _pool(), None, JobManager()))
-    assert "out_dir" not in state.data and msg.answers[0][0] == "Ожидается текст. Попробуйте ещё раз."
+    asyncio.run(router.scrape_name(msg, state, _pool(), None, JobManager()))
+    assert "name" not in state.data and msg.answers[0][0] == "Ожидается текст. Попробуйте ещё раз."
 
 
 # --- 4. profile / security functions on the picked workers only ---------------------------

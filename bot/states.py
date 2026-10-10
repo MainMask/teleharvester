@@ -120,7 +120,6 @@ class ReportMessage(StatesGroup):
 
 class Scrape(StatesGroup):
     name = State()
-    out_dir = State()
     resume = State()
     channels = State()
     date_min = State()

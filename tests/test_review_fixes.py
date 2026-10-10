@@ -275,6 +275,28 @@ class TestSpamBlockMove:
         assert asyncio.run(fn.check(_S(), report)) is None
         assert any("⚠️ @C1 — не удалось разблокировать @SpamBot" in m for m in msgs)
 
+    def test_still_blocked_after_unblock_is_tried_once(self):
+        from telethon.errors import YouBlockedUserError
+        from functions.spamblock import SpamBlockFunc
+
+        unblocks = []
+
+        class _S:
+            async def get_me(self):
+                return ns(username="C1", first_name="Acc", last_name=None)
+
+            def conversation(self, *_):
+                raise YouBlockedUserError(request=None)
+
+            async def __call__(self, request):
+                unblocks.append(request)
+
+        fn = SpamBlockFunc(_Storage(), ns(delay=[0]))
+        msgs, report = collect()
+        assert asyncio.run(fn.check(_S(), report)) is None
+        assert len(unblocks) == 1
+        assert any("⚠️ @C1 — @SpamBot всё ещё заблокирован" in m for m in msgs)
+
 
 class TestSpamBlockReport:
     def _check(self, reply, username="C1", progress=None):
@@ -1314,7 +1336,7 @@ class TestScrapeFuncSwappedDates:
     def test_reports_and_does_not_run(self, monkeypatch):
         from functions import scraper as fs
 
-        answers = iter(["name", "out", "@chan", "31.12.2024", "01.01.2024", ""])
+        answers = iter(["name", "@chan", "31.12.2024", "01.01.2024", ""])
         monkeypatch.setattr(fs, "pick_session",
                             lambda storage, personal=None: ns(path="sessions/a.jsession", client=object(),
                                                               personal=False))

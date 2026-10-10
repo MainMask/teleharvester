@@ -71,7 +71,7 @@ class SpamBlockFunc(TelethonFunction):
         js = self.storage.jsessions_paths.get(path)
         return js is not None and path not in released and counts[js.account.account.user_id] > 0
 
-    async def check(self, session: TelegramClient, report):
+    async def check(self, session: TelegramClient, report, unblocked: bool = False):
         context = self._context or _context()
         async with self.storage.ainitialize_session(session):
             path = self.storage.get_session_path(session)
@@ -98,13 +98,17 @@ class SpamBlockFunc(TelethonFunction):
                     await conv.send_message("/start")
                     response = await conv.get_response()
             except YouBlockedUserError:
+                if unblocked:  # unblocked just now and still refused: one retry, not a loop
+                    self.progress_failed()
+                    await report(f"⚠️ {who} — @SpamBot всё ещё заблокирован")
+                    return
                 try:
                     await session(UnblockRequest("spambot"))
                 except Exception as err:
                     self.progress_failed()
                     await report(f"⚠️ {who} — не удалось разблокировать @SpamBot: {err}")
                     return
-                return await self.check(session, report)
+                return await self.check(session, report, unblocked=True)
 
             except Exception as err:
                 self.progress_failed()
