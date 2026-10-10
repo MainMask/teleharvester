@@ -138,6 +138,9 @@ assets/proxies.txt
 assets/photos/
 tdata_import/
 assets/databases/
+# local data (scraped bases, lists, photos); names.txt is the one kept in the repo
+assets/*
+!assets/names.txt
 output/
 data/
 tmp/
