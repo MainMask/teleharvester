@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import shutil
 import signal
 import threading
 import time
@@ -30,7 +31,7 @@ from telethon.tl.types import (
 )
 
 from scraper.config import Credentials
-from scraper.datafiles import clean_xml_text, format_duration
+from scraper.datafiles import clean_xml_text, format_duration, read_attrs
 
 SEP = "-" * 80
 
@@ -148,6 +149,7 @@ CHECKPOINT_EVERY = 150
 # Seconds between progress lines: one per post would flood journald on a days-long bot scrape
 # (the bot's 📊 gets every post through on_progress regardless).
 PRINT_EVERY = 5
+MERGE_BATCH_ROWS = 500  # posts per batch when a top-up stitches files: a post carries its comments' JSON
 
 # One (person, message, reaction) is unique; a resume overlap or a repeated
 # reaction-list page can re-emit a row, so exact repeats on this key are dropped.
@@ -240,15 +242,35 @@ def _write_posts(ckpt_dir: Path, out_dir: Path, name: str, attrs: dict) -> tuple
     metadata, where pandas reads df.attrs from. Returns (path, rows, span)."""
     from scraper.analysis import normalize_keys, normalize_values
 
+    # nullable Int64, not float64: a 64-bit access hash must not be rounded
+    frames = (normalize_keys(_post_table(p).to_pandas(types_mapper=_INT64_NULLABLE.get))
+              for p in _shard_paths(ckpt_dir, "posts"))
+    return _stream_posts(frames, out_dir, name, attrs, finish=normalize_values)
+
+
+def _merge_posts(sources: list[Path], out_dir: Path, name: str, attrs: dict) -> tuple[Path, int, str]:
+    """A top-up's posts file: the posts files in `sources` (the new run's first) stitched batch by
+    batch; a post in more than one keeps its first copy — the new run's, re-read in the overlap,
+    with its newer comments and reactions. Returns (path, rows, span), as _write_posts."""
+    from scraper.analysis import normalize_keys
+
+    frames = (normalize_keys(batch.to_pandas(types_mapper=_INT64_NULLABLE.get))
+              for src in sources
+              for batch in pq.ParquetFile(src).iter_batches(batch_size=MERGE_BATCH_ROWS))
+    return _stream_posts(frames, out_dir, name, attrs)
+
+
+def _stream_posts(frames, out_dir: Path, name: str, attrs: dict, finish=lambda df: df) -> tuple[Path, int, str]:
+    """Write posts DataFrames (keys normalized) one by one into `<name>_posts_<from>-<to>.parquet`,
+    keeping the first copy of each (Group, Message ID); finish(df) completes a frame's kept rows
+    to the file's form. Memory: one frame plus the keys."""
     out_dir.mkdir(parents=True, exist_ok=True)
     schema = _pandas_schema(_POSTS_FILE_SCHEMA, attrs)
     tmp = out_dir / f"{name}_posts.parquet.tmp"
     seen: set[str] = set()
     rows, first, last = 0, None, None
     with pq.ParquetWriter(tmp, schema) as writer:
-        for p in _shard_paths(ckpt_dir, "posts"):
-            # nullable Int64, not float64: a 64-bit access hash must not be rounded
-            df = normalize_keys(_post_table(p).to_pandas(types_mapper=_INT64_NULLABLE.get))
+        for df in frames:
             fresh = []
             for key in df["Group"] + "\x00" + df["Message ID"]:
                 fresh.append(key not in seen)
@@ -256,7 +278,7 @@ def _write_posts(ckpt_dir: Path, out_dir: Path, name: str, attrs: dict) -> tuple
             df = df[fresh]
             if df.empty:
                 continue
-            df = normalize_values(df)
+            df = finish(df).reindex(columns=schema.names)
             first = min(first, df["Date"].min()) if first is not None else df["Date"].min()
             last = max(last, df["Date"].max()) if last is not None else df["Date"].max()
             writer.write_table(pa.Table.from_pandas(df, schema=schema, preserve_index=False))
@@ -267,41 +289,47 @@ def _write_posts(ckpt_dir: Path, out_dir: Path, name: str, attrs: dict) -> tuple
     return dest, rows, span
 
 
-def _consolidate_reactors(ckpt_dir: Path, dest: Path) -> tuple[Path, int]:
-    """Stream the reactor shards into one parquet file, deduplicating without ever
-    holding the whole table:
-      * within a shard — on the full row key (a repeated reaction-list page);
-      * across shards — at message level: every reactor row of a message is written
-        to a single shard (a message's rows are appended together, before the
-        `t_index % CHECKPOINT_EVERY` flush), so the same (Group, Target, Message ID) turning
-        up in a later shard is a resume-overlap re-scrape and its copy is dropped.
-    Memory: O(distinct reacted messages) for the seen-set, never O(reactor rows).
-
-    Caller guarantees at least one non-empty reactor shard, so `writer` is always
-    created (every shard is written from a non-empty buffer)."""
+def _consolidate_reactors(sources: list[Path], dest: Path) -> tuple[Path | None, int]:
+    """Stream reactor files into one parquet file, row group by row group, deduplicating
+    without ever holding the whole table:
+      * within a row group — on the full row key (a repeated reaction-list page);
+      * across sources — at message level: all reactor rows of a message come from one source
+        (a checkpoint shard: a message's rows are appended together, before the
+        `t_index % CHECKPOINT_EVERY` flush; a finished run's reactors file: one run read them),
+        so the same (Group, Target, Message ID) turning up in a later source is a re-read copy
+        and is dropped — the earlier source wins (a resume overlap's first copy, a top-up's
+        fresh one). Within one source a message's rows are all kept, over row groups too.
+    Memory: O(distinct reacted messages) for the keys, never O(reactor rows).
+    (None, 0) when the sources hold no rows."""
     seen: set = set()
     tmp = dest.with_name(dest.name + ".tmp")
     writer = None
     total = 0
     try:
-        for p in _shard_paths(ckpt_dir, "reactors"):
-            part = pd.read_parquet(p).drop_duplicates(subset=REACTOR_DEDUP_KEY)
-            msg_keys = list(zip(part["Group"].astype(str), part["Target"], part["Message ID"]))
-            fresh = [k not in seen for k in msg_keys]
-            part = part[fresh]
-            if part.empty:
-                continue
-            seen.update(k for k, f in zip(msg_keys, fresh) if f)
-            table = pa.Table.from_pandas(part, preserve_index=False)
-            if writer is None:
-                writer = pq.ParquetWriter(tmp, table.schema)
-            else:
-                table = table.cast(writer.schema)
-            writer.write_table(table)
-            total += len(part)
+        for p in sources:
+            in_source: set = set()
+            file = pq.ParquetFile(p)
+            for group in range(file.num_row_groups):
+                part = file.read_row_group(group).to_pandas().drop_duplicates(subset=REACTOR_DEDUP_KEY)
+                msg_keys = list(zip(part["Group"].astype(str), part["Target"], part["Message ID"]))
+                fresh = [k not in seen for k in msg_keys]
+                part = part[fresh]
+                if part.empty:
+                    continue
+                in_source.update(k for k, f in zip(msg_keys, fresh) if f)
+                table = pa.Table.from_pandas(part, preserve_index=False)
+                if writer is None:
+                    writer = pq.ParquetWriter(tmp, table.schema)
+                else:
+                    table = table.cast(writer.schema)
+                writer.write_table(table)
+                total += len(part)
+            seen |= in_source
     finally:
         if writer is not None:
             writer.close()
+    if writer is None:
+        return None, 0
     tmp.replace(dest)  # atomic: no half-written final file if this step is killed
     return dest, total
 
@@ -350,6 +378,9 @@ class ScrapeParams:
     # the channels' names as the operator saw them at input (see lookup_chats), in the order of
     # `channels`: kept in the checkpoint, so continuing it names them without asking Telegram
     chat_labels: list[str] | None = None
+    # a top-up (see modules/projects.topup): the previous run's posts file; the new posts, reactors
+    # and the participants base are merged with its files, which move to <out_dir>/<name>_previous
+    extend: str = ""
     # set from another thread to stop the run: it checkpoints and exits like a Ctrl-C
     stop: threading.Event | None = None
     # set by the run: the account that scraped; its access hashes are the only valid ones
@@ -385,6 +416,7 @@ def resume_params(meta: dict, out_dir: str | Path) -> ScrapeParams:
         resume=True,
         account=meta.get("account", ""),
         chat_labels=meta.get("chat_labels"),
+        extend=meta.get("extend", ""),
     )
 
 
@@ -933,6 +965,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
             # the run's settings too, so a resume continues it exactly (see resume_params)
             "account": params.account,
             "chat_labels": params.chat_labels,
+            "extend": params.extend,
             "max_messages": params.max_messages,
             "with_comments": params.with_comments,
             "with_reactors": params.with_reactors,
@@ -985,6 +1018,11 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
     try:
         client = await connect(creds, entity_cache=ckpt_dir / "entities")
         params.owner_id = (await client.get_me()).id
+        previous = _previous_posts(params)
+        owner = read_attrs(previous).get("owner_id") if previous else None
+        if owner is not None and owner != params.owner_id:  # before any request: nothing is scraped
+            raise SystemExit(f"дособор: базу собирал другой аккаунт (ID {owner}) — дособирать нужно им же: "
+                             "access hash в базе действуют только для собравшего аккаунта.")
     except BaseException:  # a stop lands in run(), which reports it like any interruption
         if watcher is not None:
             watcher.cancel()
@@ -1242,11 +1280,47 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
 
 
 
+def _previous_posts(params: ScrapeParams) -> Path | None:
+    """A top-up's previous posts file; None for a plain run, or if the file is gone (the new
+    posts are then saved on their own)."""
+    if not params.extend:
+        return None
+    previous = Path(params.extend)
+    return previous if previous.exists() else None
+
+
+def _keep_previous(params: ScrapeParams, replaced: list[Path], merged: list[Path]) -> list[Path]:
+    """A top-up's finish: the previous run's files the merged ones replace go to
+    <name>_previous/ (its earlier contents dropped: one version back is kept, out of the bases'
+    pickers), then the merged files take their place. Returns their new paths."""
+    keep = params.out_dir / f"{params.name}_previous"
+    keep.mkdir(exist_ok=True)
+    for p in keep.iterdir():
+        if p.is_file():
+            p.unlink()
+    for p in replaced:
+        if p.exists():
+            p.replace(keep / p.name)
+    placed = []
+    for p in merged:
+        placed.append(p.replace(params.out_dir / p.name))
+    return placed
+
+
 def run(creds: Credentials, params: ScrapeParams) -> Path:
     from scraper.analysis import participants
 
-    ckpt_dir = params.out_dir / f"{params.name}_partial" / "checkpoint"
+    partial_dir = params.out_dir / f"{params.name}_partial"
+    ckpt_dir = partial_dir / "checkpoint"
     rj = ckpt_dir / "resume.json"
+    previous = _previous_posts(params)
+    if params.extend and previous is None:
+        print(f"  ! top-up: {params.extend} is gone — the new posts are saved on their own")
+    previous_attrs = read_attrs(previous) if previous else {}
+    # the merged file keeps one keyword: a top-up with another one would mix two selections
+    if previous and previous_attrs.get("keyword", "") != params.keyword:
+        raise SystemExit(f"дособор: фильтр по слову должен быть тем же, что у прошлого скрапа "
+                         f"(«{previous_attrs.get('keyword', '')}»).")
     try:
         asyncio.run(_scrape(creds, params))
     except (*NET_ERRORS, FloodWaitError, KeyboardInterrupt,
@@ -1259,8 +1333,11 @@ def run(creds: Credentials, params: ScrapeParams) -> Path:
                   "to continue it.\n")
         raise SystemExit(1)
     # the requested window, not the saved posts' span: `verify` must check the whole of it
-    attrs = {"scrape_window": {"date_min": params.date_min.date().isoformat(),
-                               "date_max": params.date_max.date().isoformat()}}
+    # (a top-up's starts where the previous run's did: the overlap leaves no gap)
+    window = {"date_min": params.date_min.date().isoformat(), "date_max": params.date_max.date().isoformat()}
+    if previous:
+        window["date_min"] = previous_attrs.get("scrape_window", window)["date_min"]
+    attrs = {"scrape_window": window}
     if params.owner_id is not None:  # a rebuilt participants base keeps its Owner ID
         attrs["owner_id"] = params.owner_id
     # verify's presets: the channels as given (a username "c12345" rebuilt from its Group would
@@ -1268,24 +1345,50 @@ def run(creds: Credentials, params: ScrapeParams) -> Path:
     attrs["channels"] = params.channels
     if params.keyword:
         attrs["keyword"] = params.keyword
-    path, rows, span = _write_posts(ckpt_dir, params.out_dir, params.name, attrs)
+    # a top-up's outputs are built in <name>_partial and replace the previous files at the end
+    out_dir = partial_dir / "merged" if previous else params.out_dir
+    if previous:
+        piece, _, _ = _write_posts(ckpt_dir, partial_dir / "piece", params.name, attrs)
+        path, rows, span = _merge_posts([piece, previous], out_dir, params.name, attrs)
+    else:
+        path, rows, span = _write_posts(ckpt_dir, out_dir, params.name, attrs)
     print(f"Posts:    {path}  ({rows} rows)")
 
+    previous_span = previous.stem.partition("_posts")[2] if previous else ""
+    previous_reactors = params.out_dir / f"{params.name}_reactors{previous_span}.parquet"
+    reactor_sources = _shard_paths(ckpt_dir, "reactors") if params.with_reactors else []
+    if previous and previous_reactors.exists():  # carried on even with reactors off: the base needs them
+        reactor_sources.append(previous_reactors)
     r_path = None
-    if params.with_reactors and _shard_paths(ckpt_dir, "reactors"):
-        # streams the shards, deduplicating on REACTOR_DEDUP_KEY (see _consolidate_reactors)
+    if reactor_sources:
+        # streams the sources, deduplicating on REACTOR_DEDUP_KEY (see _consolidate_reactors)
         r_path, n_reactors = _consolidate_reactors(
-            ckpt_dir, params.out_dir / f"{params.name}_reactors{span}.parquet")
-        print(f"Reactors: {r_path}  ({n_reactors} rows)")
+            reactor_sources, out_dir / f"{params.name}_reactors{span}.parquet")
+        if r_path is not None:
+            print(f"Reactors: {r_path}  ({n_reactors} rows)")
 
+    p_path = None
     if params.with_participants:
-        p_out = params.out_dir / f"{params.name}_participants{span}"
+        p_out = out_dir / f"{params.name}_participants{span}"
         try:
-            participants(str(path), str(p_out),
-                         reactors=str(r_path) if r_path else "", fmt="parquet",
-                         owner_id=params.owner_id)
+            p_path = participants(str(path), str(p_out),
+                                  reactors=str(r_path) if r_path else "", fmt="parquet",
+                                  owner_id=params.owner_id)
         except SystemExit as exc:  # nothing to build (no comments, no reactors, ...)
             print(f"Participants: skipped ({exc})")
+
+    if previous:
+        built = [p for p in (path, r_path, p_path) if p is not None]
+        # a previous file is replaced only by a new one of its kind (no base built: the old one stays)
+        replaced = [previous]
+        if r_path is not None:
+            replaced.append(previous_reactors)
+        if p_path is not None:
+            replaced.append(params.out_dir / f"{params.name}_participants{previous_span}.parquet")
+        path = _keep_previous(params, replaced, built)[0]
+        shutil.rmtree(partial_dir / "piece", ignore_errors=True)
+        shutil.rmtree(out_dir, ignore_errors=True)
+        print(f"Merged into {path}; the replaced files are in {params.out_dir / (params.name + '_previous')}")
 
     _clear_checkpoint(ckpt_dir)  # clean finish -> drop the resume cursor and shards
     return path

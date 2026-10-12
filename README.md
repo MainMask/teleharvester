@@ -280,6 +280,7 @@ one-line description of what each does:
 - **🎯 Аудитория** — projects, scrape, verify, data analysis, invite from chat, add to contacts:
   - **📁 Проекты** — the projects as buttons (⏸ marks one with an unfinished scrape),
     **➕ Новый проект** and **📥 Из готового скрапа**; a project's card has **▶️ Скрап проекта**,
+    **🔄 Дособрать**,
     **✏️ Каналы**, **🗑 Удалить** (see [*Projects*](#projects)).
   - **Scrape** names the typed channels by their titles at once (see *Скрап канала/группы* below)
     and shows a summary before starting: **▶️ Запустить**, or **⚙️ Дополнительно** for a
@@ -402,6 +403,18 @@ In the bot (**🎯 Аудитория → 📁 Проекты**) and in the term
   then (if there is one) the offer to continue the unfinished scrape, the channels named on that
   account (a corrected list goes for this run only), the dates and **⚙️ Дополнительно**, as in a
   scrape. One scrape covers all of the project's channels; **⏹** stops it.
+- **🔄 Дособрать** — brings a scraped project up to date without scraping it all again. It
+  continues the project's newest posts file as that scrape was made — its channels, its keyword
+  filter, and from a week before the end of its date window to today (the card shows the dates).
+  The week is read again, so late comments and reactions under those posts come in too; under older
+  posts nothing new is picked up. The new posts, reactors and the rebuilt participants base are
+  merged into the project's files (a post read twice keeps its fresh copy), so the project keeps one
+  file of each; the files they replace move to `assets/databases/<name>_previous/` (one version
+  back; a later top-up replaces it; with the base turned off the old base stays in place). The
+  merge streams the files, never loading them whole. Run it on the account that made the scrape:
+  the base's access hashes are valid for it only, and another account is stopped as soon as it
+  connects. A top-up interrupted by the network or a bot restart is continued like any scrape.
+  A channel added to the project since needs its whole history: **▶️ Скрап проекта**.
 - **✏️ Каналы** replaces the list; **🗑 Удалить** removes the project, never its files.
 
 The projects live in `stats/projects.json`; each write first copies the previous file to

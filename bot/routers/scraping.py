@@ -92,7 +92,7 @@ PERSONAL_WARNING = ("⚠️ Это ваш личный аккаунт. Скра�
 BASE_NOTE = ("\n\nБаза людей с этого аккаунта для рассылки через воркеров дойдёт только до тех, "
              "у кого есть username: access hash действует только для собравшего аккаунта. "
              "Для полной базы выберите воркера.")
-_BASE_FLOWS = {"scrape", "scrape_resume", "project", "members"}  # the flows that build a base
+_BASE_FLOWS = {"scrape", "scrape_resume", "project", "topup", "members"}  # the flows that build a base
 # a worker in a running bot job: one account must not scrape and mail at once (see WorkerPool)
 WORKER_BUSY = ("⛔ Этот воркер сейчас занят задачей бота. Выберите другой аккаунт (например, личный) "
                "или дождитесь её окончания.")
@@ -302,6 +302,19 @@ async def scrape_project(message: Message, state: FSMContext, project, deps: dic
     await _scrape_named(message, state, deps, "project")
 
 
+async def topup_project(message: Message, state: FSMContext, project, plan, deps: dict):
+    """A project's top-up (bot/routers/projects.py): the previous scrape's channels, keyword and
+    dates come from its posts file (modules/projects.topup); the account is asked, then the summary."""
+    if pending_resume(DEFAULT_OUT, project.name) is not None:  # a fresh run would drop its checkpoint
+        await _menu(message, "У проекта незавершённый скрап — сначала продолжите его: «▶️ Скрап проекта».")
+        return
+    await state.clear()
+    await state.update_data(name=project.name, out_dir=DEFAULT_OUT, channels=", ".join(plan.channels),
+                            date_min=f"{plan.date_min:%d.%m.%Y}", date_max=f"{plan.date_max:%d.%m.%Y}",
+                            keyword=plan.keyword, extend=plan.posts, project=True)
+    await _choose_account(message, state, "topup", **deps)
+
+
 async def _scrape_named(message: Message, state: FSMContext, deps: dict, flow: str):
     """The scrape's name is set: offer to continue an interrupted scrape under it, else ask the account."""
     name = (await state.get_data())["name"]
@@ -418,6 +431,7 @@ def _scrape_params(data: dict) -> ScrapeParams:
         with_participants=data.get("participants", True),
         account=data["account"],
         chat_labels=data.get("chat_labels"),
+        extend=data.get("extend", ""),
     )
 
 
@@ -439,12 +453,23 @@ async def scrape_run(message: Message, state: FSMContext):
         return
 
     await state.update_data(date_max=date_max)
+    await _ask_go(message, state)
+
+
+async def _ask_go(message: Message, state: FSMContext, deps: dict | None = None):
+    """The summary before a scrape starts: ▶️ Запустить or ⚙️ Дополнительно (a top-up's, too)."""
+    data = await state.get_data()
     await state.set_state(Scrape.confirm)
+    if data.get("extend"):  # its keyword is the previous scrape's: no filter to set
+        files = (f"Дособор к {os.path.basename(data['extend'])}: новое вольётся в файлы проекта, "
+                 f"заменённые уйдут в {data['out_dir']}/{data['name']}_previous/\n\n"
+                 "«Дополнительно» — комментарии, реакции, база участников, лимит постов.")
+    else:
+        files = (f"Файлы: {data['out_dir']}/{data['name']}_…\n\n"
+                 "«Дополнительно» — комментарии, реакции, база участников, фильтр по слову, лимит постов.")
     await message.answer(
-        f"Каналы: {', '.join(data.get('chat_labels') or params.channels)}\n"
-        f"Период: {data['date_min']} – {date_max}\n"
-        f"Файлы: {data['out_dir']}/{data['name']}_…\n\n"
-        "«Дополнительно» — комментарии, реакции, база участников, фильтр по слову, лимит постов.",
+        f"Каналы: {', '.join(data.get('chat_labels') or parse_channels(data['channels']))}\n"
+        f"Период: {data['date_min']} – {data['date_max']}\n" + files,
         reply_markup=choice_kb("scrape_go", [("▶️ Запустить", "run"), ("⚙️ Дополнительно", "more")]),
     )
 
@@ -458,7 +483,8 @@ def _settings_kb(data: dict):
         (f"💬 Комментарии {mark('comments')}", "comments"),
         (f"❤️ Реакции {mark('reactors')} (медленно)", "reactors"),
         (f"👥 База участников {mark('participants')}", "participants"),
-        (f"🔎 Фильтр по слову: {keyword[:24]}", "keyword"),
+        # a top-up keeps the previous scrape's keyword (scraper.scrape.run refuses another)
+        *([] if data.get("extend") else [(f"🔎 Фильтр по слову: {keyword[:24]}", "keyword")]),
         (f"🔢 Максимум постов: {limit}", "max"),
         ("▶️ Запустить", "run"),
     ])
@@ -982,6 +1008,7 @@ _FLOW_NEXT = {
     "scrape": _ask_channels,
     "scrape_resume": _resume_on_chosen,
     "project": _check_project_channels,
+    "topup": _ask_go,
     "members": _ask_groups,
     "verify": _ask_posts_file,
 }

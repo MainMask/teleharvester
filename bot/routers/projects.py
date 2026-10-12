@@ -63,8 +63,11 @@ async def _show_card(message: Message, state: FSMContext, project: projects.Proj
     await state.clear()
     # the list shown before keeps working: its buttons carry an index into project_names
     await state.update_data(project_name=project.name, project_names=names or [])
+    # a top-up while a scrape is unfinished would drop its checkpoint: ▶️ continues that first
+    topup = projects.topup(project) is not None and projects.unfinished(project.name) is None
     await message.answer(projects.card(project), reply_markup=choice_kb("prj_act", [
         ("▶️ Скрап проекта", "scrape"),
+        *([("🔄 Дособрать", "topup")] if topup else []),
         ("✏️ Каналы", "channels"),
         ("🗑 Удалить", "delete"),
         ("⬅️ К проектам", "back"),
@@ -187,6 +190,13 @@ async def project_action(callback: CallbackQuery, callback_data: ChoiceCB, state
     if action == "scrape":
         await scraping.scrape_project(callback.message, state, project,
                                       dict(pool=pool, personal=personal, scrapes=scrapes))
+    elif action == "topup":
+        plan = projects.topup(project)
+        if plan is None:  # its posts file gone meanwhile
+            await callback.message.answer("Дособирать не к чему: у проекта нет готового файла постов.")
+            return
+        await scraping.topup_project(callback.message, state, project, plan,
+                                     dict(pool=pool, personal=personal, scrapes=scrapes))
     elif action == "channels":
         await state.set_state(Projects.edit)
         await callback.message.answer(f"Сейчас: {', '.join(project.channels)[:projects.MAX_CHANNELS_TEXT]}\n\n"

@@ -999,7 +999,7 @@ def test_consolidate_reactors_streaming(tmp_path):
                  ).to_parquet(d / "reactors_part_00001.parquet")
     pd.DataFrame([_reactor_row(11, 3, "❤")]).to_parquet(d / "reactors_part_00002.parquet")
 
-    dest, n = scrape._consolidate_reactors(d, tmp_path / "out.parquet")
+    dest, n = scrape._consolidate_reactors(scrape._shard_paths(d, "reactors"), tmp_path / "out.parquet")
     out = pd.read_parquet(dest)
     assert n == len(out) == 3
     assert {(g, m, i, x) for g, m, i, x in
@@ -1165,7 +1165,7 @@ def test_consolidate_reactors_keeps_post_and_comment_with_same_id(tmp_path):
         d / "reactors_part_00001.parquet")
     pd.DataFrame([_reactor_row(501, 1, "🔥")]).to_parquet(d / "reactors_part_00002.parquet")
 
-    _, n = scrape._consolidate_reactors(d, tmp_path / "out.parquet")
+    _, n = scrape._consolidate_reactors(scrape._shard_paths(d, "reactors"), tmp_path / "out.parquet")
     assert n == 4
 
 
@@ -2059,3 +2059,123 @@ def test_the_channels_names_are_kept_in_the_checkpoint(monkeypatch, tmp_path):
     assert meta["chat_labels"] == ["«Some» (t.me/SomeChannel)"]
     assert scrape.resume_params(meta, tmp_path).chat_labels == ["«Some» (t.me/SomeChannel)"]
     assert scrape.resume_params(_resume_meta(tmp_path), tmp_path).chat_labels is None  # an old one
+
+
+# --- a top-up (ScrapeParams.extend): the new run merged into the previous run's files -------------
+
+def _topup(tmp_path, previous, **kw):
+    import dataclasses
+
+    return dataclasses.replace(_params(tmp_path, with_reactors=True), extend=str(previous),
+                               date_min=datetime(2024, 6, 1, tzinfo=timezone.utc),
+                               date_max=datetime(2025, 1, 31, 23, 59, 59, tzinfo=timezone.utc), **kw)
+
+
+def _first_run(tmp_path):
+    """A finished scrape whose posts file also has an older post (5) and post 30 as it was then."""
+    path = scrape.run(Credentials(1, "h", ""), _params(tmp_path, with_reactors=True))
+    df = pd.read_parquet(path)
+    df.loc[df["Message ID"] == "30", "Content"] = "as it was"
+    old = df.iloc[[0]].assign(**{"Message ID": "5", "Date": pd.Timestamp("2024-02-01"), "Content": "older"})
+    pd.concat([df, old], ignore_index=True).to_parquet(path)  # df.attrs ride along
+    return path
+
+
+def test_a_top_up_merges_into_the_previous_files_and_keeps_them_one_version_back(fake_client, tmp_path):
+    first = _first_run(tmp_path)
+    old_reactors = len(pd.read_parquet(_out(tmp_path, "reactors")))
+
+    path = scrape.run(Credentials(1, "h", ""), _topup(tmp_path, first))
+
+    df = pd.read_parquet(path)
+    assert sorted(df["Message ID"]) == ["20", "30", "40", "5"]  # the new post 40 in; no repeats; the older 5 kept
+    assert df.set_index("Message ID").loc["30", "Content"] != "as it was"  # the re-read copy wins
+    assert df.attrs["scrape_window"] == {"date_min": "2024-01-01", "date_max": "2025-01-31"}
+    assert df.attrs["owner_id"] == 4242
+    assert path.name == "unit.test_posts_01.02.2024-01.01.2025.parquet"
+    # one file of each kind in the bases folder; the replaced ones one version back
+    for kind in ("posts", "reactors", "participants"):
+        assert len(list(tmp_path.glob(f"unit.test_{kind}_*.parquet"))) == 1
+    assert sorted(p.name.split("_")[1] for p in (tmp_path / "unit.test_previous").iterdir()) == [
+        "participants", "posts", "reactors"]
+    assert len(pd.read_parquet(_out(tmp_path, "reactors"))) == old_reactors  # re-read: no doubles
+    assert set(pd.read_parquet(_out(tmp_path, "participants"))["Owner ID"]) == {4242}
+    assert not (tmp_path / "unit.test_partial" / "merged").exists()
+    assert not (tmp_path / "unit.test_partial" / "piece").exists()
+
+
+def test_a_second_top_up_replaces_the_kept_version(fake_client, tmp_path):
+    first = _first_run(tmp_path)
+    second = scrape.run(Credentials(1, "h", ""), _topup(tmp_path, first))
+    scrape.run(Credentials(1, "h", ""), _topup(tmp_path, second))
+    kept = sorted(p.name for p in (tmp_path / "unit.test_previous").iterdir())
+    assert len(kept) == 3 and kept[1] == second.name  # the previous top-up's, not the first run's
+
+
+def test_a_top_up_without_a_base_leaves_the_old_base_in_place(fake_client, tmp_path):
+    first = _first_run(tmp_path)
+    old_base = _out(tmp_path, "participants")
+    scrape.run(Credentials(1, "h", ""), _topup(tmp_path, first, with_participants=False))
+    assert old_base.exists()
+    assert not (tmp_path / "unit.test_previous" / old_base.name).exists()
+
+
+def test_a_top_up_on_another_account_stops_before_scraping(fake_client, tmp_path):
+    first = _first_run(tmp_path)
+    df = pd.read_parquet(first)
+    df.attrs["owner_id"] = 999  # scraped by another account than the fake one (4242)
+    df.to_parquet(first)
+    with pytest.raises(SystemExit, match="другой аккаунт \\(ID 999\\)"):
+        scrape.run(Credentials(1, "h", ""), _topup(tmp_path, first))
+    assert first.exists() and not (tmp_path / "unit.test_previous").exists()
+
+
+def test_a_top_up_with_another_keyword_stops_before_connecting(monkeypatch, tmp_path):
+    previous = tmp_path / "unit.test_posts_x.parquet"
+    df = pd.DataFrame({"Group": ["@c"], "Message ID": ["1"]})
+    df.attrs["keyword"] = "war"
+    df.to_parquet(previous)
+    monkeypatch.setattr(scrape, "TelegramClient", None)  # never reached
+    with pytest.raises(SystemExit, match="«war»"):
+        scrape.run(Credentials(1, "h", ""), _topup(tmp_path, previous))
+
+
+def test_a_top_up_whose_previous_file_is_gone_saves_on_its_own(fake_client, tmp_path, capsys):
+    path = scrape.run(Credentials(1, "h", ""), _topup(tmp_path, tmp_path / "gone_posts.parquet"))
+    assert path.parent == tmp_path and "is gone" in capsys.readouterr().out
+    assert not (tmp_path / "unit.test_previous").exists()
+
+
+def test_a_top_up_survives_a_resume(tmp_path):
+    meta = {"name": "n", "channels": ["@a"], "date_min": "2024-01-01T00:00:00+00:00",
+            "date_max": "2024-01-31T23:59:59+00:00", "extend": "assets/databases/n_posts_x.parquet"}
+    assert scrape.resume_params(meta, tmp_path).extend == "assets/databases/n_posts_x.parquet"
+    meta.pop("extend")  # a checkpoint from before top-ups: a plain scrape
+    assert scrape.resume_params(meta, tmp_path).extend == ""
+
+
+def test_reactors_across_sources_the_earlier_wins_within_one_all_rows_stay(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    new = tmp_path / "new.parquet"
+    pd.DataFrame([_reactor_row(10, 1, "🔥")]).to_parquet(new)
+    old = tmp_path / "old.parquet"
+    first = pa.Table.from_pandas(pd.DataFrame([_reactor_row(10, 1, "👍"), _reactor_row(11, 2, "❤")]),
+                                 preserve_index=False)
+    with pq.ParquetWriter(old, first.schema) as writer:  # message 11's rows over two row groups
+        writer.write_table(first)
+        writer.write_table(pa.Table.from_pandas(pd.DataFrame([_reactor_row(11, 3, "❤")]),
+                                                preserve_index=False).cast(first.schema))
+
+    dest, n = scrape._consolidate_reactors([new, old], tmp_path / "out.parquet")
+    out = pd.read_parquet(dest)
+    assert n == 3 and {(m, i, x) for m, i, x in zip(out["Message ID"], out["Reactor ID"], out["Reaction"])} == {
+        (10, 1, "🔥"), (11, 2, "❤"), (11, 3, "❤")}  # message 10 as the new run read it
+
+
+def test_reactors_of_empty_sources_write_nothing(tmp_path):
+    empty = tmp_path / "e.parquet"
+    pd.DataFrame([_reactor_row(10, 1, "🔥")]).iloc[0:0].to_parquet(empty)
+    assert scrape._consolidate_reactors([empty], tmp_path / "out.parquet") == (None, 0)
+    assert not (tmp_path / "out.parquet").exists()

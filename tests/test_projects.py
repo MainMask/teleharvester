@@ -413,3 +413,113 @@ def test_cli_edits_and_deletes_a_project(monkeypatch):
     _answers(monkeypatch, cli, texts=["3"], bools=[True])
     cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
     assert projects.load() == []
+
+
+# --- the top-up (🔄 Дособрать) ------------------------------------------------------------------
+
+def _scraped(folder, name, mtime=1_000, window=("2024-01-01", "2024-01-31"), channels=("@a",), keyword=None):
+    """A finished scrape's posts file with what the scrape stores in it."""
+    df = pd.DataFrame({"Group": ["@a"], "Message ID": ["1"]})
+    if window:
+        df.attrs["scrape_window"] = {"date_min": window[0], "date_max": window[1]}
+    if channels:
+        df.attrs["channels"] = list(channels)
+    if keyword:
+        df.attrs["keyword"] = keyword
+    path = folder / f"{name}_posts_01.01.2024-31.01.2024.parquet"
+    df.to_parquet(path)
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def _today():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).date()
+
+
+def test_topup_continues_the_newest_scrape_from_a_week_before_its_end(tmp_path):
+    from datetime import date
+
+    project = projects.add("Green", ["@a"])
+    assert projects.topup(project) is None  # nothing scraped yet
+    _scraped(tmp_path, "Green", window=None)
+    assert projects.topup(project) is None  # an older file: no window to continue from
+
+    path = _scraped(tmp_path, "Green", channels=("@a", "@b"), keyword="war")
+    plan = projects.topup(project)
+    assert (plan.posts, plan.channels, plan.keyword) == (str(path), ["@a", "@b"], "war")
+    assert (plan.date_min, plan.date_max) == (date(2024, 1, 24), _today())
+
+
+def test_card_offers_the_top_up_and_says_when_its_channels_differ(tmp_path):
+    project = projects.add("Green", ["@a"])
+    _scraped(tmp_path, "Green", channels=("@old",))
+    card = projects.card(project)
+    assert f"🔄 Дособор: с 24.01.2024 по {_today():%d.%m.%Y}" in card
+    assert "Каналы дособора — как в прошлом скрапе: @old" in card
+
+    _checkpoint(tmp_path, "Green")  # unfinished: continuing it comes first
+    assert "🔄" not in projects.card(project)
+
+
+def test_bot_top_up_goes_from_the_card_to_the_summary_and_runs_on_the_files_data(monkeypatch, tmp_path):
+    from bot.routers import scraping
+    from bot.services.jobs import JobManager
+    from bot.states import Scrape
+
+    router = _router()
+    monkeypatch.setattr(scraping, "DEFAULT_OUT", str(tmp_path))
+    calls = _scrapes(monkeypatch)
+    project = projects.add("Green", ["@new"])
+    path = _scraped(tmp_path, "Green", channels=("@a",), keyword="war")
+    state = _State()
+
+    card = _SCallback()
+    asyncio.run(router._show_card(card.message, state, project))
+    assert "🔄 Дособрать" in _buttons(card.message.answers[0][1])
+
+    go = _SCallback()
+    asyncio.run(router.project_action(go, ChoiceCB(scope="prj_act", value="topup"), state, _pool(), None,
+                                      JobManager()))
+    text, markup = go.message.answers[-1]
+    assert state.state == Scrape.confirm and text.startswith("Каналы: @a\nПериод: 24.01.2024")
+    assert f"Дособор к {path.name}" in text and _buttons(markup) == ["▶️ Запустить", "⚙️ Дополнительно"]
+
+    more = _SCallback()
+    asyncio.run(scraping.scrape_go(more, ChoiceCB(scope="scrape_go", value="more"), state, _pool(), None,
+                                   JobManager()))
+    assert not any(b.startswith("🔎") for b in _buttons(more.message.answers[0][1]))  # the keyword is fixed
+
+    asyncio.run(scraping.scrape_option(_SCallback(), ChoiceCB(scope="scrape_opt", value="run"), state,
+                                       _pool(), None, JobManager()))
+    [params] = calls
+    assert (params.name, params.channels, params.keyword, params.extend) == ("Green", ["@a"], "war", str(path))
+    assert (params.date_min.date().isoformat(), params.date_max.date()) == ("2024-01-24", _today())
+
+
+def test_bot_offers_no_top_up_while_a_scrape_is_unfinished(tmp_path):
+    router = _router()
+    project = projects.add("Green", ["@a"])
+    _scraped(tmp_path, "Green")
+    _checkpoint(tmp_path, "Green")
+    card = _SCallback()
+    asyncio.run(router._show_card(card.message, _State(), project))
+    assert "🔄 Дособрать" not in _buttons(card.message.answers[0][1])
+
+
+def test_cli_top_up_runs_on_the_files_data(monkeypatch, tmp_path):
+    from functions import projects as cli
+    from functions import scraper
+
+    captured = {}
+    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
+    monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
+    projects.add("Green", ["@a"])
+    path = _scraped(tmp_path, "Green", channels=("@a", "@b"))
+    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))  # [1] Green
+    _answers(monkeypatch, cli, texts=["4"], bools=[True, False, True])  # 🔄; comments, no reactors, base
+    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
+
+    p = captured["params"]
+    assert (p.name, p.channels, p.extend, p.with_reactors) == ("Green", ["@a", "@b"], str(path), False)
+    assert p.date_min.date().isoformat() == "2024-01-24"

@@ -63,11 +63,15 @@ class ProjectsFunc(TelethonFunction):
 
     def _card(self, project):
         console.print(projects.card(project), markup=False, highlight=False)
-        console.print("  [1] ▶️ Скрап проекта  [2] ✏️ Каналы  [3] 🗑 Удалить  (пусто — выход)",
-                      markup=False, highlight=False)
+        # a top-up while a scrape is unfinished would drop its checkpoint: [1] continues that first
+        plan = projects.topup(project) if projects.unfinished(project.name) is None else None
+        console.print("  [1] ▶️ Скрап проекта  [2] ✏️ Каналы  [3] 🗑 Удалить"
+                      f"{'  [4] 🔄 Дособрать' if plan else ''}  (пусто — выход)", markup=False, highlight=False)
         action = Prompt.ask("[bold red]действие[/]", default="")
         if action == "1":
             scraper.ScrapeFunc(self.storage, self.settings).scrape(project.name, project.channels)
+        elif action == "4" and plan:
+            scraper.ScrapeFunc(self.storage, self.settings).topup(project.name, plan)
         elif action == "2":
             channels = parse_channels(Prompt.ask("[bold red]новый список каналов через запятую (заменит текущий)[/]"))
             try:

@@ -55,5 +55,8 @@ For any non-trivial feature: read the relevant files → propose a plan (what ch
   (`scraped_files.project_files`), its unfinished scrape by `pending_resume`. Keep the bases folder flat.
 - A project's scrape goes through the existing scrape flows (`scraping.scrape_project` in the bot,
   `ScrapeFunc.scrape` in the CLI); don't build a second one.
+- A top-up (🔄 Дособрать) is a scrape with `ScrapeParams.extend` (the previous posts file): the merge
+  lives in `scraper.scrape.run` only (streamed: the files are large, the host has ~2 GB RAM); its
+  plan comes from `projects.topup`.
 - Write `stats/projects.json` only through `projects._save`, which backs the previous file up first;
   `config.toml` only through `Settings._write_setting` (backs up to `config.toml.bak`).

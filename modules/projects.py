@@ -5,8 +5,10 @@ and an interrupted scrape of it is continued by that name (scraper.scrape.pendin
 import os
 import shutil
 from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta, timezone
 
 from modules import json_file, scraped_files
+from scraper.datafiles import read_attrs
 from scraper.scrape import pending_resume
 
 PATH = os.path.join("stats", "projects.json")
@@ -14,6 +16,7 @@ MAX_NAME = 40  # a project's name is a button label and a file name prefix
 # the card must stay within a Telegram message (4096): the channels' text and the files listed
 MAX_CHANNELS_TEXT = 1500
 MAX_CARD_FILES = 20
+TOPUP_OVERLAP = timedelta(days=7)  # a top-up re-reads its last week: late comments and reactions under it
 
 
 @dataclass
@@ -102,6 +105,35 @@ def importable(limit: int = 30) -> list[tuple[str, list[str]]]:
     return found
 
 
+@dataclass
+class Topup:
+    posts: str            # the previous run's posts file: the top-up merges into its files
+    channels: list[str]   # as that scrape was given them
+    keyword: str
+    date_min: date
+    date_max: date
+
+
+def topup(project: Project) -> Topup | None:
+    """The project's top-up (ScrapeParams.extend): the newest posts file's channels and keyword,
+    from TOPUP_OVERLAP before the end of its scrape window to today. None without a finished
+    scrape that stored its window and channels (an older or a combined file)."""
+    posts = next((path for path, text in scraped_files.project_files(project.name) if text.startswith("posts")),
+                 None)
+    if posts is None:
+        return None
+    try:
+        attrs = read_attrs(posts)
+    except Exception:  # unreadable / half-written: nothing to top up
+        return None
+    window, channels = attrs.get("scrape_window"), attrs.get("channels")
+    if not window or not channels:
+        return None
+    end = date.fromisoformat(window["date_max"])
+    today = datetime.now(timezone.utc).date()  # the scrape's dates are UTC
+    return Topup(posts, list(channels), attrs.get("keyword", ""), end - TOPUP_OVERLAP, max(today, end))
+
+
 def unfinished(name: str) -> dict | None:
     """The project's interrupted scrape (its checkpoint's resume.json), or None."""
     return pending_resume(scraped_files.BASES_DIR, name)
@@ -122,6 +154,12 @@ def card(project: Project) -> str:
     if meta is not None:
         lines.append(f"⏸ Незавершённый скрап: собрано постов {meta.get('t_index', 0)} — "
                      "скрап проекта предложит продолжить.")
+    elif (plan := topup(project)) is not None:
+        lines.append(f"🔄 Дособор: с {plan.date_min:%d.%m.%Y} по {plan.date_max:%d.%m.%Y} — новое вольётся "
+                     f"в файлы проекта, последние {TOPUP_OVERLAP.days} дней прошлого скрапа перечитаются.")
+        if plan.channels != project.channels:  # a top-up continues the previous scrape as it was
+            lines.append(f"   Каналы дособора — как в прошлом скрапе: {', '.join(plan.channels)[:MAX_CHANNELS_TEXT]} "
+                         "(новому каналу нужна вся история: «▶️ Скрап проекта»).")
     files = scraped_files.project_files(project.name)
     if files:
         lines += [f"Файлы в {scraped_files.BASES_DIR}:", *(f"• {text}" for _, text in files[:MAX_CARD_FILES])]

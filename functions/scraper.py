@@ -142,6 +142,31 @@ class ScrapeFunc(TelethonFunction):
             return
         self._run(account, params)
 
+    def topup(self, name, plan):
+        """A project's top-up (functions/projects.py): the previous scrape's channels, keyword and
+        dates (modules/projects.topup); the account and the run's toggles are asked."""
+        account = pick_session(self.storage, personal_storage(self.settings.api_id, self.settings.api_hash))
+        if account is None:
+            return
+        _note_personal(account)
+        console.print(f"дособор с {plan.date_min:%d.%m.%Y} по {plan.date_max:%d.%m.%Y} к {plan.posts}: новое "
+                      f"вольётся в файлы проекта, заменённые уйдут в {scraped_files.BASES_DIR}/{name}_previous/",
+                      markup=False, highlight=False)
+        params = ScrapeParams(
+            channels=plan.channels,
+            date_min=parse_date(plan.date_min.isoformat()),
+            date_max=parse_date(plan.date_max.isoformat(), end_of_day=True),
+            name=name,
+            keyword=plan.keyword,
+            out_dir=Path(scraped_files.BASES_DIR),
+            with_comments=Confirm.ask("[bold red]собирать комментарии?[/]", default=True),
+            with_reactors=Confirm.ask("[bold red]собирать реакции? (медленно)[/]", default=True),
+            with_participants=Confirm.ask("[bold red]пересобрать базу участников?[/]", default=True),
+            account=account.path,
+            extend=plan.posts,
+        )
+        self._run(account, params)
+
     @staticmethod
     def _run(account, params):
         try:

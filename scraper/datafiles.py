@@ -1,6 +1,7 @@
 """Shared helpers for reading/writing tabular data and cleaning text."""
 
 import glob
+import json
 import re
 from pathlib import Path
 
@@ -14,6 +15,13 @@ _EXT_FOR_FORMAT = {"xlsx": "xlsx", "excel": "xlsx", "parquet": "parquet", "csv":
 _INVALID_XML_CHARS = re.compile(
     "[^\\u0009\\u000A\\u000D\\u0020-\\uD7FF\\uE000-\\uFFFD\\U00010000-\\U0010FFFF]"
 )
+
+
+def read_attrs(path) -> dict:
+    """A parquet file's df.attrs (pandas keeps them in the file's metadata), from the footer
+    only — no data is read; {} for a file with none."""
+    metadata = pq.ParquetFile(path).schema_arrow.metadata or {}
+    return json.loads(metadata.get(b"PANDAS_ATTRS", b"{}"))
 
 
 def clean_xml_text(text: str | None) -> str:
