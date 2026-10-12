@@ -57,6 +57,8 @@ titles and a one-line description under each; the prompts and messages are in Ru
   reconnect them through the new proxies.
 - **Statistics (phone numbers)** — breakdown of accounts by country (one code can be several:
   +1 is the USA and Canada, +7 Russia and Kazakhstan).
+- **Projects** — saved sets of channels to scrape: a project's scrape is one button, its files
+  and an unfinished scrape are on its card (see [*Projects*](#projects)).
 - **Scrape channel/group** — collect messages, their authors, comments, reactions and
   participants from channels and groups into `.parquet` (see below).
 - **Group members** — a group's whole member list, the silent members too, as a mailing base.
@@ -106,6 +108,9 @@ On the first run the app creates `config.toml` and asks for:
   each worker sends per chat / post, `0` = until stopped) are asked in the bot's chat, instant
   and comments broadcasts, with the current value one tap away; the chosen value is written
   back to `config.toml` when the job starts.
+
+Every value the bot writes back to `config.toml` leaves the previous file in `config.toml.bak`
+(git-ignored, with the same file mode), so a write can be undone by copying it back.
 
 Older configs with a `[sessions]` section or `[bot] token` are rejected at startup with a
 message to move those values into `.env`.
@@ -232,6 +237,9 @@ change it later even when a password is already set.
   other workers (the **Передать контакты** button); a worker clean again leaves it (git-ignored).
 - `stats/auto_replies.json` — who the `[autoreply]` already answered (per worker), so no
   one is answered twice (git-ignored).
+- `stats/projects.json` — the [projects](#projects) (`[{"name", "channels"}]`), written by the bot
+  and the menu; each write first copies the previous file to `stats/projects.json.bak`
+  (git-ignored). No file means no projects.
 
 ## Usage
 
@@ -269,7 +277,10 @@ one-line description of what each does:
   trigger-based chat broadcasts. PM mailing offers the scraped bases from `assets/databases/` as
   buttons, or takes an uploaded `.txt`, a pasted list (one per line) or a file path.
 - **💬 Активность** — join chat, reactions, poll vote, report message/post, report user.
-- **🎯 Аудитория** — scrape, verify, data analysis, invite from chat, add to contacts:
+- **🎯 Аудитория** — projects, scrape, verify, data analysis, invite from chat, add to contacts:
+  - **📁 Проекты** — the projects as buttons (⏸ marks one with an unfinished scrape),
+    **➕ Новый проект** and **📥 Из готового скрапа**; a project's card has **▶️ Скрап проекта**,
+    **✏️ Каналы**, **🗑 Удалить** (see [*Projects*](#projects)).
   - **Scrape** names the typed channels by their titles at once (see *Скрап канала/группы* below)
     and shows a summary before starting: **▶️ Запустить**, or **⚙️ Дополнительно** for a
     keyword filter and a faster scrape without reactors. Output is always parquet.
@@ -370,6 +381,33 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now teleharvester-bot
 journalctl -u teleharvester-bot -f
 ```
+
+## Projects
+
+A project is a saved set of channels to scrape, under a name. The name is the one its scrapes run
+under, so a project's files are the `<name>_posts_…`, `<name>_reactors_…` and
+`<name>_participants_…` files in `assets/databases/` — the bases folder stays flat, and the
+mailing, contacts, verify and analysis pick the files as before. Older files under a project's name
+are in it at once.
+
+In the bot (**🎯 Аудитория → 📁 Проекты**) and in the terminal menu (**Проекты**):
+
+- **➕ Новый проект** — a name (not `/`, `\`, nor the file markers `_posts`, `_reactors`,
+  `_participants`, `_partial`) and the channels, comma-separated, as in a scrape.
+- **📥 Из готового скрапа** — a project from a finished scrape: its name and the channels the scrape
+  stored in its posts file (the newest 30 posts files; those with a project already are left out).
+- **The card** — the channels, an unfinished scrape (how many posts so far) and the project's files
+  with their row counts.
+- **▶️ Скрап проекта** — the scrape with the project's name and channels filled in: the account,
+  then (if there is one) the offer to continue the unfinished scrape, the channels named on that
+  account (a corrected list goes for this run only), the dates and **⚙️ Дополнительно**, as in a
+  scrape. One scrape covers all of the project's channels; **⏹** stops it.
+- **✏️ Каналы** replaces the list; **🗑 Удалить** removes the project, never its files.
+
+The projects live in `stats/projects.json`; each write first copies the previous file to
+`stats/projects.json.bak`. Without the file there are no projects and everything works as before;
+the plain **Scrape channel/group** stays for one-off scrapes. A file that can't be read is reported
+and never overwritten.
 
 ## Scraping & analysis
 

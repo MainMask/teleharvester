@@ -47,3 +47,13 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - Hook into existing plugin/handler mechanisms instead of building parallel infrastructure.
 - Match surrounding style: naming, module layout, abstraction level.
 For any non-trivial feature: read the relevant files → propose a plan (what changes, what's added, why) → wait for approval → implement.
+
+## Project map: projects (scrape source sets)
+- The model lives in `modules/projects.py` only; the bot (`bot/routers/projects.py`) and the CLI
+  (`functions/projects.py`) call it and add no project logic of their own.
+- A project's name is its scrapes' name: its files are found by that name
+  (`scraped_files.project_files`), its unfinished scrape by `pending_resume`. Keep the bases folder flat.
+- A project's scrape goes through the existing scrape flows (`scraping.scrape_project` in the bot,
+  `ScrapeFunc.scrape` in the CLI); don't build a second one.
+- Write `stats/projects.json` only through `projects._save`, which backs the previous file up first;
+  `config.toml` only through `Settings._write_setting` (backs up to `config.toml.bak`).
