@@ -30,6 +30,15 @@ def _note_personal(account):
         console.print(PERSONAL_NOTE, style="bold yellow", markup=False)
 
 
+def _ask_name() -> str:
+    """The scrape's file name in the bases folder, asked again until it fits (see name_problem)."""
+    while True:
+        name = Prompt.ask(f"[bold red]имя для выходных файлов (в {scraped_files.BASES_DIR})[/]").strip()
+        if (problem := scraped_files.name_problem(name)) is None:
+            return name
+        console.print(f"Не подходит: {problem}.", style="bold red", markup=False)
+
+
 def _lookup(account, chats):
     """The chats' names on `account` (see lookup_chats); None, after saying why, if they can't be asked."""
     try:
@@ -56,7 +65,7 @@ class ScrapeFunc(TelethonFunction):
     """Scrape channel/group"""
 
     def execute(self):
-        self.scrape(Prompt.ask(f"[bold red]имя для выходных файлов (в {scraped_files.BASES_DIR})[/]"))
+        self.scrape(_ask_name())
 
     def scrape(self, name, channels=None):
         """A scrape under `name`; a project's (functions/projects.py) comes with its channels,
@@ -201,7 +210,7 @@ class MembersFunc(TelethonFunction):
                 break
 
         out_dir = scraped_files.BASES_DIR  # the bases folder, where the mailing picks its bases
-        name = Prompt.ask(f"[bold red]имя для выходных файлов (в {out_dir})[/]")
+        name = _ask_name()
         try:
             path, _ = members_run(build_credentials(account.client),
                                   MembersParams(chats=chats, name=name, out_dir=Path(out_dir)))

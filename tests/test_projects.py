@@ -141,6 +141,14 @@ def test_card_shows_channels_an_interrupted_scrape_and_files(tmp_path, monkeypat
     assert projects.label(project) == "Green · каналов: 2 ⏸"
 
 
+def test_card_lists_at_most_max_card_files(tmp_path):
+    project = projects.add("Green", ["@a"])
+    for day in range(1, projects.MAX_CARD_FILES + 6):
+        _write_parquet(tmp_path / f"Green_posts_{day:02}.01.2024-31.01.2024.parquet")
+    card = projects.card(project)
+    assert card.count("\n• posts · ") == projects.MAX_CARD_FILES and card.endswith("… и ещё 5")
+
+
 def test_importable_offers_the_finished_scrapes_with_no_project_yet(tmp_path):
     _posts(tmp_path, "Old", 1_000, channels=["@o"])
     _posts(tmp_path, "Green", 1_500, channels=["@a"]).rename(tmp_path / "Green_posts_2023.parquet")  # older, same name

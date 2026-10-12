@@ -11,8 +11,9 @@ from scraper.scrape import pending_resume
 
 PATH = os.path.join("stats", "projects.json")
 MAX_NAME = 40  # a project's name is a button label and a file name prefix
-MAX_CHANNELS_TEXT = 1500  # the card must stay within a Telegram message
-FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial")
+# the card must stay within a Telegram message (4096): the channels' text and the files listed
+MAX_CHANNELS_TEXT = 1500
+MAX_CARD_FILES = 20
 
 
 @dataclass
@@ -40,16 +41,12 @@ def _save(projects: list[Project]):
 
 
 def name_problem(name: str, projects: list[Project]) -> str | None:
-    """Why `name` can't be a new project's name, or None."""
-    if not name:
-        return "имя пустое"
+    """Why `name` can't be a new project's name, or None: a scrape's name (it is one) that fits a
+    button and isn't another project's."""
+    if problem := scraped_files.name_problem(name):
+        return problem
     if len(name) > MAX_NAME:
         return f"имя длиннее {MAX_NAME} символов"
-    if "/" in name or "\\" in name or name in (".", ".."):
-        return "имя станет частью имени файла: без / и \\"
-    # the scrape's file names are cut at these (scraped_files.project_files, pending_resume)
-    if marker := next((m for m in FILE_MARKERS if m in name), None):
-        return f"в имени не должно быть «{marker}» — так размечаются файлы скрапа"
     if any(project.name.casefold() == name.casefold() for project in projects):
         return "проект с таким именем уже есть"
     return None
@@ -127,7 +124,9 @@ def card(project: Project) -> str:
                      "скрап проекта предложит продолжить.")
     files = scraped_files.project_files(project.name)
     if files:
-        lines += [f"Файлы в {scraped_files.BASES_DIR}:", *(f"• {text}" for _, text in files)]
+        lines += [f"Файлы в {scraped_files.BASES_DIR}:", *(f"• {text}" for _, text in files[:MAX_CARD_FILES])]
+        if len(files) > MAX_CARD_FILES:
+            lines.append(f"… и ещё {len(files) - MAX_CARD_FILES}")
     else:
         lines.append("Файлов скрапа пока нет.")
     return "\n".join(lines)

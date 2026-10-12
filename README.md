@@ -433,7 +433,9 @@ the input.
   over a date window. A source may be a channel, a supergroup (forum topics included) or a basic
   group, given as `@name`, `t.me/name`, a full `https://t.me/name` URL, a `t.me/+hash` invite link,
   or a **numeric ID** such as `-1001629147115` (a basic group's is `-123456`). A private source
-  (an invite link, `t.me/c/…`, a numeric ID) is read only if the account is already a member. Dates are `DD.MM.YYYY` or ISO `YYYY-MM-DD`, both inclusive. In a group the
+  (an invite link, `t.me/c/…`, a numeric ID) is read only if the account is already a member. Dates are `DD.MM.YYYY` or ISO `YYYY-MM-DD`, both inclusive.
+  The name (here and in *Участники чата*) becomes the files' prefix, so one with `/` or `\` or the
+  file markers `_posts`, `_reactors`, `_participants`, `_partial` is asked again. In a group the
   people are the message authors, so they go into the participants base too (bots and deleted
   accounts never do); a basic group's
   messages have no links, so their `Url` is empty. In a forum every post gets its `Topic ID`

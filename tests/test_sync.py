@@ -576,6 +576,40 @@ def test_one_account_is_taken_without_asking(monkeypatch, tmp_path):
     assert msg.answers[0][0].startswith("Каналы/группы")
 
 
+def test_a_name_that_would_leave_the_bases_folder_is_asked_again(monkeypatch, tmp_path):
+    from bot.routers import scraping as router
+    from bot.services.jobs import JobManager
+    from bot.states import Scrape
+
+    monkeypatch.setattr(router, "DEFAULT_OUT", str(tmp_path))
+    state = _State()
+    state.state = Scrape.name
+    msg = _SMsg(text="../x")
+    asyncio.run(router.scrape_name(msg, state, _pool(), None, JobManager()))
+    assert msg.answers[0][0].startswith("Не подходит: имя станет частью имени файла")
+    assert state.state == Scrape.name and "account" not in state.data  # nothing asked further
+
+
+def test_a_members_base_name_with_a_file_marker_is_asked_again(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.services import scraping
+    from bot.services.jobs import JobManager
+    from bot.states import Members
+
+    runs = []
+
+    async def do_members(creds, params):
+        runs.append(params)
+
+    monkeypatch.setattr(scraping, "do_members", do_members)
+    state = _State({"chats": "@g", "account": _ACC})
+    state.state = Members.name
+    msg = _SMsg(text="grp_posts")
+    asyncio.run(router.members_run(msg, state, _pool(), None, JobManager()))
+    assert "«_posts»" in msg.answers[0][0] and runs == []
+    assert state.state == Members.name and state.data["chats"] == "@g"  # the flow goes on from here
+
+
 def test_a_personal_account_is_offered_marked_and_warned_about(tmp_path):
     from bot.routers import scraping as router
     from bot.services.jobs import JobManager

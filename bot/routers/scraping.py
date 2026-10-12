@@ -285,6 +285,9 @@ async def scrape_name(message: Message, state: FSMContext, pool: WorkerPool, per
     name = await require_text(message)
     if name is None:
         return
+    if problem := scraped_files.name_problem(name):
+        await message.answer(f"Не подходит: {problem}. Пришлите другое имя:")
+        return
     # always the bases folder: the mailing, contacts, verify and analysis pick their files there
     await state.update_data(name=name, out_dir=DEFAULT_OUT)
     await _scrape_named(message, state, dict(pool=pool, personal=personal, scrapes=scrapes), "scrape")
@@ -716,6 +719,9 @@ async def members_run(message: Message, state: FSMContext, pool: WorkerPool, per
                       scrapes: JobManager):
     name = await require_text(message)
     if name is None:
+        return
+    if problem := scraped_files.name_problem(name):
+        await message.answer(f"Не подходит: {problem}. Пришлите другое имя:")
         return
     data = await state.get_data()
     await state.clear()

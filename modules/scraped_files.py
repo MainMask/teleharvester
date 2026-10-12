@@ -14,6 +14,19 @@ from scraper.scrape import _channel_ref, group_channel
 BASES_DIR = "assets/databases"  # default scrape output; holds the <name>_participants bases
 # a bot scrape in progress, continued after a bot restart (bot/routers/scraping.py)
 SCRAPE_MARKER = os.path.join("stats", "bot_scrape.json")
+# what a scrape's file names are cut at (project_files, _scraped_files, pending_resume)
+FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial")
+
+
+def name_problem(name: str) -> str | None:
+    """Why `name` can't name a scrape's files in BASES_DIR (scrape, members, project), or None."""
+    if not name:
+        return "имя пустое"
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return "имя станет частью имени файла: без / и \\"
+    if marker := next((m for m in FILE_MARKERS if m in name), None):
+        return f"в имени не должно быть «{marker}» — так размечаются файлы скрапа"
+    return None
 
 
 def _newest(pattern: str, limit: int, skip=lambda path: False) -> list[tuple[Path, int]]:

@@ -78,6 +78,20 @@ def test_scrape_func_builds_params_from_prompts(monkeypatch):
     assert captured["creds"].device["device_model"] == "Pixel"     # ...and its device
 
 
+def test_scrape_func_asks_the_name_again_until_it_fits(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
+    monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
+    _answers(
+        monkeypatch, scraper,
+        texts=["../x", "a_partial", " Test ", "@a", "01.01.2024", "31.01.2024", "", "500"],
+        bools=[True, True, True],
+    )
+
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
+    assert captured["params"].name == "Test"
+
+
 def test_scrape_func_stops_on_empty_channels(monkeypatch):
     called = []
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
