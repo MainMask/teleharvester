@@ -56,10 +56,14 @@ class ScrapeFunc(TelethonFunction):
     """Scrape channel/group"""
 
     def execute(self):
+        self.scrape(Prompt.ask(f"[bold red]имя для выходных файлов (в {scraped_files.BASES_DIR})[/]"))
+
+    def scrape(self, name, channels=None):
+        """A scrape under `name`; a project's (functions/projects.py) comes with its channels,
+        which are then checked on the chosen account instead of asked."""
         personal = personal_storage(self.settings.api_id, self.settings.api_hash)
         # always the bases folder: the mailing, contacts, verify and analysis pick their files there
         out_dir = scraped_files.BASES_DIR
-        name = Prompt.ask(f"[bold red]имя для выходных файлов (в {out_dir})[/]")
 
         meta = pending_resume(out_dir, name)
         if meta is not None and Confirm.ask(
@@ -90,13 +94,15 @@ class ScrapeFunc(TelethonFunction):
         _note_personal(account)
 
         while True:
-            channels = parse_channels(Prompt.ask("[bold red]каналы через запятую (в приватных аккаунт должен состоять)[/]"))
-            if not channels:
-                console.print("[bold red]Каналы не указаны.[/]")
-                return
+            if channels is None:
+                channels = parse_channels(Prompt.ask("[bold red]каналы через запятую (в приватных аккаунт должен состоять)[/]"))
+                if not channels:
+                    console.print("[bold red]Каналы не указаны.[/]")
+                    return
             ok, chat_labels = _chats_ok(account, channels)
             if ok:
                 break
+            channels = None  # typed again (a project's list too: for this run only)
 
         date_min = Prompt.ask("[bold red]дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)[/]")
         date_max = Prompt.ask("[bold red]дата по (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)[/]")

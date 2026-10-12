@@ -1,5 +1,6 @@
 """The scrape's files in assets/databases: what the bot and the CLI offer to pick from,
 where an analysis of one writes, and which scrapes are left to continue."""
+import glob
 import os
 from pathlib import Path
 
@@ -69,6 +70,21 @@ def posts_bases(limit: int = 10) -> list[tuple[str, str]]:
 def data_files(limit: int = 20) -> list[tuple[str, str]]:
     """(path, "file name · N строк") of every .parquet in BASES_DIR, newest first."""
     return [(str(path), f"{path.stem} · {_rows(rows)} строк") for path, rows in _newest("*.parquet", limit)]
+
+
+def project_files(name: str, limit: int = 50) -> list[tuple[str, str]]:
+    """(path, label) of a project's scrape files in BASES_DIR, newest first: the posts, reactors
+    and participants files whose name before the marker is the project's exactly (GreenBase's,
+    not GreenBase2's). label: "posts · 01.05.2022-27.09.2026 · 48 213"."""
+    files = []
+    for path, rows in _newest(f"{glob.escape(name)}_*.parquet", limit, skip=lambda p: p.stem.endswith("_missed")):
+        for marker in ("_posts", "_reactors", "_participants"):
+            prefix, found, span = path.stem.partition(marker)
+            if found and prefix == name:
+                parts = [marker.strip("_"), span.strip("_"), _rows(rows)]
+                files.append((str(path), " · ".join(part for part in parts if part)))
+                break
+    return files
 
 
 def output_path(input_path: str, suffix: str) -> str:

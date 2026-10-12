@@ -28,6 +28,14 @@ def _isolated_personal_accounts(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_projects(monkeypatch, tmp_path):
+    """No test may read or write the real stats/projects.json."""
+    from modules import projects
+
+    monkeypatch.setattr(projects, "PATH", str(tmp_path / "projects.json"))
+
+
+@pytest.fixture(autouse=True)
 def _isolated_bot_scrape(monkeypatch, tmp_path):
     """No test may write the real stats/bot_scrape.json; the router's scrape state starts clean."""
     from bot.routers import scraping

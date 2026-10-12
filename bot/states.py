@@ -129,6 +129,12 @@ class Scrape(StatesGroup):
     max_messages = State()
 
 
+class Projects(StatesGroup):
+    name = State()
+    channels = State()
+    edit = State()
+
+
 class Members(StatesGroup):
     chats = State()
     name = State()

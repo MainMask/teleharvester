@@ -92,7 +92,7 @@ PERSONAL_WARNING = ("⚠️ Это ваш личный аккаунт. Скра�
 BASE_NOTE = ("\n\nБаза людей с этого аккаунта для рассылки через воркеров дойдёт только до тех, "
              "у кого есть username: access hash действует только для собравшего аккаунта. "
              "Для полной базы выберите воркера.")
-_BASE_FLOWS = {"scrape", "scrape_resume", "members"}  # the flows that build a base
+_BASE_FLOWS = {"scrape", "scrape_resume", "project", "members"}  # the flows that build a base
 # a worker in a running bot job: one account must not scrape and mail at once (see WorkerPool)
 WORKER_BUSY = ("⛔ Этот воркер сейчас занят задачей бота. Выберите другой аккаунт (например, личный) "
                "или дождитесь её окончания.")
@@ -287,7 +287,21 @@ async def scrape_name(message: Message, state: FSMContext, pool: WorkerPool, per
         return
     # always the bases folder: the mailing, contacts, verify and analysis pick their files there
     await state.update_data(name=name, out_dir=DEFAULT_OUT)
+    await _scrape_named(message, state, dict(pool=pool, personal=personal, scrapes=scrapes), "scrape")
 
+
+async def scrape_project(message: Message, state: FSMContext, project, deps: dict):
+    """A project's scrape (bot/routers/projects.py): its name and channels are the project's,
+    the channels are named on the chosen account as if typed, the rest is asked as usual."""
+    await state.clear()
+    await state.update_data(name=project.name, out_dir=DEFAULT_OUT, channels=", ".join(project.channels),
+                            project=True)
+    await _scrape_named(message, state, deps, "project")
+
+
+async def _scrape_named(message: Message, state: FSMContext, deps: dict, flow: str):
+    """The scrape's name is set: offer to continue an interrupted scrape under it, else ask the account."""
+    name = (await state.get_data())["name"]
     meta = pending_resume(DEFAULT_OUT, name)
     if meta is not None:  # an interrupted scrape under this name: offer to continue it
         await state.set_state(Scrape.resume)
@@ -302,7 +316,7 @@ async def scrape_name(message: Message, state: FSMContext, pool: WorkerPool, per
             ]),
         )
         return
-    await _choose_account(message, state, "scrape", pool=pool, personal=personal, scrapes=scrapes)
+    await _choose_account(message, state, flow, **deps)
 
 
 @router.callback_query(Scrape.resume, ChoiceCB.filter(F.scope == "scrape_resume"))
@@ -310,10 +324,10 @@ async def scrape_resume(callback: CallbackQuery, callback_data: ChoiceCB, state:
                         pool: WorkerPool, personal, scrapes: JobManager):
     await callback.answer()
     deps = dict(pool=pool, personal=personal, scrapes=scrapes)
-    if callback_data.value == "fresh":
-        await _choose_account(callback.message, state, "scrape", **deps)
-        return
     data = await state.get_data()
+    if callback_data.value == "fresh":  # a project's scrape keeps its channels
+        await _choose_account(callback.message, state, "project" if data.get("project") else "scrape", **deps)
+        return
     await state.clear()
     meta = pending_resume(data["out_dir"], data["name"])
     if meta is None:  # finished or removed meanwhile
@@ -359,6 +373,15 @@ async def scrape_channels(message: Message, state: FSMContext, pool: WorkerPool,
         return
     await state.update_data(channels=channels)
     if await _check_chats(message, state, pool, personal, parse_channels(channels)):
+        await _ask_date_min(message, state)
+
+
+async def _check_project_channels(message: Message, state: FSMContext, deps: dict):
+    """A project's scrape: its channels are checked on the chosen account as if just typed (a
+    corrected list sent now is for this run only)."""
+    await state.set_state(Scrape.channels)
+    channels = parse_channels((await state.get_data())["channels"])
+    if await _check_chats(message, state, deps["pool"], deps["personal"], channels):
         await _ask_date_min(message, state)
 
 
@@ -952,6 +975,7 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
 _FLOW_NEXT = {
     "scrape": _ask_channels,
     "scrape_resume": _resume_on_chosen,
+    "project": _check_project_channels,
     "members": _ask_groups,
     "verify": _ask_posts_file,
 }
