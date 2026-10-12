@@ -11,10 +11,12 @@ import pandas as pd
 import pytest
 from telethon import utils
 from telethon.errors import (
-    BroadcastForbiddenError, ChannelPrivateError, FloodWaitError, RpcCallFailError,
+    BroadcastForbiddenError, ChannelPrivateError, FloodWaitError, InviteHashExpiredError,
+    InviteHashInvalidError, RpcCallFailError, UsernameInvalidError, UsernameNotOccupiedError,
 )
 from telethon.tl.types import (
-    Channel, ForumTopic, InputPeerChannel, InputPeerUser, PeerChannel, PeerUser, ReactionEmoji, User,
+    Channel, ChatInvite, ForumTopic, InputPeerChannel, InputPeerUser, PeerChannel, PeerUser, ReactionEmoji,
+    User,
 )
 
 import scraper.scrape as scrape
@@ -1905,3 +1907,155 @@ def test_stop_works_while_connecting(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         scrape.run(Credentials(1, "h", ""), _params(tmp_path, stop=stop))
     assert time.monotonic() - started < 10  # not after the connect gave up
+
+
+# --- lookup_chats: the chats' names at input time ------------------------------------------
+
+class LookupClient(ForumClient):
+    """@chan a channel, @user a private chat, @forum a forum, t.me/+join an invite not joined
+    yet, t.me/+old a dead one; any other name is unknown."""
+    disconnected = False
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        type(self).disconnected = False
+
+    async def get_entity(self, arg):
+        if arg == "@chan":
+            return types.SimpleNamespace(title="Берлога")
+        if arg == "@user":
+            return types.SimpleNamespace(first_name="Иван", last_name="Петров")
+        if arg == "@forum":
+            return types.SimpleNamespace(title="Forum", forum=True)
+        if arg.startswith("https://t.me/+"):  # as Telethon does for an invite not joined
+            raise ValueError("Cannot get entity from a channel (or group) that you are not part of. "
+                             "Join the group and retry")
+        raise ValueError(f'No user has "{arg[1:]}" as username')
+
+    async def __call__(self, request):
+        if type(request).__name__ == "CheckChatInviteRequest":
+            if request.hash == "old":
+                raise InviteHashExpiredError(request=None)
+            invite = ChatInvite.__new__(ChatInvite)  # only what _invite_title reads
+            invite.title = "Закрытый клуб"
+            return invite
+        return await super().__call__(request)
+
+    async def disconnect(self):
+        type(self).disconnected = True
+        await super().disconnect()
+
+
+def test_lookup_chats_names_each_chat_as_the_scrape_sees_it(monkeypatch):
+    monkeypatch.setattr(scrape, "TelegramClient", LookupClient)
+    infos = asyncio.run(scrape.lookup_chats(
+        Credentials(1, "h", ""),
+        ["@chan", "t.me/user", "https://t.me/forum/42", "@nope", "t.me/+join", "t.me/+old"]))
+    assert [(i.title, i.problem) for i in infos] == [
+        ("«Берлога»", None), ("«Иван Петров»", None), ("«Forum» / тема «Sales»", None),
+        (None, "нет такого username"),
+        ("«Закрытый клуб»", "аккаунт не состоит в чате — вступите"),
+        (None, "инвайт-ссылка истекла")]
+    assert LookupClient.disconnected
+    assert scrape.chat_lines(infos[:1] + infos[3:5]) == (
+        "• «Берлога» — @chan\n⚠️ @nope — нет такого username\n"
+        "⚠️ «Закрытый клуб» — t.me/+join — аккаунт не состоит в чате — вступите")
+    assert [scrape.chat_label(i) for i in infos[3:5]] == ["@nope", "«Закрытый клуб» (t.me/+join)"]
+
+
+class HangingClient(FakeClient):
+    async def connect(self):  # a dead proxy, retried for hours
+        await asyncio.sleep(3600)
+
+
+def test_lookup_chats_gives_up_on_a_connect_that_hangs(monkeypatch):
+    monkeypatch.setattr(scrape, "TelegramClient", HangingClient)
+    monkeypatch.setattr(scrape, "CHAT_LOOKUP_TIMEOUT", 0.05)
+    with pytest.raises(TimeoutError):
+        asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["@chan"]))
+
+
+def test_chat_problem_says_why_in_the_operator_s_words():
+    cases = [
+        (ValueError('No user has "x" as username'), "нет такого username"),
+        (UsernameNotOccupiedError(request=None), "нет такого username"),
+        (UsernameInvalidError(request=None), "нет такого username"),
+        (ChannelPrivateError(request=None), "приватный: аккаунт не состоит в нём или забанен"),
+        (InviteHashExpiredError(request=None), "инвайт-ссылка истекла"),
+        (InviteHashInvalidError(request=None), "инвайт-ссылка недействительна"),
+        (ValueError("Cannot get entity from a channel (or group) that you are not part of. Join "
+                    "the group and retry"), "аккаунт не состоит в чате — вступите"),
+        (ValueError("Could not find the input entity for PeerChannel(channel_id=1) (PeerChannel)."),
+         "аккаунт не видит этот чат (нет среди его диалогов)"),
+        (ValueError('Cannot find any entity corresponding to "x"'),
+         "аккаунт не видит этот чат (нет среди его диалогов)"),
+        (RuntimeError("boom"), "RuntimeError: boom"),  # anything else: as it is
+    ]
+    assert [scrape.chat_problem(exc) for exc, _ in cases] == [want for _, want in cases]
+
+
+
+class DialogsLookupClient(LookupClient):
+    """Numeric IDs: -1001 / -1002 resolve once their dialog is seen; the walk is counted."""
+    dialogs = [-1003, -1001, -1002, -1004, -1005]
+    walked = 0
+    hang = False
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.seen = set()
+        type(self).walked = 0
+
+    async def get_input_entity(self, arg):
+        if isinstance(arg, int) and arg not in self.seen:
+            raise ValueError(f"Could not find the input entity for PeerChannel(channel_id={arg})")
+        return arg
+
+    async def get_entity(self, arg):
+        if isinstance(arg, int):
+            await self.get_input_entity(arg)
+            return types.SimpleNamespace(title=f"Chat {arg}")
+        return await super().get_entity(arg)
+
+    async def iter_dialogs(self):
+        for dialog_id in self.dialogs:
+            if self.hang:
+                await asyncio.sleep(3600)
+            type(self).walked += 1
+            self.seen.add(dialog_id)
+            yield types.SimpleNamespace(id=dialog_id)
+
+
+def test_lookup_walks_the_dialogs_only_until_the_ids_are_found(monkeypatch):
+    monkeypatch.setattr(scrape, "TelegramClient", DialogsLookupClient)
+    infos = asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["-1001", "@chan", "-1002"]))
+    assert [i.title for i in infos] == ["«Chat -1001»", "«Берлога»", "«Chat -1002»"]
+    assert DialogsLookupClient.walked == 3  # not the whole list
+
+
+def test_a_slow_dialog_walk_still_names_the_other_chats(monkeypatch):
+    class Hanging(DialogsLookupClient):
+        hang = True
+
+    monkeypatch.setattr(scrape, "TelegramClient", Hanging)
+    monkeypatch.setattr(scrape, "DIALOGS_LOOKUP_BUDGET", 0.05)
+    infos = asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["-1001", "@chan"]))
+    assert [(i.title, i.problem) for i in infos] == [
+        (None, "аккаунт не видит этот чат (нет среди его диалогов)"), ("«Берлога»", None)]
+
+
+def test_the_channels_names_are_kept_in_the_checkpoint(monkeypatch, tmp_path):
+    import threading
+
+    monkeypatch.setattr(scrape, "TelegramClient", SlowFloodClient)
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    params = _params(tmp_path, stop=stop, chat_labels=["«Some» (t.me/SomeChannel)"])
+
+    with pytest.raises(SystemExit):
+        scrape.run(Credentials(1, "h", ""), params)
+
+    meta = scrape.pending_resume(tmp_path, "unit.test")
+    assert meta["chat_labels"] == ["«Some» (t.me/SomeChannel)"]
+    assert scrape.resume_params(meta, tmp_path).chat_labels == ["«Some» (t.me/SomeChannel)"]
+    assert scrape.resume_params(_resume_meta(tmp_path), tmp_path).chat_labels is None  # an old one

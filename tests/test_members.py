@@ -207,7 +207,7 @@ def test_bot_flow_runs_with_progress_and_sends_the_base(monkeypatch, tmp_path):
 
     bot, state = _Bot(), _State()
     state.data["account"] = "sessions/w.jsession"
-    asyncio.run(router.members_chats(_Msg("@grp, @chan", bot), state))
+    asyncio.run(router.members_chats(_Msg("@grp, @chan", bot), state, pool, None))
     msg = _Msg("grp", bot)
     asyncio.run(router.members_run(msg, state, pool, None, manager))  # manager: the scraper slot
 
@@ -229,7 +229,7 @@ def test_bot_rejects_an_empty_group_list():
     state = _State()
     state.state = Members.chats
     msg = _Msg(" , ", None)
-    asyncio.run(router.members_chats(msg, state))
+    asyncio.run(router.members_chats(msg, state, None, None))
     assert state.state == Members.chats and "Не вижу ни одной группы" in msg.answers[0][0]
 
 
@@ -373,3 +373,38 @@ def test_stop_works_while_connecting(fake, tmp_path, monkeypatch):
     threading.Timer(0.1, stop.set).start()
     path, problems = _run(tmp_path, ["@grp"], stop=stop)
     assert path is None and problems == [("@grp", "остановлено до начала сбора")]
+
+
+def test_an_unknown_chat_is_reported_in_the_operator_s_words(fake, tmp_path, monkeypatch):
+    class UnknownClient(FakeClient):
+        async def get_input_entity(self, arg):
+            raise ValueError(f'No user has "{arg[1:]}" as username')
+
+    monkeypatch.setattr(scrape, "TelegramClient", UnknownClient)
+    path, problems = _run(tmp_path, ["@nope"])
+    assert path is None and problems == [("@nope", "нет такого username")]
+
+
+def test_bot_report_names_the_chats_by_their_titles(monkeypatch, tmp_path):
+    import asyncio
+
+    from bot.routers import scraping as router
+    from bot.services import scraping
+    from bot.services.jobs import JobManager
+
+    base = tmp_path / "grp_participants_members.parquet"
+    base.write_bytes(b"x")
+
+    async def do_members(creds, params):
+        return base, [("@chan", "список участников скрыт")]
+
+    monkeypatch.setattr(scraping, "do_members", do_members)
+    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    pool = WorkerPool(types.SimpleNamespace(
+        sessions=[object()], jsessions_paths={}, get_session_path=lambda c: "sessions/w.jsession"))
+    state = _State()
+    state.data.update(account="sessions/w.jsession", chats="@grp, @chan",
+                      chat_labels=["«Группа» (@grp)", "«Канал» (@chan)"])
+    msg = _Msg("grp", _Bot())
+    asyncio.run(router.members_run(msg, state, pool, None, JobManager()))
+    assert "Не всё удалось собрать:\n• «Канал» (@chan): список участников скрыт" in [t for t, _ in msg.answers]

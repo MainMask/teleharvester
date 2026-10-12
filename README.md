@@ -270,7 +270,8 @@ one-line description of what each does:
   buttons, or takes an uploaded `.txt`, a pasted list (one per line) or a file path.
 - **💬 Активность** — join chat, reactions, poll vote, report message/post, report user.
 - **🎯 Аудитория** — scrape, verify, data analysis, invite from chat, add to contacts:
-  - **Scrape** shows a summary before starting: **▶️ Запустить**, or **⚙️ Дополнительно** for a
+  - **Scrape** names the typed channels by their titles at once (see *Скрап канала/группы* below)
+    and shows a summary before starting: **▶️ Запустить**, or **⚙️ Дополнительно** for a
     keyword filter and a faster scrape without reactors. Output is always parquet.
   - **Verify** offers the posts files as buttons; a channel button runs it at once over the
     scrape's own date window (stored in the file). Older files ask for the dates.
@@ -405,6 +406,16 @@ the input.
   `<name>_reactors_…` (reactors are slow — one API call per reacted message). `FLOOD_WAIT` rate
   limits are waited out automatically. In the bot, *⚙️ Дополнительно* toggles comments, reactors
   and the participants base, and sets a keyword filter and a post limit.
+
+  **The sources are checked as soon as they are typed** (bot and CLI): each is looked up on the
+  chosen account and listed by its title (a forum topic's too, a private chat's by the person's
+  name). One that can't be read is marked ⚠️ with the reason — no such username, a private chat
+  the account is not in, an expired invite; an invite the account has not joined yet still shows
+  its chat's title. Then the bot offers **▶️ Продолжить всё равно**, or takes a corrected list
+  (the CLI asks the same). The groups of *Участники чата* and verify's channel (its file buttons
+  too) are checked the same way, and an interrupted scrape is offered with the titles it started
+  with. When the lookup can't be made — the account is busy with another job, the network is
+  down, or it takes over a minute — the flow goes on with the input as typed.
 - **Участники чата** — a group's whole member list, the silent members too, into
   `<name>_participants_members.parquet` (the same columns as a participants base). Telegram lists
   up to ~10,000 members; past that the rest is reached by searching names letter by letter. A

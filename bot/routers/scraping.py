@@ -25,7 +25,10 @@ from modules.scraper_creds import build_credentials, find_account, scrape_accoun
 from scraper import analysis
 from scraper.datafiles import read_table
 from scraper.members import MembersParams
-from scraper.scrape import ScrapeParams, parse_channels, parse_date, pending_resume, resume_params
+from scraper.scrape import (
+    ScrapeParams, chat_label, chat_lines, lookup_chats, parse_channels, parse_date, pending_resume,
+    resume_params,
+)
 from scraper.verify import VerifyParams
 
 router = Router()
@@ -143,6 +146,58 @@ def _run_account(pool: WorkerPool, personal, path: str):
     return find_account(_accounts(pool, personal), path)
 
 
+async def _lookup(message: Message, pool: WorkerPool, personal, path: str, chats: list[str]):
+    """The chats' names on the flow's account (see lookup_chats); None when they can't be asked
+    now (said why, unless the account is gone) — the flow then goes on with the input as typed."""
+    account = _run_account(pool, personal, path)
+    if account is None:
+        return None
+    # one account, one job (see WorkerPool): not even a lookup on one that is busy
+    if pool.busy(path) or (pool.scraping is not None and pool.scraping.path == path):
+        await message.answer("ℹ️ Названия не проверены: аккаунт сейчас занят.")
+        return None
+    status = await message.answer("🔎 Проверяю названия…")
+    try:
+        infos = await lookup_chats(build_credentials(account.client), chats)
+    except (Exception, SystemExit) as err:  # connect() raises SystemExit on a logged-out session
+        try:  # the 🔎 becomes the reason
+            await status.edit_text(f"ℹ️ Названия не проверены: {str(err) or 'Telegram не ответил вовремя'}")
+        except Exception:
+            pass
+        return None
+    try:  # the names come next, in its place
+        await status.delete()
+    except Exception:
+        pass
+    return infos
+
+
+async def _check_chats(message: Message, state: FSMContext, pool: WorkerPool, personal,
+                       chats: list[str]) -> bool:
+    """Show the typed chats' names; True to go on to the flow's next step. With one not found
+    the operator decides: ▶️ goes on anyway (chats_ok), a new list is checked again."""
+    infos = await _lookup(message, pool, personal, (await state.get_data()).get("account", ""), chats)
+    await state.update_data(chat_labels=infos and [chat_label(info) for info in infos])
+    if infos is None:
+        return True
+    if all(info.problem is None for info in infos):
+        await message.answer(chat_lines(infos))
+        return True
+    await message.answer(chat_lines(infos) + "\n\nПришлите список заново — или продолжите как есть:",
+                         reply_markup=choice_kb("chats_ok", [("▶️ Продолжить всё равно", "go")]))
+    return False
+
+
+@router.callback_query(ChoiceCB.filter(F.scope == "chats_ok"))
+async def chats_ok(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    step = _CHATS_NEXT.get(await state.get_state())
+    if step is None:  # a stale button
+        await callback.message.answer("Флоу устарел, начните заново.")
+        return
+    await step(callback.message, state)
+
+
 # =============================== scrape ===============================
 # A bot scrape in progress (scraped_files.SCRAPE_MARKER), continued automatically after a bot
 # restart (see resume_after_restart): kept on an interruption or a shutdown, dropped once the
@@ -238,7 +293,7 @@ async def scrape_name(message: Message, state: FSMContext, pool: WorkerPool, per
         await state.set_state(Scrape.resume)
         await message.answer(
             f"Под этим именем есть незавершённый скрап «{meta['name']}»:\n"
-            f"Каналы: {', '.join(meta['channels'])}\n"
+            f"Каналы: {', '.join(meta.get('chat_labels') or meta['channels'])}\n"
             f"Период: {meta['date_min'][:10]} – {meta['date_max'][:10]}\n"
             f"Уже собрано постов: {meta.get('t_index', 0)}",
             reply_markup=choice_kb("scrape_resume", [
@@ -295,11 +350,19 @@ async def _ask_channels(message: Message, state: FSMContext, deps: dict):
 
 
 @router.message(Scrape.channels)
-async def scrape_channels(message: Message, state: FSMContext):
+async def scrape_channels(message: Message, state: FSMContext, pool: WorkerPool, personal):
     channels = await require_text(message)
     if channels is None:
         return
+    if not parse_channels(channels):
+        await message.answer("Не вижу ни одного канала. Пришлите ещё раз:")
+        return
     await state.update_data(channels=channels)
+    if await _check_chats(message, state, pool, personal, parse_channels(channels)):
+        await _ask_date_min(message, state)
+
+
+async def _ask_date_min(message: Message, state: FSMContext):
     await state.set_state(Scrape.date_min)
     await message.answer("Дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):")
 
@@ -328,6 +391,7 @@ def _scrape_params(data: dict) -> ScrapeParams:
         with_reactors=data.get("reactors", True),
         with_participants=data.get("participants", True),
         account=data["account"],
+        chat_labels=data.get("chat_labels"),
     )
 
 
@@ -351,7 +415,7 @@ async def scrape_run(message: Message, state: FSMContext):
     await state.update_data(date_max=date_max)
     await state.set_state(Scrape.confirm)
     await message.answer(
-        f"Каналы: {', '.join(params.channels)}\n"
+        f"Каналы: {', '.join(data.get('chat_labels') or params.channels)}\n"
         f"Период: {data['date_min']} – {date_max}\n"
         f"Файлы: {data['out_dir']}/{data['name']}_…\n\n"
         "«Дополнительно» — комментарии, реакции, база участников, фильтр по слову, лимит постов.",
@@ -607,7 +671,7 @@ async def _ask_groups(message: Message, state: FSMContext, deps: dict):
 
 
 @router.message(Members.chats)
-async def members_chats(message: Message, state: FSMContext):
+async def members_chats(message: Message, state: FSMContext, pool: WorkerPool, personal):
     chats = await require_text(message)
     if chats is None:
         return
@@ -615,6 +679,11 @@ async def members_chats(message: Message, state: FSMContext):
         await message.answer("Не вижу ни одной группы. Пришлите ещё раз:")
         return
     await state.update_data(chats=chats)
+    if await _check_chats(message, state, pool, personal, parse_channels(chats)):
+        await _ask_members_name(message, state)
+
+
+async def _ask_members_name(message: Message, state: FSMContext):
     await state.set_state(Members.name)
     await message.answer("Имя для файла базы:")
 
@@ -651,8 +720,9 @@ async def members_run(message: Message, state: FSMContext, pool: WorkerPool, per
         await _free_slot(scrapes, pool, stop, status)
 
     if problems:
+        labels = dict(zip(parse_channels(data["chats"]), data.get("chat_labels") or []))
         await message.answer("Не всё удалось собрать:\n" + "\n".join(
-            f"• {chat}: {problem}" for chat, problem in problems))
+            f"• {labels.get(chat, chat)}: {problem}" for chat, problem in problems))
     if path is None:
         await _menu(message, "Ни одного участника не собрано.")
         return
@@ -692,9 +762,9 @@ def _ddmmyyyy(iso_date: str) -> str:
     return f"{day}.{month}.{year}"
 
 
-async def _ask_channel(message: Message, state: FSMContext, input_: str):
-    """Offer the posts file's channels as buttons; with the scrape's window known, a
-    button runs the verify at once."""
+async def _ask_channel(message: Message, state: FSMContext, pool: WorkerPool, personal, input_: str):
+    """Offer the posts file's channels as buttons (named by their titles); with the scrape's
+    window known, a button runs the verify at once."""
     channels, window = await asyncio.to_thread(scraped_files.verify_presets, input_)
     await state.update_data(input=input_, channels=channels, window=window)
     await state.set_state(Verify.channel)
@@ -703,35 +773,42 @@ async def _ask_channel(message: Message, state: FSMContext, input_: str):
         await message.answer("Канал (@name / t.me / числовой id):")
         return
 
+    infos = await _lookup(message, pool, personal, (await state.get_data()).get("account", ""), channels)
+    names = [info.title or info.raw for info in infos] if infos else channels
+    # a channel that can't be read now: still a button (the operator decides), marked, with why
+    bad = [info.problem is not None for info in infos] if infos else [False] * len(channels)
     if window:
         span = f"{_ddmmyyyy(window[0])}–{_ddmmyyyy(window[1])}"
         text = (f"Каналы из файла — кнопка сразу запустит проверку за период скрапа ({span}).\n"
                 "Другой канал или другие даты — введите канал текстом:")
-        labels = [f"▶️ {channel} · {span}" for channel in channels]
+        labels = [f"{'⚠️' if b else '▶️'} {name} · {span}" for name, b in zip(names, bad)]
     else:
         text = "Канал из файла — или введите другой (@name / t.me / числовой id):"
-        labels = channels
+        labels = [f"⚠️ {name}" if b else name for name, b in zip(names, bad)]
+    if any(bad):
+        text += "\n\n" + chat_lines([info for info in infos if info.problem is not None])
     await message.answer(
         text, reply_markup=choice_kb("verify_channel", [(label, str(i)) for i, label in enumerate(labels)])
     )
 
 
 @router.callback_query(Verify.input, ChoiceCB.filter(F.scope == "verify_base"))
-async def verify_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+async def verify_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
+                      pool: WorkerPool, personal):
     await callback.answer()
     files = (await state.get_data()).get("files", [])
     index = int(callback_data.value)
     if not 0 <= index < len(files):
         return
-    await _ask_channel(callback.message, state, files[index])
+    await _ask_channel(callback.message, state, pool, personal, files[index])
 
 
 @router.message(Verify.input)
-async def verify_input(message: Message, state: FSMContext):
+async def verify_input(message: Message, state: FSMContext, pool: WorkerPool, personal):
     input_ = await require_text(message)
     if input_ is None:
         return
-    await _ask_channel(message, state, input_)
+    await _ask_channel(message, state, pool, personal, input_)
 
 
 @router.callback_query(Verify.channel, ChoiceCB.filter(F.scope == "verify_channel"))
@@ -757,11 +834,16 @@ async def verify_channel_pick(callback: CallbackQuery, callback_data: ChoiceCB, 
 
 
 @router.message(Verify.channel)
-async def verify_channel(message: Message, state: FSMContext):
+async def verify_channel(message: Message, state: FSMContext, pool: WorkerPool, personal):
     channel = await require_text(message)
     if channel is None:
         return
     await state.update_data(channel=channel)
+    if await _check_chats(message, state, pool, personal, [channel]):
+        await _ask_verify_dmin(message, state)
+
+
+async def _ask_verify_dmin(message: Message, state: FSMContext):
     await state.set_state(Verify.date_min)
     await message.answer("Дата с:")
 
@@ -872,6 +954,13 @@ _FLOW_NEXT = {
     "scrape_resume": _resume_on_chosen,
     "members": _ask_groups,
     "verify": _ask_posts_file,
+}
+
+# the step a flow goes on to from its chat list's ▶️ (see _check_chats)
+_CHATS_NEXT = {
+    Scrape.channels.state: _ask_date_min,
+    Members.chats.state: _ask_members_name,
+    Verify.channel.state: _ask_verify_dmin,
 }
 
 

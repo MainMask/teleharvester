@@ -17,11 +17,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from telethon import TelegramClient, utils
 from telethon.sessions import SQLiteSession, StringSession
-from telethon.errors import ChannelPrivateError, FloodWaitError, ServerError, TimedOutError
-from telethon.tl.functions.messages import GetForumTopicsByIDRequest, GetMessageReactionsListRequest
+from telethon.errors import (
+    ChannelPrivateError, FloodWaitError, InviteHashExpiredError, InviteHashInvalidError, ServerError,
+    TimedOutError, UsernameInvalidError, UsernameNotOccupiedError,
+)
+from telethon.tl.functions.messages import (
+    CheckChatInviteRequest, GetForumTopicsByIDRequest, GetMessageReactionsListRequest,
+)
 from telethon.tl.types import (
-    ForumTopic, InputPeerChannel, InputPeerChat, InputPeerUser, MessageService, PeerChannel, PeerChat,
-    PeerUser, User,
+    ChatInvite, ChatInvitePeek, ForumTopic, InputPeerChannel, InputPeerChat, InputPeerUser,
+    MessageService, PeerChannel, PeerChat, PeerUser, User,
 )
 
 from scraper.config import Credentials
@@ -342,6 +347,9 @@ class ScrapeParams:
     # the account's session path: kept in the checkpoint, a resume must run on the same
     # account (the scraped access hashes are valid for it only)
     account: str = ""
+    # the channels' names as the operator saw them at input (see lookup_chats), in the order of
+    # `channels`: kept in the checkpoint, so continuing it names them without asking Telegram
+    chat_labels: list[str] | None = None
     # set from another thread to stop the run: it checkpoints and exits like a Ctrl-C
     stop: threading.Event | None = None
     # set by the run: the account that scraped; its access hashes are the only valid ones
@@ -376,6 +384,7 @@ def resume_params(meta: dict, out_dir: str | Path) -> ScrapeParams:
         with_participants=meta.get("with_participants", True),
         resume=True,
         account=meta.get("account", ""),
+        chat_labels=meta.get("chat_labels"),
     )
 
 
@@ -510,6 +519,122 @@ async def _warm_channel(client, ref: _ChannelRef, dialogs_loaded: bool) -> bool:
         await client.get_dialogs()
         return True
     return False
+
+
+# connect() retries a dead proxy for hours: a lookup at input time must not hang the flow
+CHAT_LOOKUP_TIMEOUT = 60
+# of it, the most spent walking the dialogs for numeric IDs: the other chats still get named
+DIALOGS_LOOKUP_BUDGET = 40
+
+
+class ChatInfo(NamedTuple):
+    raw: str
+    title: str | None    # the chat's title (+ its forum topic); a private chat: the user's name
+    problem: str | None  # why it can't be scraped (an invite not joined yet: with its title)
+
+
+NOT_A_MEMBER = "аккаунт не состоит в чате — вступите"
+
+
+def chat_problem(exc: BaseException) -> str:
+    """Why a chat did not resolve, in the operator's words; an unknown error as it is."""
+    text = str(exc)
+    if isinstance(exc, (UsernameNotOccupiedError, UsernameInvalidError)) or text.startswith("No user has"):
+        return "нет такого username"
+    if isinstance(exc, ChannelPrivateError):
+        return "приватный: аккаунт не состоит в нём или забанен"
+    if isinstance(exc, InviteHashExpiredError):
+        return "инвайт-ссылка истекла"
+    if isinstance(exc, InviteHashInvalidError):
+        return "инвайт-ссылка недействительна"
+    # Telethon's own ValueErrors (telethon/client/users.py)
+    if text.startswith("Cannot get entity from a channel (or group) that you are not part of"):
+        return NOT_A_MEMBER
+    if text.startswith(("Could not find the input entity", "Cannot find any entity")):
+        return "аккаунт не видит этот чат (нет среди его диалогов)"
+    return f"{type(exc).__name__}: {exc}"
+
+
+async def _invite_title(client, ref: _ChannelRef) -> str | None:
+    """The title of an invite's chat the account has not joined (Telegram shows it to anyone
+    with the link); None for a chat that is no invite. Raises if the invite is dead."""
+    if not ref.slug.startswith("+"):
+        return None
+    res = await client(CheckChatInviteRequest(utils.parse_username(ref.arg)[0]))
+    if isinstance(res, ChatInvite):
+        return res.title
+    if isinstance(res, ChatInvitePeek):
+        return _entity_name(res.chat)
+    return None
+
+
+async def _find_in_dialogs(client, ids: list[int]) -> None:
+    """A numeric ID resolves only from the entity cache (see _warm_channel). For a lookup the
+    dialogs are walked only until each uncached ID shows up, within DIALOGS_LOOKUP_BUDGET: the
+    whole list, as a scrape loads it, may not fit on an account with thousands of chats. An ID
+    not met stays unresolved and its chat gets the usual problem."""
+    wanted = set()
+    for cid in ids:
+        try:
+            await client.get_input_entity(cid)
+        except (ValueError, ChannelPrivateError):
+            wanted.add(cid)
+    if not wanted:
+        return
+    try:
+        async with asyncio.timeout(DIALOGS_LOOKUP_BUDGET):
+            async for dialog in client.iter_dialogs():  # their entities land in the cache
+                wanted.discard(dialog.id)
+                if not wanted:
+                    break
+    except TimeoutError:
+        pass
+
+
+async def lookup_chats(creds: Credentials, chats: list[str]) -> list[ChatInfo]:
+    """The chats' names as the scrape would see them (same steps, on the same account), so the
+    operator can check the input before a long run. A chat that fails gets its problem; a failed
+    connect or the timeout raises."""
+    async with asyncio.timeout(CHAT_LOOKUP_TIMEOUT):
+        client = await connect(creds)
+        try:
+            refs = [_channel_ref(raw) for raw in chats]  # parsing only: never raises
+            await _find_in_dialogs(client, [ref.arg for ref in refs if isinstance(ref.arg, int)])
+            infos = []
+            for raw, ref in zip(chats, refs):
+                try:
+                    entity = await client.get_entity(ref.arg)
+                    _, topic_title = await _resolve_topic(client, ref._replace(arg=entity), entity)
+                    title = f"«{_entity_name(entity)}»"
+                    if topic_title:
+                        title += f" / тема «{topic_title}»"
+                    infos.append(ChatInfo(raw, title, None))
+                except Exception as exc:  # unknown name, not a member, ...
+                    try:
+                        invite_title = await _invite_title(client, ref)
+                    except Exception as invite_exc:  # expired / invalid invite
+                        infos.append(ChatInfo(raw, None, chat_problem(invite_exc)))
+                        continue
+                    if invite_title is not None:
+                        infos.append(ChatInfo(raw, f"«{invite_title}»", NOT_A_MEMBER))
+                    else:
+                        infos.append(ChatInfo(raw, None, chat_problem(exc)))
+            return infos
+        finally:
+            await client.disconnect()
+
+
+def chat_lines(infos: list[ChatInfo]) -> str:
+    def line(i: ChatInfo) -> str:
+        if i.problem is None:
+            return f"• {i.title} — {i.raw}"
+        return f"⚠️ {i.title} — {i.raw} — {i.problem}" if i.title else f"⚠️ {i.raw} — {i.problem}"
+    return "\n".join(line(i) for i in infos)
+
+
+def chat_label(info: ChatInfo) -> str:
+    """How a chat is named in the flow's later messages: its title, else what was typed."""
+    return f"{info.title} ({info.raw})" if info.title else info.raw
 
 
 async def _reconnect(client) -> None:
@@ -807,6 +932,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
             "date_max": params.date_max.isoformat(),
             # the run's settings too, so a resume continues it exactly (see resume_params)
             "account": params.account,
+            "chat_labels": params.chat_labels,
             "max_messages": params.max_messages,
             "with_comments": params.with_comments,
             "with_reactors": params.with_reactors,

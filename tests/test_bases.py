@@ -665,7 +665,8 @@ def test_verify_channel_button_runs_with_the_scrape_window(tmp_path, monkeypatch
     state = _State({"files": [path], "account": "sessions/w.jsession"})
 
     pick = _Callback()
-    asyncio.run(scraping_router.verify_base(pick, ChoiceCB(scope="verify_base", value="0"), state))
+    asyncio.run(scraping_router.verify_base(pick, ChoiceCB(scope="verify_base", value="0"), state,
+                                                _one_account(), None))
     _, markup = pick.message.answers[0]
     assert [b.text for b in _buttons(markup)] == [
         "▶️ @omni · 01.05.2022–27.09.2026", "▶️ -100123 · 01.05.2022–27.09.2026"]
@@ -686,7 +687,7 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
     state = _State()
 
     msg = _Msg()
-    asyncio.run(scraping_router._ask_channel(msg, state, path))
+    asyncio.run(scraping_router._ask_channel(msg, state, _one_account(), None, path))
     assert [b.text for b in _buttons(msg.answers[0][1])] == ["@omni"]
 
     pick = _Callback()
@@ -696,9 +697,30 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_verify_channel_buttons_carry_the_channels_titles(tmp_path, monkeypatch):
+    import conftest
+    from scraper.scrape import ChatInfo
+
+    async def lookup_chats(creds, chats):
+        return [ChatInfo("@omni", "«Omni»", None), ChatInfo("-100123", None, "нет доступа")]
+
+    monkeypatch.setattr(scraping_router, "_lookup", conftest.REAL_BOT_LOOKUP)
+    monkeypatch.setattr(scraping_router, "lookup_chats", lookup_chats)
+    monkeypatch.setattr(scraping_router, "build_credentials", lambda client: None)
+    path = _posts(tmp_path, "Omni_posts_x.parquet", 1_000, window=("2022-05-01", "2026-09-27"),
+                  groups=("@omni", "@c123"))
+    msg = _Msg()
+    asyncio.run(scraping_router._ask_channel(msg, _State({"account": "sessions/w.jsession"}),
+                                             _one_account(), None, path))
+    text, markup = msg.answers[-1]
+    assert [b.text for b in _buttons(markup)] == [  # not found: as in the file, marked
+        "▶️ «Omni» · 01.05.2022–27.09.2026", "⚠️ -100123 · 01.05.2022–27.09.2026"]
+    assert text.endswith("\n\n⚠️ -100123 — нет доступа")  # why, for that one only
+
+
 def test_verify_typed_path_that_can_t_be_read_asks_the_channel(tmp_path):
     msg, state = _Msg(), _State()
-    asyncio.run(scraping_router._ask_channel(msg, state, str(tmp_path / "missing.parquet")))
+    asyncio.run(scraping_router._ask_channel(msg, state, _one_account(), None, str(tmp_path / "missing.parquet")))
     assert msg.answers == [("Канал (@name / t.me / числовой id):", None)]
 
 

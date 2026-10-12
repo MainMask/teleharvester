@@ -3,6 +3,8 @@ prompts and capture the scraper calls, without network or Telegram."""
 
 from pathlib import Path
 
+import pytest
+
 from functions import scraper, scraper_analysis
 from modules import scraped_files
 from scraper import analysis
@@ -341,3 +343,74 @@ def test_members_func_writes_to_the_bases_folder(monkeypatch, tmp_path):
 
     scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()
     assert captured["params"].out_dir == tmp_path and captured["params"].name == "Grp"
+
+
+# --- the chats' names, shown as soon as they are typed -----------------------------------------
+
+def _named_chats(monkeypatch, names):
+    """The real _lookup over chats named by `names` (raw -> title; any other is not found).
+    Returns what is printed."""
+    import conftest
+    from scraper.scrape import ChatInfo
+
+    printed = []
+
+    async def lookup_chats(creds, chats):
+        return [ChatInfo(c, f"«{names[c]}»", None) if c in names else ChatInfo(c, None, "нет такого")
+                for c in chats]
+
+    monkeypatch.setattr(scraper, "_lookup", conftest.REAL_CLI_LOOKUP)
+    monkeypatch.setattr(scraper, "lookup_chats", lookup_chats)
+    monkeypatch.setattr(scraper.console, "print", lambda *a, **k: printed.append(str(a[0])))
+    return printed
+
+
+def test_scrape_func_shows_the_channels_names_and_retakes_a_list_with_a_typo(monkeypatch):
+    printed = _named_chats(monkeypatch, {"@a": "Канал А"})
+    captured = {}
+    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
+    monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
+    _answers(monkeypatch, scraper,
+             texts=["Test", "@typo", "@a", "01.01.2024", "31.01.2024", "", "500"],
+             bools=[False, True, True, True])  # no: type the list again
+
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
+    assert captured["params"].channels == ["@a"]
+    assert captured["params"].chat_labels == ["«Канал А» (@a)"]  # kept in its checkpoint
+    assert "⚠️ @typo — нет такого" in printed and "• «Канал А» — @a" in printed
+
+
+def test_members_and_verify_go_on_with_a_chat_not_found_when_told(monkeypatch):
+    _named_chats(monkeypatch, {})
+    captured = {}
+    monkeypatch.setattr(scraper, "pick_session", lambda *a: _PICKED)
+    monkeypatch.setattr(scraper, "members_run", lambda creds, params: captured.update(members=params) or (None, []))
+    monkeypatch.setattr(scraper, "verify_run", lambda creds, params: captured.update(verify=params))
+
+    _answers(monkeypatch, scraper, texts=["@grp", "Grp"], bools=[True])
+    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()
+    _answers(monkeypatch, scraper, texts=["posts.parquet", "@a", "01.01.2024", "31.01.2024", "", "0"],
+             bools=[True])
+    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute()
+    assert captured["members"].chats == ["@grp"] and captured["verify"].channel == "@a"
+
+
+def test_scrape_func_offers_to_continue_with_the_channels_names(monkeypatch, tmp_path):
+    import json
+
+    _named_chats(monkeypatch, {"@a": "Канал А"})
+    monkeypatch.setattr(scraper, "_lookup", lambda *a: pytest.fail("asked Telegram"))
+    _checkpoint_with_account(tmp_path, "sessions/acc.jsession")
+    resume = tmp_path / "Test_partial" / "checkpoint" / "resume.json"
+    resume.write_text(json.dumps({**json.loads(resume.read_text()), "chat_labels": ["«Канал А» (@a)"]}))
+    storage = FakeStorage([_ACCOUNT])
+    storage.get_session_path = lambda client: "sessions/acc.jsession"
+    storage.jsessions_paths = {}
+    asked = []
+    monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: None)
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    monkeypatch.setattr(scraper.Prompt, "ask", lambda *a, **k: "Test")
+    monkeypatch.setattr(scraper.Confirm, "ask", lambda prompt, **k: asked.append(prompt) or True)
+
+    scraper.ScrapeFunc(storage, FakeSettings()).execute()
+    assert "«Канал А» (@a)" in asked[0]

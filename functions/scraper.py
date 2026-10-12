@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from modules.console import console
@@ -11,8 +12,8 @@ from modules.scraper_creds import (
 
 from scraper.members import MembersParams, run as members_run
 from scraper.scrape import (
-    ScrapeParams, check_date_range, parse_channels, parse_date, pending_resume, resume_params,
-    run as scrape_run,
+    ScrapeParams, chat_label, chat_lines, check_date_range, lookup_chats, parse_channels, parse_date,
+    pending_resume, resume_params, run as scrape_run,
 )
 from scraper.verify import VerifyParams, run as verify_run
 
@@ -29,6 +30,28 @@ def _note_personal(account):
         console.print(PERSONAL_NOTE, style="bold yellow", markup=False)
 
 
+def _lookup(account, chats):
+    """The chats' names on `account` (see lookup_chats); None, after saying why, if they can't be asked."""
+    try:
+        return asyncio.run(lookup_chats(build_credentials(account.client), chats))
+    except (Exception, SystemExit) as err:  # connect() raises SystemExit on a logged-out session
+        console.print(f"названия не проверены: {str(err) or 'Telegram не ответил вовремя'}",
+                      style="yellow", markup=False)
+        return None
+
+
+def _chats_ok(account, chats) -> tuple[bool, list[str] | None]:
+    """Print the typed chats' names: (False when one is not found and the operator would rather
+    type the list again, the chats' labels or None if they could not be looked up)."""
+    infos = _lookup(account, chats)
+    if infos is None:
+        return True, None
+    console.print(chat_lines(infos), markup=False, highlight=False)
+    ok = all(info.problem is None for info in infos) or Confirm.ask(
+        "[bold red]продолжить всё равно? (нет — ввести заново)[/]", default=False)
+    return ok, [chat_label(info) for info in infos]
+
+
 class ScrapeFunc(TelethonFunction):
     """Scrape channel/group"""
 
@@ -41,7 +64,8 @@ class ScrapeFunc(TelethonFunction):
         meta = pending_resume(out_dir, name)
         if meta is not None and Confirm.ask(
             f"[bold red]под этим именем есть незавершённый скрап '{self.safe(name)}' "
-            f"({self.safe(', '.join(meta['channels']))}, собрано постов: {meta.get('t_index', 0)}) — "
+            f"({self.safe(', '.join(meta.get('chat_labels') or meta['channels']))}, "
+            f"собрано постов: {meta.get('t_index', 0)}) — "
             "продолжить? (нет — начать заново, собранное удалится)[/]", default=True,
         ):
             params = resume_params(meta, out_dir)
@@ -65,10 +89,14 @@ class ScrapeFunc(TelethonFunction):
             return
         _note_personal(account)
 
-        channels = parse_channels(Prompt.ask("[bold red]каналы через запятую (в приватных аккаунт должен состоять)[/]"))
-        if not channels:
-            console.print("[bold red]Каналы не указаны.[/]")
-            return
+        while True:
+            channels = parse_channels(Prompt.ask("[bold red]каналы через запятую (в приватных аккаунт должен состоять)[/]"))
+            if not channels:
+                console.print("[bold red]Каналы не указаны.[/]")
+                return
+            ok, chat_labels = _chats_ok(account, channels)
+            if ok:
+                break
 
         date_min = Prompt.ask("[bold red]дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)[/]")
         date_max = Prompt.ask("[bold red]дата по (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)[/]")
@@ -91,6 +119,7 @@ class ScrapeFunc(TelethonFunction):
                 with_reactors=with_reactors,
                 with_participants=with_participants,
                 account=account.path,
+                chat_labels=chat_labels,
             )
             check_date_range(params.date_min, params.date_max, date_min, date_max)
         except SystemExit as err:
@@ -121,8 +150,11 @@ class VerifyFunc(TelethonFunction):
         channels, window = scraped_files.verify_presets(input_path)
         if len(channels) > 1:
             console.print(f"[bold white]каналы в файле:[/] {', '.join(channels)}")
-        channel = Prompt.ask("[bold red]канал (@name / t.me / числовой id)[/]",
-                             default=channels[0] if channels else None)
+        while True:
+            channel = Prompt.ask("[bold red]канал (@name / t.me / числовой id)[/]",
+                                 default=channels[0] if channels else None)
+            if _chats_ok(account, [channel])[0]:
+                break
         date_min = Prompt.ask("[bold red]дата с (как в скрапе)[/]", default=window[0] if window else None)
         date_max = Prompt.ask("[bold red]дата по (как в скрапе)[/]", default=window[1] if window else None)
         output = Prompt.ask("[bold red]файл результата (необязательно)[/]", default="")
@@ -154,10 +186,13 @@ class MembersFunc(TelethonFunction):
             return
         _note_personal(account)
 
-        chats = parse_channels(Prompt.ask("[bold red]группы через запятую[/]"))
-        if not chats:
-            console.print("[bold red]Группы не указаны.[/]")
-            return
+        while True:
+            chats = parse_channels(Prompt.ask("[bold red]группы через запятую[/]"))
+            if not chats:
+                console.print("[bold red]Группы не указаны.[/]")
+                return
+            if _chats_ok(account, chats)[0]:
+                break
 
         out_dir = scraped_files.BASES_DIR  # the bases folder, where the mailing picks its bases
         name = Prompt.ask(f"[bold red]имя для выходных файлов (в {out_dir})[/]")

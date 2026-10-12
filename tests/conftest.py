@@ -102,3 +102,24 @@ def _isolated_profile_done(monkeypatch, tmp_path):
     from modules import profile_done
 
     monkeypatch.setattr(profile_done, "PATH", str(tmp_path / "profile_done.json"))
+
+
+REAL_BOT_LOOKUP = REAL_CLI_LOOKUP = None
+
+
+@pytest.fixture(autouse=True)
+def _no_chat_lookup(monkeypatch):
+    """Stub accounts can't resolve chats: the flows go on with the input as typed, as when a
+    lookup can't be made. Tests of the lookup restore REAL_BOT_LOOKUP / REAL_CLI_LOOKUP."""
+    global REAL_BOT_LOOKUP, REAL_CLI_LOOKUP
+    from bot.routers import scraping as router
+    from functions import scraper
+
+    REAL_BOT_LOOKUP = REAL_BOT_LOOKUP or router._lookup
+    REAL_CLI_LOOKUP = REAL_CLI_LOOKUP or scraper._lookup
+
+    async def no_lookup(message, pool, personal, path, chats):
+        return None
+
+    monkeypatch.setattr(router, "_lookup", no_lookup)
+    monkeypatch.setattr(scraper, "_lookup", lambda account, chats: None)

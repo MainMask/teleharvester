@@ -23,6 +23,9 @@ class _State:
     async def set_state(self, state):
         self.state = state
 
+    async def get_state(self):
+        return getattr(self.state, "state", self.state)  # aiogram's: the state's name
+
     async def update_data(self, **kw):
         self.data.update(kw)
 
@@ -33,9 +36,22 @@ class _State:
         self.data, self.state = {}, None
 
 
+class _Sent:
+    """A message the bot sent: what became of it."""
+
+    def __init__(self, text):
+        self.text, self.edited, self.deleted = text, [], False
+
+    async def edit_text(self, text, **kwargs):
+        self.edited.append(text)
+
+    async def delete(self):
+        self.deleted = True
+
+
 class _Msg:
     def __init__(self, text=None, document=None, content=b""):
-        self.text, self.document, self.answers = text, document, []
+        self.text, self.document, self.answers, self.sent = text, document, [], []
         self.chat = ns(id=1)
 
         async def download(document):
@@ -45,6 +61,8 @@ class _Msg:
 
     async def answer(self, text, **kwargs):
         self.answers.append((text, kwargs.get("reply_markup")))
+        self.sent.append(_Sent(text))
+        return self.sent[-1]
 
 
 class _Callback:
@@ -638,7 +656,7 @@ def test_a_stale_account_button_says_so():
 
 # --- continuing an interrupted scrape from the bot ----------------------------------------
 
-def _checkpoint(out_dir, name="n", account=_ACC):
+def _checkpoint(out_dir, name="n", account=_ACC, **extra):
     import json
 
     ckpt = out_dir / f"{name}_partial" / "checkpoint"
@@ -648,6 +666,7 @@ def _checkpoint(out_dir, name="n", account=_ACC):
             "with_reactors": False, "channel_index": 1, "last_id": 9}
     if account is not None:
         meta["account"] = account
+    meta.update(extra)
     (ckpt / "resume.json").write_text(json.dumps(meta))
 
 
@@ -1163,3 +1182,156 @@ def test_delegate_keeps_only_the_picked_workers(monkeypatch):
 
     ran = asyncio.run(pool.run(func, ns(risk="safe"), job, report, only=["sessions/gone.session"]))
     assert ran is False and "недоступны" in reports[0]
+
+
+# --- the chats' names, shown as soon as they are typed -----------------------------------------
+
+def _named_chats(monkeypatch, names, error=None):
+    """The real _lookup over chats named by `names` (raw -> title; any other is not found);
+    `error`: the lookup itself fails with it. Returns the chat lists looked up."""
+    import conftest
+    from bot.routers import scraping as router
+    from scraper.scrape import ChatInfo
+
+    looked_up = []
+
+    async def lookup_chats(creds, chats):
+        looked_up.append(chats)
+        if error is not None:
+            raise error
+        return [ChatInfo(c, f"«{names[c]}»", None) if c in names else ChatInfo(c, None, "нет такого")
+                for c in chats]
+
+    monkeypatch.setattr(router, "_lookup", conftest.REAL_BOT_LOOKUP)
+    monkeypatch.setattr(router, "lookup_chats", lookup_chats)
+    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    return looked_up
+
+
+def test_scrape_channels_are_shown_by_name_up_to_the_confirmation(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.states import Scrape
+
+    _named_chats(monkeypatch, {"@a": "Канал А", "@b": "Канал Б"})
+    state = _State({k: v for k, v in _SCRAPE.items() if k != "channels"})
+    msg = _Msg(text="@a, @b")
+    asyncio.run(router.scrape_channels(msg, state, _pool(), None))
+    assert [text for text, _ in msg.answers] == [
+        "🔎 Проверяю названия…", "• «Канал А» — @a\n• «Канал Б» — @b", "Дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):"]
+    assert msg.sent[0].deleted  # the 🔎 gives way to the names
+    assert state.state == Scrape.date_min
+
+    confirm = _Msg(text="31.01.2024")
+    asyncio.run(router.scrape_run(confirm, state))
+    assert "Каналы: «Канал А» (@a), «Канал Б» (@b)\n" in confirm.answers[0][0]
+
+
+def test_a_chat_not_found_asks_before_each_flow_goes_on(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.states import Members, Scrape, Verify
+
+    _named_chats(monkeypatch, {"@a": "Канал А"})
+    flows = [(router.scrape_channels, Scrape.channels, Scrape.date_min, "Дата с (ДД"),
+             (router.members_chats, Members.chats, Members.name, "Имя для файла базы"),
+             (router.verify_channel, Verify.channel, Verify.date_min, "Дата с:")]
+    for handler, asking, next_state, next_prompt in flows:
+        state = _State({"account": _ACC})
+        state.state = asking
+        msg = _Msg(text="@typo")
+        asyncio.run(handler(msg, state, _pool(), None))
+        text, markup = msg.answers[-1]
+        assert "⚠️ @typo — нет такого" in text and "заново" in text
+        assert _buttons(markup) == ["▶️ Продолжить всё равно"] and state.state == asking
+
+        go = _SCallback()
+        asyncio.run(router.chats_ok(go, state))
+        assert state.state == next_state and go.message.answers[0][0].startswith(next_prompt)
+
+
+def test_a_retyped_list_is_checked_again(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.states import Scrape
+
+    looked_up = _named_chats(monkeypatch, {"@a": "Канал А"})
+    state = _State({"account": _ACC})
+    state.state = Scrape.channels
+    asyncio.run(router.scrape_channels(_Msg(text="@typo"), state, _pool(), None))
+    asyncio.run(router.scrape_channels(_Msg(text="@a"), state, _pool(), None))
+    assert looked_up == [["@typo"], ["@a"]] and state.state == Scrape.date_min
+    assert state.data["channels"] == "@a" and state.data["chat_labels"] == ["«Канал А» (@a)"]
+
+
+def test_a_stale_continue_button_says_so():
+    from bot.routers import scraping as router
+
+    go = _SCallback()
+    asyncio.run(router.chats_ok(go, _State()))
+    assert go.message.answers[0][0] == "Флоу устарел, начните заново."
+
+
+def test_a_busy_account_is_not_asked_and_the_flow_goes_on(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.states import Scrape
+
+    looked_up = _named_chats(monkeypatch, {"@a": "Канал А"})
+    pool = _pool()
+    pool.polling = _ACC  # autoreply reads it
+    state, msg = _State({"account": _ACC}), _Msg(text="@a")
+    asyncio.run(router.scrape_channels(msg, state, pool, None))
+    assert looked_up == [] and state.state == Scrape.date_min
+    assert msg.answers[0][0] == "ℹ️ Названия не проверены: аккаунт сейчас занят."
+
+
+def test_a_failed_lookup_goes_on_with_the_input_as_typed(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.states import Scrape
+
+    _named_chats(monkeypatch, {}, error=TimeoutError())
+    state, msg = _State({**_SCRAPE, "channels": None}), _Msg(text="@a")
+    asyncio.run(router.scrape_channels(msg, state, _pool(), None))
+    status = msg.sent[0]  # the 🔎 becomes the reason
+    assert status.edited == ["ℹ️ Названия не проверены: Telegram не ответил вовремя"] and not status.deleted
+    assert state.state == Scrape.date_min and state.data["chat_labels"] is None
+
+    confirm = _Msg(text="31.01.2024")
+    asyncio.run(router.scrape_run(confirm, state))
+    assert "Каналы: @a\n" in confirm.answers[0][0]
+
+
+def test_an_empty_channel_list_is_asked_again(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.states import Scrape
+
+    looked_up = _named_chats(monkeypatch, {})
+    state = _State({"account": _ACC})
+    state.state = Scrape.channels
+    msg = _Msg(text=" , ")
+    asyncio.run(router.scrape_channels(msg, state, _pool(), None))
+    assert looked_up == [] and state.state == Scrape.channels
+    assert msg.answers == [("Не вижу ни одного канала. Пришлите ещё раз:", None)]
+
+
+def test_an_interrupted_scrape_is_offered_with_its_channels_names(monkeypatch, tmp_path):
+    from bot.routers import scraping as router
+    from bot.services.jobs import JobManager
+
+    _scrapes(monkeypatch)
+    looked_up = _named_chats(monkeypatch, {"@a": "Канал А", "@b": "Канал Б"})
+    _checkpoint(tmp_path, chat_labels=["«Канал А» (@a)", "«Канал Б» (@b)"])
+    monkeypatch.setattr(router, "DEFAULT_OUT", str(tmp_path))
+    msg = _SMsg(text="n")
+    asyncio.run(router.scrape_name(msg, _State({}), _pool(), None, JobManager()))
+    assert "Каналы: «Канал А» (@a), «Канал Б» (@b)\n" in msg.answers[0][0]
+    assert looked_up == []  # the names the scrape started with: no call to Telegram
+
+
+def test_the_channels_names_ride_along_with_the_scrape(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.services.jobs import JobManager
+
+    calls = _scrapes(monkeypatch)
+    state = _State({**_SCRAPE, "date_max": "31.01.2024", "chat_labels": ["«Канал А» (@a)"]})
+    asyncio.run(router.scrape_go(_SCallback(), ChoiceCB(scope="scrape_go", value="run"), state,
+                                 _pool(), None, JobManager()))
+    [params] = calls
+    assert params.chat_labels == ["«Канал А» (@a)"]  # kept in its checkpoint

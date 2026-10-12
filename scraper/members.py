@@ -19,7 +19,9 @@ from telethon.tl.types import InputPeerUser
 
 from scraper.config import Credentials
 from scraper.datafiles import save_table
-from scraper.scrape import _channel_ref, _entity_name, _user_access_hash, _warm_channel, connect, watch_stop
+from scraper.scrape import (
+    _channel_ref, _entity_name, _user_access_hash, _warm_channel, chat_problem, connect, watch_stop,
+)
 
 # name searches that reach the members a plain listing leaves out
 SEARCH_CHARS = string.ascii_lowercase + "абвгдеёжзийклмнопрстуфхцчшщэюя" + string.digits
@@ -109,7 +111,7 @@ async def _run(creds: Credentials, params: MembersParams) -> tuple[dict, list[tu
                 problems.append((chat, f"FLOOD_WAIT {exc.seconds} с — остановлено, остальное пропущено"))
                 break
             except Exception as exc:  # unknown chat, not a member, ...
-                problems.append((chat, f"{type(exc).__name__}: {exc}"))
+                problems.append((chat, chat_problem(exc)))
     except asyncio.CancelledError:  # a chat's own stop is handled above: this one came while connecting
         if params.stop is None or not params.stop.is_set():
             raise
