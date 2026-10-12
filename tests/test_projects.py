@@ -15,6 +15,23 @@ from test_scraper_menu import FakeSettings, FakeStorage, _PICKED, _answers
 from test_sync import _Msg, _SCallback, _SMsg, _State, _buttons, _pool, _scrapes
 
 
+@pytest.fixture(autouse=True)
+def _bases_dir(tmp_path, monkeypatch):
+    """The bases folder is the test's own: no test reads the real assets/databases."""
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+
+
+def _posts(folder, name, mtime, channels=None, groups=("@a",)):
+    """A finished scrape's posts file; channels: as the scrape stores them in the file."""
+    df = pd.DataFrame({"Group": list(groups), "Message ID": range(len(groups))}) if groups else pd.DataFrame({"x": [1]})
+    if channels is not None:
+        df.attrs["channels"] = channels
+    path = folder / f"{name}_posts_01.01.2024-31.01.2024.parquet"
+    df.to_parquet(path)
+    os.utime(path, (mtime, mtime))
+    return path
+
+
 def _write_parquet(path, rows=2):
     pd.DataFrame({"a": range(rows)}).to_parquet(path)
 
@@ -74,7 +91,7 @@ def test_an_unreadable_file_is_reported_and_never_overwritten(content):
 
 @pytest.mark.parametrize("name, problem", [
     ("", "пустое"), ("x" * (projects.MAX_NAME + 1), "длиннее"), ("a/b", "без /"), ("a\\b", "без /"),
-    ("..", "без /"), ("greenbase", "уже есть"),
+    ("..", "без /"), ("greenbase", "уже есть"), ("my_posts_x", "«_posts»"), ("a_partial", "«_partial»"),
 ])
 def test_bad_names_are_refused(name, problem):
     projects.add("GreenBase", ["@a"])
@@ -124,6 +141,16 @@ def test_card_shows_channels_an_interrupted_scrape_and_files(tmp_path, monkeypat
     assert projects.label(project) == "Green · каналов: 2 ⏸"
 
 
+def test_importable_offers_the_finished_scrapes_with_no_project_yet(tmp_path):
+    _posts(tmp_path, "Old", 1_000, channels=["@o"])
+    _posts(tmp_path, "Green", 1_500, channels=["@a"]).rename(tmp_path / "Green_posts_2023.parquet")  # older, same name
+    _posts(tmp_path, "Green", 2_000, channels=["@a", "t.me/+inv"])
+    _posts(tmp_path, "Mute", 3_000, groups=())       # no channels in the file: nothing to make it of
+    _posts(tmp_path, "Taken", 4_000, channels=["@t"])
+    projects.add("taken", ["@t"])
+    assert projects.importable() == [("Green", ["@a", "t.me/+inv"]), ("Old", ["@o"])]  # newest first
+
+
 # --- the bot ----------------------------------------------------------------------------------
 
 def _router():
@@ -163,7 +190,7 @@ def test_bot_creates_a_project_and_shows_its_card():
     text, markup = done.answers[0]
     assert text.startswith("📁 Green") and _buttons(markup) == [
         "▶️ Скрап проекта", "✏️ Каналы", "🗑 Удалить", "⬅️ К проектам"]
-    assert state.data == {"project_name": "Green"}
+    assert state.data == {"project_name": "Green", "project_names": []}
 
 
 def test_bot_lists_projects_and_opens_one_by_its_button():
@@ -178,6 +205,41 @@ def test_bot_lists_projects_and_opens_one_by_its_button():
     pick = _SCallback()
     asyncio.run(router.project_pick(pick, ChoiceCB(scope="prj", value="1"), state))
     assert pick.message.answers[0][0].startswith("📁 B")
+
+
+def test_bot_list_buttons_still_work_after_a_card_is_opened():
+    router = _router()
+    projects.add("A", ["@a"])
+    projects.add("B", ["@b"])
+    state = _State()
+    asyncio.run(router.projects_start(_SCallback(), state))
+    asyncio.run(router.project_pick(_SCallback(), ChoiceCB(scope="prj", value="0"), state))
+    again = _SCallback()  # the list's message above, its other button
+    asyncio.run(router.project_pick(again, ChoiceCB(scope="prj", value="1"), state))
+    assert again.message.answers[0][0].startswith("📁 B")
+
+
+def test_bot_makes_a_project_from_a_finished_scrape(tmp_path):
+    router = _router()
+    _posts(tmp_path, "Green", 1_000, channels=["@a", "@b"])
+    state = _State()
+    start = _SCallback()
+    asyncio.run(router.projects_start(start, state))
+    assert _buttons(start.message.answers[0][1]) == ["➕ Новый проект", "📥 Из готового скрапа"]
+
+    offer = _SCallback()
+    asyncio.run(router.project_pick(offer, ChoiceCB(scope="prj", value="import"), state))
+    assert _buttons(offer.message.answers[0][1]) == ["Green · каналов: 2"]
+
+    pick = _SCallback()
+    asyncio.run(router.project_import(pick, ChoiceCB(scope="prj_imp", value="0"), state))
+    assert projects.load() == [projects.Project("Green", ["@a", "@b"])]
+    card = pick.message.answers[0][0]
+    assert card.startswith("📁 Green") and "• posts · 01.01.2024-31.01.2024 · 1" in card
+
+    nothing = _SCallback()  # Green has its project now
+    asyncio.run(router.project_pick(nothing, ChoiceCB(scope="prj", value="import"), state))
+    assert nothing.message.answers[0][0].startswith("Не из чего сделать проект")
 
 
 def test_bot_edits_channels_and_deletes_a_project_keeping_its_files(tmp_path, monkeypatch):
@@ -318,6 +380,17 @@ def test_cli_creates_a_project_and_scrapes_it_on_its_channels(monkeypatch, tmp_p
     cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
     p = captured["params"]
     assert (p.name, p.channels, p.max_messages) == ("Green", ["@a", "@b"], 1)
+
+
+def test_cli_makes_a_project_from_a_finished_scrape(monkeypatch, tmp_path):
+    from functions import projects as cli
+
+    _posts(tmp_path, "Green", 1_000, channels=["@a"])
+    numbers = iter([2, 1])  # [2] 📥 Из готового скрапа -> [1] Green
+    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: next(numbers)))
+    _answers(monkeypatch, cli, texts=[""])  # no action on the card
+    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
+    assert projects.load() == [projects.Project("Green", ["@a"])]
 
 
 def test_cli_edits_and_deletes_a_project(monkeypatch):

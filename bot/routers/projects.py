@@ -1,3 +1,5 @@
+import asyncio
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -50,13 +52,17 @@ async def _show_list(message: Message, state: FSMContext, note: str = ""):
         text = ("Проектов пока нет. Проект — сохранённый набор каналов: скрап по нему запускается "
                 "одной кнопкой, а его файлы видны в карточке проекта.")
     options = [(projects.label(p), str(i)) for i, p in enumerate(items)]
-    await message.answer(f"{note}\n\n{text}" if note else text,
-                         reply_markup=choice_kb("prj", [*options, ("➕ Новый проект", "new")]))
+    options.append(("➕ Новый проект", "new"))
+    if scraped_files.posts_bases(limit=1):  # which of them can be a project: asked on the button
+        options.append(("📥 Из готового скрапа", "import"))
+    await message.answer(f"{note}\n\n{text}" if note else text, reply_markup=choice_kb("prj", options))
 
 
 async def _show_card(message: Message, state: FSMContext, project: projects.Project):
+    names = (await state.get_data()).get("project_names")
     await state.clear()
-    await state.update_data(project_name=project.name)
+    # the list shown before keeps working: its buttons carry an index into project_names
+    await state.update_data(project_name=project.name, project_names=names or [])
     await message.answer(projects.card(project), reply_markup=choice_kb("prj_act", [
         ("▶️ Скрап проекта", "scrape"),
         ("✏️ Каналы", "channels"),
@@ -90,11 +96,50 @@ async def project_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
         await callback.message.answer("Имя проекта — оно же имя его файлов скрапа (например GreenBase). "
                                       "Готовые файлы с этим именем сразу окажутся в проекте:")
         return
+    if callback_data.value == "import":
+        await _offer_import(callback.message, state)
+        return
     names = (await state.get_data()).get("project_names", [])
     index = int(callback_data.value)
     project = await _project(callback.message, state, names[index] if 0 <= index < len(names) else None)
     if project is not None:
         await _show_card(callback.message, state, project)
+
+
+async def _offer_import(message: Message, state: FSMContext):
+    try:  # reads the posts files' channels: off the event loop
+        found = await asyncio.to_thread(projects.importable)
+    except ValueError as err:  # an unreadable projects file
+        await state.clear()
+        await _menu(message, f"⚠️ {err}")
+        return
+    if not found:
+        await message.answer("Не из чего сделать проект: у готовых скрапов уже есть проекты, "
+                             "или в их файлах не записаны каналы (такой проект создайте через «➕ Новый проект»).")
+        return
+    await state.update_data(import_items=found)  # buttons carry an index into this
+    await message.answer(
+        f"Готовые скрапы из {scraped_files.BASES_DIR}: проект получит имя и каналы скрапа, его файлы — "
+        "сразу в проекте.",
+        reply_markup=choice_kb("prj_imp", [(f"{name} · каналов: {len(channels)}", str(i))
+                                           for i, (name, channels) in enumerate(found)]))
+
+
+@router.callback_query(ChoiceCB.filter(F.scope == "prj_imp"))
+async def project_import(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    await callback.answer()
+    found = (await state.get_data()).get("import_items", [])
+    index = int(callback_data.value)
+    if not 0 <= index < len(found):  # a stale button
+        await callback.message.answer("Флоу устарел, откройте 📁 Проекты заново.")
+        return
+    name, channels = found[index]
+    try:
+        project = projects.add(name, channels)
+    except (ValueError, OSError) as err:  # e.g. made meanwhile from the same scrape
+        await _menu(callback.message, f"Проект не создан: {err}")
+        return
+    await _show_card(callback.message, state, project)
 
 
 @router.message(Projects.name)

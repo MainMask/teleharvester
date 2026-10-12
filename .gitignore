@@ -128,6 +128,7 @@ dmypy.json
 *.session
 config.toml
 config.toml.tmp
+config.toml.bak
 # Pyre type checker
 .pyre/
 *.jsession

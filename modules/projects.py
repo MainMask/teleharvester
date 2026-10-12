@@ -12,6 +12,7 @@ from scraper.scrape import pending_resume
 PATH = os.path.join("stats", "projects.json")
 MAX_NAME = 40  # a project's name is a button label and a file name prefix
 MAX_CHANNELS_TEXT = 1500  # the card must stay within a Telegram message
+FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial")
 
 
 @dataclass
@@ -46,6 +47,9 @@ def name_problem(name: str, projects: list[Project]) -> str | None:
         return f"имя длиннее {MAX_NAME} символов"
     if "/" in name or "\\" in name or name in (".", ".."):
         return "имя станет частью имени файла: без / и \\"
+    # the scrape's file names are cut at these (scraped_files.project_files, pending_resume)
+    if marker := next((m for m in FILE_MARKERS if m in name), None):
+        return f"в имени не должно быть «{marker}» — так размечаются файлы скрапа"
     if any(project.name.casefold() == name.casefold() for project in projects):
         return "проект с таким именем уже есть"
     return None
@@ -83,6 +87,22 @@ def remove(name: str):
     kept = [project for project in projects if project.name != name]
     if len(kept) != len(projects):
         _save(kept)
+
+
+def importable(limit: int = 30) -> list[tuple[str, list[str]]]:
+    """(name, channels) of the finished scrapes a project can be made from: a posts file's name and
+    the channels it was scraped from (kept in the file, see verify_presets), newest first; none a
+    project already has. Reads the files: off the bot's event loop."""
+    projects = load()
+    found = []
+    for path, _ in scraped_files.posts_bases(limit):
+        name = os.path.basename(path).partition("_posts")[0]
+        if name_problem(name, projects) or any(name == known for known, _ in found):
+            continue
+        channels = scraped_files.verify_presets(path)[0]
+        if channels:  # a file that can't tell its channels: nothing to make a project of
+            found.append((name, list(channels)))
+    return found
 
 
 def unfinished(name: str) -> dict | None:

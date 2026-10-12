@@ -188,6 +188,7 @@ class Settings:
             file.flush()
             os.fsync(file.fileno())  # on disk before the rename: a power cut must not leave it empty
         shutil.copymode(path, tmp_path)  # the rename must not widen a locked-down file's mode
+        shutil.copy2(path, path + ".bak")  # the previous file, to undo the write (copy2 keeps the mode too)
         os.replace(tmp_path, path)
 
     def set_delay(self, delay: List[int], path: str = "config.toml"):

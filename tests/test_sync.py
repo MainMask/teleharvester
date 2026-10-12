@@ -123,6 +123,18 @@ def test_set_delay_keeps_the_files_mode(tmp_path, monkeypatch):
     assert (tmp_path / "config.toml").stat().st_mode & 0o777 == 0o600
 
 
+def test_every_config_write_backs_up_the_previous_file(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, monkeypatch)
+    os.chmod(tmp_path / "config.toml", 0o600)  # it holds the bot's admin whitelist
+    before = (tmp_path / "config.toml").read_text()
+    settings.set_delay([2, 4])
+
+    backup = tmp_path / "config.toml.bak"
+    assert backup.read_text() == before and backup.stat().st_mode & 0o777 == 0o600
+    settings.set_trigger("start")
+    assert toml.loads(backup.read_text())["broadcast"]["delay"] == [2, 4]  # the write before this one
+
+
 def test_set_delay_keeps_the_files_comments(tmp_path, monkeypatch):
     settings = _settings(tmp_path, monkeypatch)
     (tmp_path / "config.toml").write_text(
