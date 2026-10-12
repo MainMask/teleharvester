@@ -218,6 +218,29 @@ def _sibling_reactors(input_path: str) -> list[Path]:
     return []
 
 
+REACTOR_BATCH_ROWS = 200_000  # reactor rows read at a time: a giant scrape's reactors file is never read whole
+POSTS_BATCH_ROWS = 500  # posts read at a time: a post carries its comments' JSON (GreenBase: ~20 KB each)
+REACTOR_COLUMNS = ["Reactor ID", "Reactor Username", "Reactor Access Hash", "Reactor Name"]
+
+
+def _reactor_batches(path: Path):
+    """The reactors file's people columns (REACTOR_COLUMNS the file has), as DataFrames: a parquet
+    file batch by batch and only these columns (not its Url, Date, ... — millions of rows on a giant
+    scrape); an xlsx whole."""
+    if path.suffix.lower() != ".parquet":
+        rdf = read_table(path)
+        _require_columns(rdf, ["Reactor ID", "Reactor Username"], str(path))
+        yield rdf
+        return
+    file = pq.ParquetFile(path)
+    present = file.schema_arrow.names
+    _require_columns(pd.DataFrame(columns=present), ["Reactor ID", "Reactor Username"], str(path))
+    columns = [c for c in REACTOR_COLUMNS if c in present]
+    for batch in file.iter_batches(batch_size=REACTOR_BATCH_ROWS, columns=columns):
+        # nullable Int64, not float64: a 64-bit access hash must not be rounded
+        yield batch.to_pandas(types_mapper={pa.int64(): pd.Int64Dtype()}.get)
+
+
 def participants(input_path: str, output: str, reactors: str | None = None,
                  fmt: str = "parquet", owner_id: int | None = None) -> Path:
     """One row per unique person who wrote a message (a group's posts), commented or
@@ -241,7 +264,7 @@ def participants(input_path: str, output: str, reactors: str | None = None,
         file_attrs = json.loads((posts.schema_arrow.metadata or {}).get(b"PANDAS_ATTRS", b"{}"))
         # nullable Int64, not float64: a 64-bit access hash must not be rounded
         batches = (batch.to_pandas(types_mapper={pa.int64(): pd.Int64Dtype()}.get)
-                   for batch in posts.iter_batches(batch_size=10_000, columns=present))
+                   for batch in posts.iter_batches(batch_size=POSTS_BATCH_ROWS, columns=present))
     else:
         df = read_table(input_path)
         _require_columns(df, ["Comments List"], input_path)
@@ -289,13 +312,12 @@ def participants(input_path: str, output: str, reactors: str | None = None,
     else:  # "" -> caller says there is no reactors file for this run
         reactor_files = []
     for rf in reactor_files:
-        rdf = read_table(rf)
-        _require_columns(rdf, ["Reactor ID", "Reactor Username"], str(rf))
-        names = rdf["Reactor Name"] if "Reactor Name" in rdf.columns else [""] * len(rdf)
-        hashes = (rdf["Reactor Access Hash"] if "Reactor Access Hash" in rdf.columns
-                  else [None] * len(rdf))
-        for rid, ru, rh, rn in zip(rdf["Reactor ID"], rdf["Reactor Username"], hashes, names):
-            add(rid, ru, rh, rn, 4)
+        for rdf in _reactor_batches(rf):
+            names = rdf["Reactor Name"] if "Reactor Name" in rdf.columns else [""] * len(rdf)
+            hashes = (rdf["Reactor Access Hash"] if "Reactor Access Hash" in rdf.columns
+                      else [None] * len(rdf))
+            for rid, ru, rh, rn in zip(rdf["Reactor ID"], rdf["Reactor Username"], hashes, names):
+                add(rid, ru, rh, rn, 4)
         print(f"  + reactors from {rf.name}")
 
     ids = sorted(people)

@@ -2179,3 +2179,51 @@ def test_reactors_of_empty_sources_write_nothing(tmp_path):
     pd.DataFrame([_reactor_row(10, 1, "🔥")]).iloc[0:0].to_parquet(empty)
     assert scrape._consolidate_reactors([empty], tmp_path / "out.parquet") == (None, 0)
     assert not (tmp_path / "out.parquet").exists()
+
+
+# --- the participants base reads a reactors file batch by batch --------------------------------
+
+def _posts_with_a_comment(tmp_path, author=9, access_hash=5):
+    path = tmp_path / "x_posts.parquet"
+    comments = json.dumps([{"Type": "comment", "Comment Author ID": author, "Comment Author Username": "z",
+                            "Comment Author Access Hash": access_hash, "Comment Author Name": "Z"}])
+    pd.DataFrame({"Group": ["@c"], "Message ID": ["1"], "Url": ["u"], "Comments List": [comments]}).to_parquet(path)
+    return path
+
+
+def test_participants_count_every_reactor_batch_with_exact_hashes(tmp_path, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from scraper import analysis
+
+    big = 2 ** 62 + 1  # a float64 would round it
+    reactors = tmp_path / "x_reactors.parquet"
+    # no pandas metadata and a missing hash: read without Int64, the column would be float64
+    pq.write_table(pa.table({
+        "Reactor ID": pa.array([i % 3 + 1 for i in range(10)] + [4], pa.int64()),
+        "Reactor Username": [f"u{i % 3 + 1}" for i in range(10)] + ["nohash"],
+        "Reactor Access Hash": pa.array([big + i % 3 for i in range(10)] + [None], pa.int64()),
+        "Reactor Name": ["N"] * 11, "Url": ["long url"] * 11}), reactors)
+    posts = _posts_with_a_comment(tmp_path)
+    whole = pd.read_parquet(analysis.participants(str(posts), str(tmp_path / "whole"), str(reactors)))
+
+    monkeypatch.setattr(analysis, "REACTOR_BATCH_ROWS", 3)  # four batches
+    people = pd.read_parquet(analysis.participants(str(posts), str(tmp_path / "batched"), str(reactors)))
+    pd.testing.assert_frame_equal(people, whole)
+    by_id = people.set_index("ID")
+    assert [by_id.loc[i, "Reactions"] for i in (1, 2, 3)] == [4, 3, 3]
+    assert [by_id.loc[i, "Access Hash"] for i in (1, 2, 3)] == [big, big + 1, big + 2]
+
+
+def test_participants_take_a_reactors_file_without_names_or_hashes(tmp_path):
+    from scraper import analysis
+
+    reactors = tmp_path / "x_reactors.parquet"
+    pd.DataFrame({"Reactor ID": [9], "Reactor Username": ["z"]}).to_parquet(reactors)  # an older file
+    people = pd.read_parquet(analysis.participants(str(_posts_with_a_comment(tmp_path)), str(tmp_path / "p"),
+                                                   str(reactors))).set_index("ID")
+    assert (people.loc[9, "Comments"], people.loc[9, "Reactions"]) == (1, 1)
+
+    pd.DataFrame({"Reactor ID": [9]}).to_parquet(reactors)
+    with pytest.raises(SystemExit, match="Reactor Username"):
+        analysis.participants(str(_posts_with_a_comment(tmp_path)), str(tmp_path / "p"), str(reactors))

@@ -563,7 +563,7 @@ def test_participants_reads_no_post_text_and_counts_per_person(tmp_path, monkeyp
 
     p = read_table(participants(str(src), str(tmp_path / "people.parquet"), reactors="")).set_index("ID")
     [(batch_size, columns)] = read
-    assert "Content" not in columns and batch_size == 10_000  # in batches, never the text
+    assert "Content" not in columns and batch_size == analysis.POSTS_BATCH_ROWS  # in batches, never the text
     assert (p.loc[7, "Comments"], p.loc[7, "Messages"], p.loc[7, "Total"]) == (3, 1, 4)
     assert p.loc[7, "Access Hash"] == 2**60 + 7 and p.loc[7, "Username"] == "bob"
     assert list(p.index) == [7]  # the channel's own post is no one
