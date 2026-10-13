@@ -1,14 +1,16 @@
 import asyncio
+import html
+import secrets
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.callbacks import ChoiceCB, FunctionCB
+from bot.callbacks import ChoiceCB
 from bot.keyboards.common import choice_kb
-from bot.keyboards.menu import main_menu
-from bot.routers import scraping
-from bot.routers._common import require_text
+from bot.keyboards.menu import PROJECTS_BUTTON, main_menu
+from bot.routers import audience, broadcasts, scraping
+from bot.routers._common import ensure_workers, require_text
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Projects
@@ -46,16 +48,17 @@ async def _show_list(message: Message, state: FSMContext, note: str = ""):
     await state.clear()
     await state.update_data(project_names=[p.name for p in items])  # buttons carry an index into this
     if items:
-        text = ("Проекты — сохранённые наборы каналов. Имя проекта — имя его файлов скрапа; "
-                "⏸ — есть незавершённый скрап.")
+        text = ("📁 <b>Проекты</b> — ваши аудитории: каналы, сбор и вся работа с их базами (рассылка, контакты, "
+                "проверка, анализ). Имя проекта — имя его файлов скрапа; ⏸ — есть незавершённый скрап.")
     else:
-        text = ("Проектов пока нет. Проект — сохранённый набор каналов: скрап по нему запускается "
-                "одной кнопкой, а его файлы видны в карточке проекта.")
+        text = ("📁 <b>Проекты</b> — пока ни одного. Проект — набор каналов: скрап по нему одной кнопкой, "
+                "а в карточке — вся работа с собранной базой.")
     options = [(projects.label(p), str(i)) for i, p in enumerate(items)]
     options.append(("➕ Новый проект", "new"))
     if scraped_files.posts_bases(limit=1):  # which of them can be a project: asked on the button
         options.append(("📥 Из готового скрапа", "import"))
-    await message.answer(f"{note}\n\n{text}" if note else text, reply_markup=choice_kb("prj", options))
+    await message.answer(f"{html.escape(note)}\n\n{text}" if note else text, parse_mode="HTML",
+                         reply_markup=choice_kb("prj", options))
 
 
 async def _show_card(message: Message, state: FSMContext, project: projects.Project):
@@ -65,10 +68,16 @@ async def _show_card(message: Message, state: FSMContext, project: projects.Proj
     await state.update_data(project_name=project.name, project_names=names or [])
     # a top-up while a scrape is unfinished would drop its checkpoint: ▶️ continues that first
     topup = projects.topup(project) is not None and projects.unfinished(project.name) is None
+    # the work on the project's data: each button runs the section's own flow on its files only
+    base = bool(scraped_files.project_files(project.name, kinds=("participants",)))
+    posts = bool(scraped_files.project_files(project.name, kinds=("posts",)))
     await message.answer(projects.card(project), reply_markup=choice_kb("prj_act", [
         ("▶️ Скрап проекта", "scrape"),
         *([("🔄 Дособрать", "topup")] if topup else []),
+        *([("📨 Рассылка по базе", "mail"), ("📇 В контакты", "contacts")] if base else []),
+        *([("✅ Верификация", "verify"), ("📈 Анализ", "analysis")] if posts else []),
         ("✏️ Каналы", "channels"),
+        ("🏷 Переименовать", "rename"),
         ("🗑 Удалить", "delete"),
         ("⬅️ К проектам", "back"),
     ]))
@@ -85,10 +94,9 @@ async def _project(message: Message, state: FSMContext, name: str | None) -> pro
     return project
 
 
-@router.callback_query(FunctionCB.filter(F.key == "projects"))
-async def projects_start(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await _show_list(callback.message, state)
+@router.message(F.text == PROJECTS_BUTTON)
+async def projects_menu(message: Message, state: FSMContext):
+    await _show_list(message, state)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prj"))
@@ -124,7 +132,7 @@ async def _offer_import(message: Message, state: FSMContext):
     await message.answer(
         f"Готовые скрапы из {scraped_files.BASES_DIR}: проект получит имя и каналы скрапа, его файлы — "
         "сразу в проекте.",
-        reply_markup=choice_kb("prj_imp", [(f"{name} · каналов: {len(channels)}", str(i))
+        reply_markup=choice_kb("prj_imp", [(f"📁 {name} · каналов: {len(channels)}", str(i))
                                            for i, (name, channels) in enumerate(found)]))
 
 
@@ -197,14 +205,33 @@ async def project_action(callback: CallbackQuery, callback_data: ChoiceCB, state
             return
         await scraping.topup_project(callback.message, state, project, plan,
                                      dict(pool=pool, personal=personal, scrapes=scrapes))
+    elif action in ("mail", "contacts"):  # the project's bases only: the base is still picked by button
+        if not await ensure_workers(callback, pool):
+            return
+        bases = scraped_files.project_files(project.name, kinds=("participants",))
+        ask = broadcasts.ask_recipients if action == "mail" else audience.ask_base
+        await ask(callback.message, state, bases)
+    elif action == "verify":
+        await scraping.verify_project(callback.message, state, project,
+                                      dict(pool=pool, personal=personal, scrapes=scrapes))
+    elif action == "analysis":
+        await scraping.analysis_project(callback.message, state, project)
     elif action == "channels":
         await state.set_state(Projects.edit)
         await callback.message.answer(f"Сейчас: {', '.join(project.channels)[:projects.MAX_CHANNELS_TEXT]}\n\n"
                                       f"Новый список заменит текущий. {CHANNELS_ASK}")
+    elif action == "rename":
+        await state.set_state(Projects.rename)
+        await callback.message.answer(f"Новое имя проекта «{project.name}» — файлы проекта переименуются "
+                                      "вместе с ним:")
     elif action == "delete":
+        # the confirmation deletes the project it names, only from the last one shown (its token):
+        # any card shown since, or a newer confirmation (B's), makes this one stale
+        token = secrets.token_hex(4)
+        await state.update_data(delete_name=project.name, delete_token=token)
         await callback.message.answer(
             f"Удалить проект «{project.name}»? Файлы скрапа останутся в {scraped_files.BASES_DIR}.",
-            reply_markup=choice_kb("prj_del", [("🗑 Удалить", "yes"), ("Отмена", "no")]))
+            reply_markup=choice_kb("prj_del", [("🗑 Удалить", f"y{token}"), ("↩️ Отмена", "no")]))
     elif action == "back":
         await _show_list(callback.message, state)
 
@@ -227,13 +254,45 @@ async def project_edit(message: Message, state: FSMContext):
     await _show_card(message, state, project)
 
 
+@router.message(Projects.rename)
+async def project_rename(message: Message, state: FSMContext):
+    new = await require_text(message)
+    if new is None:
+        return
+    data = await state.get_data()
+    items = await _load(message, state)
+    if items is None:
+        return
+    old = data.get("project_name")
+    if old not in [p.name for p in items]:  # gone meanwhile
+        await state.clear()
+        await _menu(message, "Флоу устарел, откройте 📁 Проекты заново.")
+        return
+    if problem := projects.rename_problem(old, new, items):
+        await message.answer(f"Не подходит: {problem}. Пришлите другое имя:")
+        return
+    try:
+        project, moved = projects.rename(old, new)
+    except (ValueError, OSError) as err:  # a bot scrape of it, a name taken on disk
+        await state.clear()
+        await _menu(message, f"Не переименовано: {err}")
+        return
+    # the list shown before keeps working: its button for the project now carries the new name
+    await state.update_data(project_names=[project.name if name == old else name
+                                           for name in data.get("project_names") or []])
+    await message.answer(f"✅ Проект «{old}» теперь «{project.name}». Переименовано файлов и папок: {moved}.")
+    await _show_card(message, state, project)
+
+
 @router.callback_query(ChoiceCB.filter(F.scope == "prj_del"))
 async def project_delete(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
     await callback.answer()
-    project = await _project(callback.message, state, (await state.get_data()).get("project_name"))
+    data = await state.get_data()
+    current = callback_data.value in ("no", f"y{data.get('delete_token')}")
+    project = await _project(callback.message, state, data.get("delete_name") if current else None)
     if project is None:
         return
-    if callback_data.value != "yes":
+    if callback_data.value == "no":
         await _show_card(callback.message, state, project)
         return
     try:

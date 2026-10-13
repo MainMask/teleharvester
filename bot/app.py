@@ -37,6 +37,7 @@ from bot.routers import (
     projects,
     scraping,
     service,
+    settings as settings_menu,
     spamblock,
 )
 
@@ -160,6 +161,7 @@ async def run_bot():
     dp.include_router(broadcasts.router)
     dp.include_router(scraping.router)
     dp.include_router(projects.router)
+    dp.include_router(settings_menu.router)
 
     await wait_for_bot_api(bot)  # before start_polling: no startup handler runs offline
     await dp.start_polling(bot)

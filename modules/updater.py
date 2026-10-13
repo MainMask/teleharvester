@@ -4,6 +4,7 @@ import os
 import atexit
 import sys
 import subprocess
+import threading
 
 from git.exc import GitCommandError
 from git import Repo
@@ -11,6 +12,31 @@ from git import Repo
 # Never git-init + force-checkout a non-git install dir: that silently replaces the
 # local code (e.g. an rsync/tarball deploy) with GitHub's master.
 NOT_A_CHECKOUT = "Не git-репозиторий — проверка обновлений пропущена."
+# seconds the update check's fetch may take: an unreachable remote must not hold the start for
+# the OS's connect timeout (minutes); the start goes on without the check
+FETCH_TIMEOUT = 30
+
+
+def _fetch(repo):
+    """origin's fetch, given up on after FETCH_TIMEOUT. In a daemon thread: GitPython's own
+    kill_after_timeout kills git but then still waits for ssh, which keeps git's output open
+    until the OS stops connecting; the abandoned fetch ends on its own, never holding the exit."""
+    outcome = {}
+
+    def fetch():
+        try:
+            outcome["infos"] = git.Remote(repo, "origin").fetch()
+        except Exception as err:
+            outcome["error"] = err
+
+    thread = threading.Thread(target=fetch, daemon=True)
+    thread.start()
+    thread.join(FETCH_TIMEOUT)
+    if thread.is_alive():
+        raise TimeoutError(f"origin не ответил за {FETCH_TIMEOUT} с")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["infos"]
 
 
 def get_current_commit() -> typing.Union[bool, str]:
@@ -30,10 +56,10 @@ def check_update(retried: bool = False) -> dict:
         repo = git.Repo(os.getcwd())
     except git.exc.GitError:
         print(NOT_A_CHECKOUT)
-        return {"has_update": False}
+        return {"has_update": False, "checked": False}
 
     try:
-        fetch_infos = git.Remote(repo, "origin").fetch()
+        fetch_infos = _fetch(repo)
 
         if not fetch_infos:
             return {"has_update": False}
@@ -50,10 +76,10 @@ def check_update(retried: bool = False) -> dict:
 
         else:
             print(f"Внимание: не удалось проверить обновления: {err}")
-            return {"has_update": False}
+            return {"has_update": False, "checked": False}
     except Exception as err:
         print(f"Внимание: не удалось проверить обновления: {err}")
-        return {"has_update": False}
+        return {"has_update": False, "checked": False}  # not "up to date": main() says nothing more
 
     current_commit = get_current_commit()
 

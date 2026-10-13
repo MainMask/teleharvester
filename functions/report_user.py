@@ -13,13 +13,13 @@ class ReportUserFunc(TelethonFunction):
         super().__init__(storage, settings)
 
         self.reasons = (
-            ("Насилие над детьми", types.InputReportReasonChildAbuse()),
-            ("Авторские права", types.InputReportReasonCopyright()),
-            ("Фейковый канал/аккаунт", types.InputReportReasonFake()),
-            ("Порнография", types.InputReportReasonPornography()),
-            ("Спам", types.InputReportReasonSpam()),
-            ("Насилие", types.InputReportReasonViolence()),
-            ("Другое", types.InputReportReasonOther())
+            ("🚸 Насилие над детьми", types.InputReportReasonChildAbuse()),
+            ("©️ Авторские права", types.InputReportReasonCopyright()),
+            ("🎭 Фейковый канал/аккаунт", types.InputReportReasonFake()),
+            ("🔞 Порнография", types.InputReportReasonPornography()),
+            ("📢 Спам", types.InputReportReasonSpam()),
+            ("👊 Насилие", types.InputReportReasonViolence()),
+            ("❓ Другое", types.InputReportReasonOther())
         )
 
     async def report_one(self, session, link, reason_type, comment, report):
@@ -76,6 +76,6 @@ class ReportUserFunc(TelethonFunction):
 
         reason_type = self.reasons[int(choice) - 1][1]
 
-        comment = console.input("[bold red]комментарий> [/]")
+        comment = console.input("[bold red]комментарий для модераторов Telegram (необязательно)> [/]")
 
         await self.run(link, reason_type, comment, console_report)

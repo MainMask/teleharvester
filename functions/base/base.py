@@ -14,6 +14,7 @@ from telethon.errors import (
     UserRestrictedError as AccountRestrictedError,
 )
 
+from bot.services.registry import menu_path
 from modules import restricted_workers
 
 
@@ -301,7 +302,7 @@ class BaseFunction:
         if waiting := checker.waiting():
             await report(f"Контакты бессрочно ограниченных воркеров ждут решения "
                          f"({sum(people for *_, people in waiting)} чел.): "
-                         "🤖 Воркеры → 🩺 Проверка и статистика → Проверка статуса")
+                         f"{menu_path('status')}")
 
     async def worker_gone(self, session, report) -> bool:
         """Ask @SpamBot about a worker that stopped mid-run: True if it is out for good, i.e.

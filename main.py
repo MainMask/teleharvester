@@ -70,7 +70,7 @@ def main() -> None:
         if install_choice == "y":
             updater.update(console)
 
-    else:
+    elif update.get("checked", True):  # a failed check has said so already
         console.print("У вас последняя версия teleharvester :)")
 
     if sys.version_info < (3, 11, 0):

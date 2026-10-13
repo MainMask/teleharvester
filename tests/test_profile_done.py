@@ -261,3 +261,16 @@ def test_cli_picks_the_new_workers_by_default():
     with patch("functions.base.telethon.Prompt.ask", side_effect=["", "1"]):  # no new ones: asked again
         fn.ask_workers()
     assert fn.sessions == [old]
+
+
+def test_cli_picker_says_why_it_asks_again():
+    from functions.changebio import ChangeBioFunc
+
+    only = object()
+    storage = _storage([only], {id(only): "only"})
+    profile_done.seed(["only"])  # changed already: no new ones for Enter to take
+    printed = []
+    with patch("functions.base.telethon.Prompt.ask", side_effect=["", "all"]), \
+            patch("functions.base.telethon._report_console.print", side_effect=lambda *a, **k: printed.append(str(a[0]))):
+        ChangeBioFunc(storage, ns()).ask_workers()
+    assert any("Никого не выбрано" in line for line in printed)

@@ -18,6 +18,7 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services import scraping
 from bot.services.progress import Progress
+from bot.services.registry import menu_path
 from modules import json_file, scraped_files
 from bot.states import Analysis, Members, Scrape, Verify
 from modules.scraper_creds import build_credentials, find_account, scrape_accounts
@@ -109,7 +110,7 @@ async def _choose_account(message: Message, state: FSMContext, flow: str, **deps
     accounts = _accounts(deps["pool"], deps["personal"])
     if not accounts:
         await state.clear()
-        await _menu(message, "Нет аккаунтов: добавьте воркера или личный аккаунт — 🤖 Воркеры → 📲 Добавить по номеру.")
+        await _menu(message, f"Нет аккаунтов: добавьте воркера или личный аккаунт — {menu_path('phone')}.")
         return
     if len(accounts) == 1:
         await _account_chosen(message, state, accounts[0], flow, deps)
@@ -797,14 +798,22 @@ async def verify_start(callback: CallbackQuery, state: FSMContext, pool: WorkerP
     await _choose_account(callback.message, state, "verify", pool=pool, personal=personal, scrapes=scrapes)
 
 
+async def verify_project(message: Message, state: FSMContext, project, deps: dict):
+    """The verify from a project's card (bot/routers/projects.py): its posts files only."""
+    await state.clear()
+    await state.update_data(only_project=project.name)
+    await _choose_account(message, state, "verify", **deps)
+
+
 async def _ask_posts_file(message: Message, state: FSMContext, deps: dict):
     await state.set_state(Verify.input)
-    files = scraped_files.posts_bases()
+    project = (await state.get_data()).get("only_project")
+    files = scraped_files.project_files(project, kinds=("posts",)) if project else scraped_files.posts_bases()
     await state.update_data(files=[path for path, _ in files])  # buttons carry an index into this
     if files:
         await message.answer(
             "Выберите файл с постами или пришлите путь к файлу/папке:",
-            reply_markup=choice_kb("verify_base", [(label, str(i)) for i, (_, label) in enumerate(files)]),
+            reply_markup=choice_kb("verify_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(files)]),
         )
     else:
         await message.answer(
@@ -839,7 +848,7 @@ async def _ask_channel(message: Message, state: FSMContext, pool: WorkerPool, pe
         labels = [f"{'⚠️' if b else '▶️'} {name} · {span}" for name, b in zip(names, bad)]
     else:
         text = "Канал из файла — или введите другой (@name / t.me / числовой id):"
-        labels = [f"⚠️ {name}" if b else name for name, b in zip(names, bad)]
+        labels = [f"{'⚠️' if b else '📢'} {name}" for name, b in zip(names, bad)]
     if any(bad):
         text += "\n\n" + chat_lines([info for info in infos if info.problem is not None])
     await message.answer(
@@ -1101,9 +1110,17 @@ def _tools_kb(tools, more: bool):
 @router.callback_query(FunctionCB.filter(F.key == "analysis"))
 async def analysis_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    await analysis_project(callback.message, state, None)
+
+
+async def analysis_project(message: Message, state: FSMContext, project):
+    """The analysis tools; from a project's card (bot/routers/projects.py) they offer its files only."""
     await state.clear()
-    await callback.message.answer(
-        "Утилиты для файлов скрапа. Аккаунты не нужны: бот читает файл и присылает результат.",
+    if project is not None:
+        await state.update_data(only_project=project.name)
+    await message.answer(
+        "📈 <b>Анализ данных</b> — утилиты для файлов скрапа. Аккаунты не нужны: бот читает файл и "
+        "присылает результат.", parse_mode="HTML",
         reply_markup=_tools_kb(MAIN_TOOLS, more=True),
     )
 
@@ -1119,10 +1136,15 @@ async def analysis_tool(callback: CallbackQuery, callback_data: ChoiceCB, state:
         return
 
     label, hint, kind, _ = ANALYSIS[tool]
-    files = scraped_files.data_files() if kind == "any" else scraped_files.posts_bases(limit=100 if kind == "combine" else 10)
-    options = [(name, str(i)) for i, (_, name) in enumerate(files)]
+    project = (await state.get_data()).get("only_project")
+    if project:  # from a project's card: its files only
+        files = (scraped_files.project_files(project) if kind == "any"
+                 else scraped_files.project_files(project, kinds=("posts",)))
+    else:
+        files = scraped_files.data_files() if kind == "any" else scraped_files.posts_bases(limit=100 if kind == "combine" else 10)
+    options = [(f"📄 {name}", str(i)) for i, (_, name) in enumerate(files)]
     if kind == "combine":
-        options = [(f"Все файлы постов ({len(files)})", "all")] if len(files) > 1 else []
+        options = [(f"🗂 Все файлы постов ({len(files)})", "all")] if len(files) > 1 else []
         ask = ("Нажмите кнопку или пришлите путь к папке или шаблон "
                f"(например {scraped_files.BASES_DIR}/*_posts*.parquet):")
     elif files:

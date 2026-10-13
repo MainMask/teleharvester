@@ -4,17 +4,21 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import stop_kb
+from bot.keyboards.common import choice_kb, stop_kb
 from bot.keyboards.menu import main_menu
-from bot.routers._common import ensure_workers, require_text, resolve
+from bot.routers._common import ensure_workers, left_flow, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
 from bot.states import ReportMessage, ReportUser
+from functions.report import ReportFunc
 from modules.storages.sessions_storage import connect_client, release_client
 
 router = Router()
+
+POSTS_ASK = "Номера постов через запятую — это число в конце ссылки на пост (t.me/name/123 → 123):"
+COMMENT_ASK = "Комментарий для модераторов Telegram (необязательно, «-» — без него):"
 
 # chat_id -> (instance, flow-state dict, current options list) for the dynamic report flow
 _FLOWS: dict[int, tuple] = {}
@@ -27,6 +31,7 @@ async def ru_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool)
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
+    await state.clear()
     await state.set_state(ReportUser.username)
     await callback.message.answer("Username/ссылка на пользователя:")
 
@@ -49,9 +54,11 @@ async def ru_username(message: Message, state: FSMContext, functions: dict):
 
 @router.callback_query(ChoiceCB.filter(F.scope == "reason"))
 async def ru_reason(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, ReportUser.username):
+        return
     await state.update_data(reason_index=int(callback_data.value))
     await state.set_state(ReportUser.comment)
-    await callback.message.answer("Комментарий (можно пустой — отправьте «-»):")
+    await callback.message.answer(COMMENT_ASK)
     await callback.answer()
 
 
@@ -100,8 +107,9 @@ async def rm_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool)
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
+    await state.clear()
     await state.set_state(ReportMessage.link)
-    await callback.message.answer("Ссылка на пост или на канал/чат:")
+    await callback.message.answer("Ссылка на канал или чат — или сразу на пост:")
 
 
 @router.message(ReportMessage.link)
@@ -111,7 +119,23 @@ async def rm_link(message: Message, state: FSMContext):
         return
     await state.update_data(link=link)
     await state.set_state(ReportMessage.ids)
-    await message.answer("ID постов через запятую (напр. 12,13,14):")
+    post = ReportFunc.post_id(link)
+    if post is None:
+        await message.answer(POSTS_ASK)
+        return
+    await state.update_data(post=post)
+    await message.answer(f"В ссылке пост {post}. Пожаловаться на него — или пришлите номера постов через запятую:",
+                         reply_markup=choice_kb("rm_post", [(f"✅ Только на пост {post}", "go")]))
+
+
+@router.callback_query(ReportMessage.ids, ChoiceCB.filter(F.scope == "rm_post"))
+async def rm_post(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    post = (await state.get_data()).get("post")
+    if post is None:  # a stale button
+        await callback.message.answer("Флоу устарел, начните заново.")
+        return
+    await _ask_comment(callback.message, state, [post])
 
 
 @router.message(ReportMessage.ids)
@@ -120,9 +144,13 @@ async def rm_ids(message: Message, state: FSMContext):
     if not parts or not all(p.isdecimal() for p in parts):
         await message.answer("Введите числовые id через запятую:")
         return
-    await state.update_data(ids=[int(p) for p in parts])
+    await _ask_comment(message, state, [int(p) for p in parts])
+
+
+async def _ask_comment(message: Message, state: FSMContext, ids: list[int]):
+    await state.update_data(ids=ids)
     await state.set_state(ReportMessage.comment)
-    await message.answer("Комментарий (можно «-»):")
+    await message.answer(COMMENT_ASK)
 
 
 @router.message(ReportMessage.comment)

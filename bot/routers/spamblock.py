@@ -28,7 +28,7 @@ async def offer_release(bot, chat_id, func):
             "Если ограничение точно бессрочное (ответ @SpamBot выше), передайте их другим "
             "воркерам. Это не отменить. Кнопка действует сутки.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-                text=f"Передать контакты ({people})", callback_data=ReleaseCB(user_id=user_id).pack(),
+                text=f"📤 Передать контакты ({people})", callback_data=ReleaseCB(user_id=user_id).pack(),
             )]]),
         )
 

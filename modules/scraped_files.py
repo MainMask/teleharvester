@@ -2,6 +2,7 @@
 where an analysis of one writes, and which scrapes are left to continue."""
 import glob
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -15,7 +16,10 @@ BASES_DIR = "assets/databases"  # default scrape output; holds the <name>_partic
 # a bot scrape in progress, continued after a bot restart (bot/routers/scraping.py)
 SCRAPE_MARKER = os.path.join("stats", "bot_scrape.json")
 # what a scrape's file names are cut at (project_files, _scraped_files, pending_resume)
-FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial")
+FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial", "_previous")
+# the analysis tools' outputs, named after the posts file: <name>_<suffix><span>… (see output_path)
+ANALYSIS_SUFFIXES = ("links", "keywords", "comments", "summary", "sample")
+_SPAN = re.compile(r"_\d{2}\.\d{2}\.\d{4}-\d{2}\.\d{2}\.\d{4}")
 
 
 def name_problem(name: str) -> str | None:
@@ -85,19 +89,47 @@ def data_files(limit: int = 20) -> list[tuple[str, str]]:
     return [(str(path), f"{path.stem} · {_rows(rows)} строк") for path, rows in _newest("*.parquet", limit)]
 
 
-def project_files(name: str, limit: int = 50) -> list[tuple[str, str]]:
+def project_files(name: str, limit: int = 50, kinds=("posts", "reactors", "participants")) -> list[tuple[str, str]]:
     """(path, label) of a project's scrape files in BASES_DIR, newest first: the posts, reactors
-    and participants files whose name before the marker is the project's exactly (GreenBase's,
-    not GreenBase2's). label: "posts · 01.05.2022-27.09.2026 · 48 213"."""
+    and participants files (or only `kinds` of them) whose name before the marker is the project's
+    exactly (GreenBase's, not GreenBase2's). label: "posts · 01.05.2022-27.09.2026 · 48 213"."""
     files = []
     for path, rows in _newest(f"{glob.escape(name)}_*.parquet", limit, skip=lambda p: p.stem.endswith("_missed")):
         for marker in ("_posts", "_reactors", "_participants"):
             prefix, found, span = path.stem.partition(marker)
             if found and prefix == name:
-                parts = [marker.strip("_"), span.strip("_"), _rows(rows)]
-                files.append((str(path), " · ".join(part for part in parts if part)))
+                if marker[1:] in kinds:
+                    parts = [marker[1:], span.strip("_"), _rows(rows)]
+                    files.append((str(path), " · ".join(part for part in parts if part)))
                 break
     return files
+
+
+def project_entries(name: str) -> list[Path]:
+    """Everything of a project in BASES_DIR (its top level), for renaming it: the scrape's files (a
+    verify's _missed too), the analysis outputs, the <name>_partial and <name>_previous folders.
+    A file is the project's when a marker follows its name at once — never another name that
+    starts with it: Green_x's files, or a one-off scrape Green_links (Green_links_posts_…), for Green."""
+    try:
+        paths = list(Path(BASES_DIR).glob(f"{glob.escape(name)}_*"))
+    except OSError:
+        return []
+    found = []
+    for path in paths:
+        rest = path.name[len(name) + 1:]
+        if path.is_dir():
+            if rest in ("partial", "previous"):
+                found.append(path)
+            continue
+        token = re.match(r"[a-z]+", rest)
+        if token is None:
+            continue
+        after = rest[token.end():]
+        if token.group() in ("posts", "reactors", "participants") and after[:1] in ("_", ".", ""):
+            found.append(path)  # these markers can't be in a name: the file is surely this name's
+        elif token.group() in ANALYSIS_SUFFIXES and (_SPAN.match(after) or after[:1] in (".", "")):
+            found.append(path)
+    return sorted(found)
 
 
 def output_path(input_path: str, suffix: str) -> str:

@@ -506,7 +506,8 @@ def test_loop_polls_only_while_on(monkeypatch, enabled, text, polled):
 import toml  # noqa: E402
 
 from bot.callbacks import MenuAction, MenuCB  # noqa: E402
-from bot.keyboards.menu import workers_kb  # noqa: E402
+from bot.keyboards.menu import screen_kb  # noqa: E402
+from bot.services.registry import SETTINGS  # noqa: E402
 from bot.routers import autoreply as screen  # noqa: E402
 
 
@@ -611,10 +612,37 @@ def _pool():
     return pytypes.SimpleNamespace(storage=pytypes.SimpleNamespace(usernames={"sessions/a.jsession": "worker_a"}))
 
 
-def test_workers_screen_has_the_autoreply_button():
-    actions = [MenuCB.unpack(b.callback_data).action for row in workers_kb().inline_keyboard
+def test_settings_screen_has_the_autoreply_button_and_it_leads_back_there(tmp_path, monkeypatch):
+    actions = [MenuCB.unpack(b.callback_data).action for row in screen_kb(SETTINGS).inline_keyboard
                for b in row if b.callback_data.startswith("menu:")]
     assert MenuAction.AUTOREPLY in actions
+    callback = _Callback()
+    asyncio.run(screen.autoreply_screen(callback, _State(), settings_with(tmp_path, monkeypatch), _pool()))
+    back = callback.message.edits[0][1].inline_keyboard[-1][0]
+    assert back.text == "⬅️ Назад" and MenuCB.unpack(back.callback_data).action == MenuAction.SETTINGS
+
+
+def test_a_very_long_text_still_fits_the_screen(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, monkeypatch)
+    settings.set_autoreply_text("&" * 5000)  # config.toml may be edited by hand: no input limit there
+    callback = _Callback()
+    asyncio.run(screen.autoreply_screen(callback, _State(), settings, _pool()))
+
+    text, _ = callback.message.edits[0]
+    assert len(text) <= 4096 and "&amp;…</blockquote>" in text  # escaped after it is cut
+
+
+def test_a_long_save_error_fits_the_alert(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, monkeypatch)
+    settings.set_autoreply_text("hi")
+
+    def broken(enabled):
+        raise OSError("x" * 500)
+
+    monkeypatch.setattr(settings, "set_autoreply_enabled", broken)
+    callback = _Callback()
+    asyncio.run(screen.autoreply_toggle(callback, settings, _pool()))
+    assert len(callback.alerts[0]) <= 200  # Telegram refuses a longer one: the tap would get no answer
 
 
 def test_screen_shows_status_text_and_stats(tmp_path, monkeypatch):

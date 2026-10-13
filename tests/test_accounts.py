@@ -382,6 +382,32 @@ def _remove(pool, personal, state=None):
     return [text for text, _ in msg.replies]
 
 
+def test_an_old_removal_confirmation_never_removes_another_account(tmp_path, monkeypatch):
+    from bot.callbacks import ChoiceCB
+
+    monkeypatch.chdir(tmp_path)
+    removed = []
+
+    async def remove_personal(personal, account):
+        removed.append(account.path)
+        return True
+
+    monkeypatch.setattr(accounts.sign_in, "remove_personal", remove_personal)
+    personal, _, _ = _personal(tmp_path)
+    personal.full_sessions = {"personal_sessions/a.jsession": _Me(), "personal_sessions/b.jsession": _Me()}
+    state, msg = _State(), _CbMsg()
+    callback = ns(message=msg, answer=lambda *a, **k: asyncio.sleep(0))
+    asyncio.run(accounts.personal_remove_start(callback, state, personal))
+    asyncio.run(accounts.personal_remove_pick(callback, ChoiceCB(scope="prm_pick", value="1"), state, personal))
+    # «Убрать b?» is shown; a personal account is added and 🗑 is tapped again: the list is rebuilt
+    personal.full_sessions = {"personal_sessions/0.jsession": _Me(), **personal.full_sessions}
+    asyncio.run(accounts.personal_remove_start(callback, state, personal))
+
+    asyncio.run(accounts.personal_remove(callback, ChoiceCB(scope="prm_ok", value="1"), state,
+                                         _free_pool(), personal))  # «Да» on b's old confirmation
+    assert removed == [] and "устарел" in msg.replies[-1][0]  # not a.jsession, now at index 1
+
+
 def _free_pool():
     pool = _Pool([], _Storage())
     pool.busy = lambda path: False

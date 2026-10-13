@@ -18,7 +18,7 @@ contacts_per_account_daily = 0  # max contact-adds per account per day (0 = unli
 
 [autoreply]
 # Bot only: answer once anyone who replies to a PM mailing, and forward their messages to the admins.
-# Off when enabled = false or the text is empty; both can also be changed in the bot (🤖 Воркеры → 💬 Автоответ).
+# Off when enabled = false or the text is empty; both can also be changed in the bot (⚙️ Настройки → 📬 Автоответ).
 # Example: text = "Спасибо за ответ! Для дальнейшей связи напишите @MainMask"
 enabled = true
 text = ""

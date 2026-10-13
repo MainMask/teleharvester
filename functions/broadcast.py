@@ -22,6 +22,9 @@ from modules.storages.sessions_storage import connect_client
 
 # Invisible mention carrier: each hidden mention is these two chars linked to a user.
 _MENTION_CHARS = "⁬⁯"
+# hidden mentions per message: this many random admins, or random members (bot and CLI say so)
+MENTION_ADMINS = 2
+MENTION_USERS = 10
 
 # Every update a listening worker receives adds its users/chats to the session's in-memory
 # entity set, which never shrinks; a trigger listener runs for days, so past this many it
@@ -67,7 +70,7 @@ class Broadcast(TelethonFunction):
             "Рассылка текстом",
             "Рассылка одним аккаунтом",
             "Рассылка с медиа",
-            "Рассылка ответом",
+            "Рассылка ответом на сообщение (триггер отправьте ответом на него)",
             "Рассылка стикерами",
         )
 
@@ -170,9 +173,9 @@ class Broadcast(TelethonFunction):
 
             if self.mention_all:
                 sample = (
-                    random.sample(users_ids, min(len(users_ids), 10))
+                    random.sample(users_ids, min(len(users_ids), MENTION_USERS))
                     if self.mention_mode == "users"
-                    else random.sample(admin_ids, min(len(admin_ids), 2))
+                    else random.sample(admin_ids, min(len(admin_ids), MENTION_ADMINS))
                 )
                 text, entities = self._append_mentions(text, entities, sample)
 
@@ -306,11 +309,13 @@ class Broadcast(TelethonFunction):
         )
 
         self.delay_range = self.parse_delay(delay)
-        self.mention_all = Confirm.ask("[bold red]упоминать всех?[/]", default=True)
+        self.mention_all = Confirm.ask("[bold red]добавлять в сообщения скрытые упоминания участников чата? "
+                                       "(упомянутым придёт уведомление)[/]", default=True)
 
         if self.mention_all:
             self.mention_mode = Prompt.ask(
-                "[bold red]кого упоминать (admins — админов, users — участников)[/]",
+                f"[bold red]кого упоминать в каждом сообщении (admins — {MENTION_ADMINS} случайных админа, "
+                f"users — {MENTION_USERS} случайных участников)[/]",
                 choices=["admins", "users"]
             )
 

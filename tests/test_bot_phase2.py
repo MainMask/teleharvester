@@ -79,12 +79,16 @@ class TestRegistry:
         assert len(BOT_FUNCTIONS_BY_KEY) == len(BOT_FUNCTIONS)
 
     def test_categories_cover_all(self):
-        total = sum(len(by_category(c)) for c in (*SECTIONS, *WORKER_GROUPS))
+        from bot.services.registry import PROJECTS
+
+        total = sum(len(by_category(c)) for c in (PROJECTS, *SECTIONS, *WORKER_GROUPS))
         assert total == len(BOT_FUNCTIONS)
 
     def test_every_category_is_reachable_from_the_menu(self):
-        # a category outside SECTIONS / WORKER_GROUPS would have no button leading to it
-        assert {f.category for f in BOT_FUNCTIONS} == set(SECTIONS) | set(WORKER_GROUPS)
+        # a category outside the projects / SECTIONS / WORKER_GROUPS would have no button leading to it
+        from bot.services.registry import PROJECTS
+
+        assert {f.category for f in BOT_FUNCTIONS} == {PROJECTS} | set(SECTIONS) | set(WORKER_GROUPS)
 
     def test_risk_values_valid(self):
         assert all(f.risk in (SAFE, RISKY) for f in BOT_FUNCTIONS)
@@ -819,6 +823,9 @@ class _EmptyState:
     async def get_data(self):
         return {}
 
+    async def get_state(self):
+        return None
+
     async def clear(self):
         return None
 
@@ -844,6 +851,37 @@ class TestStaleFlowGuards:
 
         active = asyncio.run(scenario())
         assert active is False and any("устарел" in t for t in answered)
+
+    def test_an_old_reaction_button_in_another_flow_runs_nothing(self):
+        from bot.routers.activity import reactions_run
+        from bot.states import Comments
+
+        answered, cleared = [], []
+
+        class _CommentsState:  # the comments flow, its post link already typed
+            async def get_data(self):
+                return {"link": "https://t.me/chan/5"}
+
+            async def get_state(self):
+                return Comments.message.state
+
+            async def clear(self):
+                cleared.append(True)
+
+        class _Cb:
+            bot = _Bot()
+            message = ns(chat=ns(id=1), answer=lambda t, **k: _append(answered, t))
+
+            async def answer(self, *a, **k):
+                return None
+
+        async def scenario():
+            m = JobManager()
+            await reactions_run(_Cb(), ns(value="🔥"), _CommentsState(), _Pool(), {}, m)
+            return m.active
+
+        assert asyncio.run(scenario()) is False  # no reactions on the comments' post
+        assert cleared == [] and any("устарел" in t for t in answered)  # nor its flow dropped
 
     def test_ru_run_stale(self):
         from bot.routers.moderation import ru_run

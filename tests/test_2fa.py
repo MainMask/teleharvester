@@ -95,3 +95,25 @@ def test_edit_2fa_uses_stored_password_and_persists(tmp_path, monkeypatch):
     assert json.loads(Path.read_text())["password"] == "new_pw"
     # and next to the account's tdata
     assert written == [("1", "new_pw")]
+
+
+def test_the_new_password_is_hidden_never_empty_and_typed_twice(monkeypatch):
+    SetPasswordFunc = _load_func()
+    import importlib
+
+    module = importlib.import_module("functions.2fa")
+    asked = []
+    answers = iter(["", "pw", "typo", "pw", "pw"])  # empty; a mistyped repeat; then the same twice
+    monkeypatch.setattr(module.console, "input", lambda *a, **k: asked.append(k) or next(answers))
+    monkeypatch.setattr(module.console, "print", lambda *a, **k: None)
+    func = SetPasswordFunc.__new__(SetPasswordFunc)
+    func.ask_workers = lambda: None
+    ran = []
+
+    async def run(password, report):
+        ran.append(password)
+
+    func.run = run
+    asyncio.run(func.execute())
+    # an empty password would remove the 2FA of every account: never sent
+    assert asked == [{"password": True}] * 5 and ran == ["pw"]

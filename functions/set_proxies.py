@@ -1,3 +1,5 @@
+import os
+
 from rich.prompt import Prompt
 from modules.console import console
 
@@ -42,5 +44,10 @@ class SetProxiesFunc(TelethonFunction):
             f"[bold green]Прокси назначены аккаунтам: {summary['accounts']}[/] "
             f"(использовано прокси: {summary['proxies_used']})"
         )
+        # as the bot's: the pool the phone login and the tdata import take their proxies from
+        if os.path.abspath(path) != os.path.abspath(tdata_import.PROXIES_FILE):
+            with open(path, encoding="utf-8") as fileobj:
+                tdata_import.save_proxies(fileobj.read())
+            console.print(f"[bold white]Список сохранён в {tdata_import.PROXIES_FILE}[/]")
         if summary["string_sessions_skipped"]:
             console.print(f"[yellow]Пропущено .session-аккаунтов (без метаданных): {summary['string_sessions_skipped']}[/]")

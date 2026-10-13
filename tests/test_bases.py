@@ -101,13 +101,13 @@ def test_mailing_offers_bases_and_takes_the_picked_one(tmp_path, monkeypatch):
 
     asyncio.run(broadcasts.mail_start(callback, state, pool))
     _, markup = callback.message.answers[0]
-    assert [b.text for b in _buttons(markup)][0].startswith("OmniBase")
+    assert [b.text for b in _buttons(markup)][0].startswith("📄 OmniBase")
     assert state.data["bases"] == [new, old]
 
     pick = _Callback()
     asyncio.run(broadcasts.mail_base(pick, ChoiceCB(scope="mail_base", value="1"), state))
     assert state.data["path"] == old
-    assert pick.message.answers[0][0] == "Пропускать уже отправленных?"
+    assert pick.message.answers[0][0] == "Пропустить тех, кому уже писали раньше?"
 
 
 def test_mailing_without_bases_has_no_keyboard(tmp_path, monkeypatch):
@@ -539,7 +539,7 @@ def test_preflight_excludes_a_permanently_restricted_worker(monkeypatch, tmp_pat
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
     assert any("его контакты (1) ждут решения" in m for m in msgs)
     assert ("Контакты бессрочно ограниченных воркеров ждут решения (1 чел.): "
-            "🤖 Воркеры → 🩺 Проверка и статистика → Проверка статуса") in msgs
+            "🤖 Воркеры → 🩺 Проверка и обслуживание → 🛡 Проверка статуса (SpamBot)") in msgs
     assert not any(m.startswith("✅") for m in msgs)
 
 
@@ -632,7 +632,7 @@ def test_verify_offers_posts_files(tmp_path, monkeypatch):
 
     asyncio.run(scraping_router.verify_start(callback, state, _one_account(), None, None))
     _, markup = callback.message.answers[0]
-    assert [b.text for b in _buttons(markup)] == ["Omni · 01.05.2022-27.09.2026 · 1"]
+    assert [b.text for b in _buttons(markup)] == ["📄 Omni · 01.05.2022-27.09.2026 · 1"]
     assert state.data["files"] == [path]
 
 
@@ -688,7 +688,7 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
 
     msg = _Msg()
     asyncio.run(scraping_router._ask_channel(msg, state, _one_account(), None, path))
-    assert [b.text for b in _buttons(msg.answers[0][1])] == ["@omni"]
+    assert [b.text for b in _buttons(msg.answers[0][1])] == ["📢 @omni"]
 
     pick = _Callback()
     asyncio.run(scraping_router.verify_channel_pick(
@@ -792,7 +792,7 @@ def test_analysis_links_by_button(tmp_path, monkeypatch):
     asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="links"), state))
     text, markup = tool.message.answers[0]
     assert "Ссылки на другие каналы" in text and [b.text for b in _buttons(markup)] == [
-        "Omni · 01.05.2022-27.09.2026 · 1"]
+        "📄 Omni · 01.05.2022-27.09.2026 · 1"]
 
     pick = _Callback()
     asyncio.run(scraping_router.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
@@ -834,7 +834,7 @@ def test_analysis_read_offers_every_file(tmp_path, monkeypatch):
     state, tool = _State(), _Callback()
     asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="read"), state))
     labels = [b.text for b in _buttons(tool.message.answers[0][1])]
-    assert labels[0] == "OmniBase_posts_01.05.2022-27.09.2026 · 5 строк" and len(labels) == 3
+    assert labels[0] == "📄 OmniBase_posts_01.05.2022-27.09.2026 · 5 строк" and len(labels) == 3
 
     manager, _ = _analysis_run(monkeypatch)
     pick = _Callback()
@@ -855,7 +855,7 @@ def test_analysis_combine_all_posts_files(tmp_path, monkeypatch):
     state, tool = _State(), _Callback()
 
     asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="combine"), state))
-    assert [x.text for x in _buttons(tool.message.answers[0][1])] == ["Все файлы постов (2)"]
+    assert [x.text for x in _buttons(tool.message.answers[0][1])] == ["🗂 Все файлы постов (2)"]
 
     asyncio.run(scraping_router.analysis_file_pick(
         _Callback(), ChoiceCB(scope="an_file", value="all"), state, manager))

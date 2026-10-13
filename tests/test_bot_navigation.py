@@ -4,9 +4,9 @@ import asyncio
 import types
 
 from bot.callbacks import CategoryCB, FunctionCB, MenuAction, MenuCB
-from bot.keyboards.menu import WORKERS_BUTTON, functions_kb, main_menu, workers_kb
+from bot.keyboards.menu import PROJECTS_BUTTON, SETTINGS_BUTTON, WORKERS_BUTTON, functions_kb, main_menu, screen_kb
 from bot.routers import accounts, menu
-from bot.services.registry import SECTIONS, WORKER_GROUPS, by_category
+from bot.services.registry import SCREENS, SECTIONS, SETTINGS, WORKER_GROUPS, WORKERS, by_category
 
 
 def ns(**kw):
@@ -46,9 +46,18 @@ def _buttons(markup):
     return [button for row in markup.inline_keyboard for button in row]
 
 
-def test_main_menu_has_four_sections():
-    texts = [button.text for row in main_menu().keyboard for button in row]
-    assert texts == [*SECTIONS, WORKERS_BUTTON]
+def test_main_menu_has_the_projects_then_the_sections_then_the_two_screens():
+    rows = [[button.text for button in row] for row in main_menu().keyboard]
+    assert rows == [[PROJECTS_BUTTON], list(SECTIONS), [WORKERS_BUTTON, SETTINGS_BUTTON]]
+    assert not any("Проекты" in b.text for b in _buttons(functions_kb("🔍 Сбор данных")))  # not in a section
+
+
+def test_contacts_lead_the_mailings_and_data_collection_is_only_collecting():
+    from bot.services.registry import BOT_FUNCTIONS
+
+    assert [f.key for f in by_category("📣 Рассылки")][0] == "addcontacts"  # added to contacts, then mailed
+    assert [f.key for f in by_category("🔍 Сбор данных")] == ["scrape", "members", "verify", "analysis"]
+    assert not any("Аудитория" in f.category for f in BOT_FUNCTIONS)
 
 
 def test_functions_kb_lists_category_in_order():
@@ -63,13 +72,13 @@ def test_back_button_only_in_worker_groups():
 
 
 def test_risky_functions_are_marked():
-    texts = {b.text for b in _buttons(functions_kb("🩺 Проверка и статистика"))}
-    assert "⚠️ Очистить диалоги" in texts and "Статистика по номерам" in texts
+    texts = {b.text for b in _buttons(functions_kb("🩺 Проверка и обслуживание"))}
+    assert "⚠️ 🧹 Очистить диалоги" in texts and "🌍 Статистика по номерам" in texts
 
 
-def test_workers_kb_opens_every_group():
+def test_workers_screen_opens_every_group():
     groups = [CategoryCB.unpack(b.callback_data).index
-              for b in _buttons(workers_kb()) if b.callback_data.startswith("cat:")]
+              for b in _buttons(screen_kb(WORKERS)) if b.callback_data.startswith("cat:")]
     assert groups == list(range(len(WORKER_GROUPS)))
 
 
@@ -79,8 +88,8 @@ def test_section_button_answers_with_its_functions():
 
     text, markup = msg.answers[0]
     assert text.startswith("<b>💬 Активность</b>")
-    assert "<b>Вступить в чат</b> — воркеры вступают" in text  # each item explained
-    assert [b.text for b in _buttons(markup)][0] == "⚠️ Вступить в чат"
+    assert "<b>🚪 Вступить в чат</b> — воркеры вступают" in text  # each item explained
+    assert [b.text for b in _buttons(markup)][0] == "⚠️ 🚪 Вступить в чат"
     assert state.cleared
 
 
@@ -102,7 +111,7 @@ def test_back_returns_to_workers_screen_in_place():
 
     text, markup = callback.message.edits[0]
     assert "подключено: <b>5</b>" in text
-    assert markup == workers_kb()
+    assert markup == screen_kb(WORKERS)
 
 
 def test_workers_screen_with_no_workers_explains_how_to_add():
@@ -111,7 +120,7 @@ def test_workers_screen_with_no_workers_explains_how_to_add():
 
     text, markup = msg.answers[0]
     assert "подключено: <b>0</b>" in text and "tdata" in text
-    assert markup == workers_kb()  # import stays reachable with zero workers
+    assert markup == screen_kb(WORKERS)  # import stays reachable with zero workers
 
 
 def test_every_function_is_explained_in_its_section():
@@ -130,8 +139,35 @@ def test_workers_screen_explains_its_buttons():
     msg = _Msg(WORKERS_BUTTON)
     asyncio.run(accounts.workers(msg, _State(), ns(count=lambda: 3)))
     text = msg.answers[0][0]
-    for button in ("Список аккаунтов", "Прокси", "Задержка", "Загрузить tdata", "Безопасность"):
-        assert f"{button}</b> — " in text
+    for button in SCREENS[WORKERS]:
+        assert f"<b>{button.title}</b> — {button.hint}" in text
+    assert "Задержка" not in text  # a setting: ⚙️ Настройки
+
+
+def test_settings_screen_shows_the_values_and_explains_its_buttons():
+    from bot.routers import settings as screen
+
+    settings = ns(delay=[2, 5], profile_pause=[60, 180], autoreply_enabled=True, autoreply_text="")
+    msg = _Msg(SETTINGS_BUTTON)
+    asyncio.run(screen.settings_screen(msg, _State(), settings))
+    text, markup = msg.answers[0]
+    assert "задержка <b>2–5 с</b> · пауза профиля <b>60–180 с</b> · автоответ <b>выкл</b>" in text  # no text: off
+    for button in SCREENS[SETTINGS]:
+        assert f"<b>{button.title}</b> — {button.hint}" in text
+    assert markup == screen_kb(SETTINGS)
+
+    back = _Callback()
+    asyncio.run(screen.back_to_settings(back, _State(), settings))
+    assert back.message.answers == [] and back.message.edits[0][1] == screen_kb(SETTINGS)  # in place
+
+
+def test_start_names_every_main_menu_button():
+    from bot.services.registry import MAIN_MENU_HINTS
+
+    text = menu.welcome("Ann", 2)
+    assert list(MAIN_MENU_HINTS) == [PROJECTS_BUTTON, *SECTIONS, WORKERS, SETTINGS]
+    for label, hint in MAIN_MENU_HINTS.items():
+        assert f"<b>{label.split(' ', 1)[1]}</b> — {hint}" in text
 
 
 def test_photo_folder_button_works_only_in_its_step():

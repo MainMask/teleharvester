@@ -21,13 +21,19 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
+    await ask_base(callback.message, state, scraped_files.participant_bases())
+
+
+async def ask_base(message: Message, state: FSMContext, bases: list[tuple[str, str]]):
+    """The base to add to contacts: by button (`bases`: the newest scraped ones, or a project's —
+    bot/routers/projects.py) or a path."""
+    await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(AddContacts.path)
-    bases = scraped_files.participant_bases()
     await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
     choose = "Выберите базу из скрапа ниже или укажите путь" if bases else "Путь"
-    await callback.message.answer(
+    await message.answer(
         f"{choose} к .parquet («-» = {DEFAULT_DB}):",
-        reply_markup=choice_kb("contacts_base", [(label, str(i)) for i, (_, label) in enumerate(bases)])
+        reply_markup=choice_kb("contacts_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)])
         if bases else None,
     )
 

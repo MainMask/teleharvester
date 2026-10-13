@@ -174,3 +174,17 @@ def test_report_counts_the_workers_the_job_got():
 
     bot = asyncio.run(scenario())
     assert any("Воркеров: 1" in text for text, _ in bot.sent)
+
+
+def test_a_huge_error_still_fits_the_report_in_one_message():
+    bot = _Bot()
+    reporter = TelegramReporter(bot, 1, header="Задача", min_interval=0)
+
+    async def scenario():
+        await reporter.start()
+        await reporter.finish("⚠️ Ошибка: " + "x" * 5000)
+
+    asyncio.run(scenario())
+    report_text = bot.sent[-1][0]
+    # Telegram refuses a longer message: the report and its menu would be lost
+    assert len(report_text) <= 4096 and "Время:" in report_text

@@ -17,7 +17,7 @@ def _reactions_kb():
     builder = InlineKeyboardBuilder()
     for emoji in ReactionsFunc.reactions:
         builder.button(text=emoji, callback_data=ChoiceCB(scope="reaction", value=emoji))
-    builder.button(text="🎲 Random", callback_data=ChoiceCB(scope="reaction", value="random"))
+    builder.button(text="🎲 Случайная у каждого", callback_data=ChoiceCB(scope="reaction", value="random"))
     builder.adjust(4)
     return builder.as_markup()
 
@@ -29,6 +29,7 @@ async def reactions_start(callback: CallbackQuery, state: FSMContext, pool: Work
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
+    await state.clear()
     await state.set_state(Reactions.link)
     await callback.message.answer("Ссылка на сообщение/пост:")
 
@@ -48,12 +49,12 @@ async def reactions_run(
     pool: WorkerPool, functions: dict, manager: JobManager,
 ):
     data = await state.get_data()
-    await state.clear()
     await callback.answer()
-
-    if "link" not in data:  # a stale reaction button after the state was cleared
+    # a stale reaction button: after the state was cleared, or in another flow that has a link of its own
+    if await state.get_state() != Reactions.link.state or "link" not in data:
         await callback.message.answer("Флоу устарел, начните заново.")
         return
+    await state.clear()
 
     reaction = "" if callback_data.value == "random" else callback_data.value
     instance, bot_function = resolve(functions, "reactions")
@@ -71,6 +72,7 @@ async def poll_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
+    await state.clear()
     await state.set_state(PollVote.link)
     await callback.message.answer("Ссылка на сообщение/пост с опросом:")
 

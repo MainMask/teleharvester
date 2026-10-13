@@ -124,6 +124,7 @@ class TelethonFunction(BaseFunction):
             picked = self.parse_picks(raw, len(accounts), new)
             if picked:
                 break
+            _report_console.print("[bold red]Никого не выбрано: номера из списка или all — все.[/]")
         self.sessions = [accounts[i].client for i in picked]
 
     async def import_phone_contact(self, session, phone):

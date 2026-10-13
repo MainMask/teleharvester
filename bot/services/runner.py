@@ -89,7 +89,7 @@ class TelegramReporter:
             pass  # ignore "message is not modified" and transient edit errors
 
     def _build_report(self, summary: str) -> str:
-        lines = [summary, f"📋 Задача: {self.job_label}"]
+        lines = [summary[:1000], f"📋 Задача: {self.job_label}"]  # a huge error text, as in _flush
         if self.workers is not None:
             lines.append(f"🤖 Воркеров: {self.workers}")
         if self.progress is not None and self.progress.ok:

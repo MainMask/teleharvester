@@ -1729,6 +1729,18 @@ def test_a_failed_get_me_disconnects_the_client(monkeypatch, tmp_path):
     assert NoMe.disconnected
 
 
+def test_a_failed_authorization_check_disconnects_the_client(monkeypatch):
+    class Unanswered(LoggedOutClient):
+        async def is_user_authorized(self):
+            raise ConnectionError("no answer")
+
+    Unanswered.disconnected = False
+    monkeypatch.setattr(scrape, "TelegramClient", Unanswered)
+    with pytest.raises(ConnectionError):
+        asyncio.run(scrape.connect(Credentials(1, "h", "")))
+    assert Unanswered.disconnected  # the lookup's timeout must not leave it connected in the bot
+
+
 def test_an_interrupted_scrape_is_continued_with_its_own_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(scrape, "TelegramClient", CtrlCClient)
     with pytest.raises(SystemExit):
@@ -2102,6 +2114,18 @@ def test_a_top_up_merges_into_the_previous_files_and_keeps_them_one_version_back
     assert set(pd.read_parquet(_out(tmp_path, "participants"))["Owner ID"]) == {4242}
     assert not (tmp_path / "unit.test_partial" / "merged").exists()
     assert not (tmp_path / "unit.test_partial" / "piece").exists()
+
+
+def test_a_top_up_without_comments_keeps_the_overlap_s_comments(fake_client, tmp_path):
+    first = _first_run(tmp_path)
+    before = pd.read_parquet(first).set_index("Message ID")["Comments List"]
+    assert (before != "[]").any()  # the first run has comments to lose
+
+    path = scrape.run(Credentials(1, "h", ""), _topup(tmp_path, first, with_comments=False))
+
+    after = pd.read_parquet(path).set_index("Message ID")["Comments List"]
+    assert after[before.index].tolist() == before.tolist()  # the re-read posts came without them
+    assert "40" in after.index  # the new post still comes in
 
 
 def test_a_second_top_up_replaces_the_kept_version(fake_client, tmp_path):

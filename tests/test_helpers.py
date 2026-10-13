@@ -585,3 +585,19 @@ def test_filter_repeated_keyword_in_another_case_counts_once(tmp_path):
     out = pd.read_excel(tmp_path / "f_unique.xlsx")
     assert list(out.columns) == ["Content", "Крипта", "Keyword_Count"]
     assert out["Keyword_Count"].tolist() == [1]
+
+
+def test_summary_and_links_read_only_the_columns_they_use(tmp_path, monkeypatch):
+    import scraper.analysis as analysis
+
+    path = tmp_path / "in_posts.parquet"
+    pd.DataFrame({"Date": ["2024-01-05"], "Group": ["@a"], "Comments": [1], "Content": ["t.me/foo"],
+                  "Comments List": ["[]"]}).to_parquet(path)
+    asked = []
+    real = analysis.read_table
+    monkeypatch.setattr(analysis, "read_table", lambda p, columns=None: asked.append(columns) or real(p, columns))
+
+    analysis.summary(str(path), str(tmp_path / "s"), "Date", "Group", "Comments")
+    analysis.links(str(path), str(tmp_path / "l"))
+    # a big scrape's Comments List (~20 KB a post) is never loaded for them
+    assert asked == [["Date", "Group", "Comments"], ["Content"]]

@@ -159,8 +159,9 @@ class JoinerFunc(TelethonFunction):
         print()
 
         console.print(
-            "[1] Просто вступить в чат/канал",
-            "[2] Вступить в чат, привязанный к каналу",
+            "[1] 🚪 В канал или группу по ссылке — туда, куда ведёт ссылка (подходит и приглашение t.me/+…)",
+            "[2] 💬 В чат комментариев канала — ссылка на канал: воркеры вступят в его группу для "
+            "комментариев, не в сам канал (только @name / t.me/name)",
             sep="\n",
             style="bold white"
         )
@@ -209,7 +210,12 @@ class JoinerFunc(TelethonFunction):
                     sessions = track(sessions, "[yellow]Вступление[/]", total=len(self.sessions))
 
                 for index, session in sessions:
-                    await session.start()
+                    # connect(), not start(): a logged-out worker's start() waits for a phone number on
+                    # stdin; a dead proxy ends this account only (its join below fails and is reported)
+                    try:
+                        await session.connect()
+                    except OSError as err:
+                        console.print(f"[!] [аккаунт {index + 1}] не подключился: {err}", markup=False)
 
                     if captcha:
                         self.solve_captcha(session)

@@ -5,6 +5,7 @@ and an interrupted scrape of it is continued by that name (scraper.scrape.pendin
 import os
 import shutil
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
 from modules import json_file, scraped_files
@@ -81,6 +82,67 @@ def set_channels(name: str, channels: list[str]) -> Project:
     return project
 
 
+def rename_problem(old: str, new: str, projects: list[Project]) -> str | None:
+    """Why the project `old` can't be renamed to `new`, or None (a case change is fine)."""
+    if new == old:
+        return "имя не изменилось"
+    return name_problem(new, [project for project in projects if project.name != old])
+
+
+def rename(old: str, new: str) -> tuple[Project, int]:
+    """Rename the project and everything of it on disk (scraped_files.project_entries), its
+    unfinished scrape's checkpoint included: (the project, how many files and folders moved).
+    ValueError with the reason — a bad name, a bot scrape of it under way, a name taken on disk —
+    and then nothing is changed; a move that fails midway is undone."""
+    projects = load()
+    project = next((project for project in projects if project.name == old), None)
+    if project is None:
+        raise ValueError(f"проекта «{old}» уже нет")
+    new = new.strip()
+    if problem := rename_problem(old, new, projects):
+        raise ValueError(problem)
+    try:  # the bot's scrape (running, or continued after its restart) writes the old name's files
+        marker = json_file.load(scraped_files.SCRAPE_MARKER, None)
+    except (OSError, ValueError):
+        marker = None
+    if marker is not None and marker.get("name") == old:
+        raise ValueError("по проекту идёт скрап бота (или бот продолжит его после перезапуска) — "
+                         "переименуйте, когда он закончится")
+    moves = [(path, path.with_name(new + path.name[len(old):])) for path in scraped_files.project_entries(old)]
+    if taken := [target.name for _, target in moves if target.exists()]:
+        raise ValueError(f"на диске уже есть {', '.join(taken[:3])}{'…' if len(taken) > 3 else ''} — "
+                         "выберите другое имя")
+    done = []
+    try:
+        for source, target in moves:
+            os.replace(source, target)
+            done.append((source, target))
+        _rename_checkpoint(old, new)
+    except OSError as err:
+        for source, target in reversed(done):
+            os.replace(target, source)
+        raise ValueError(f"файлы не переименованы ({err}) — всё возвращено как было") from err
+    project.name = new
+    _save(projects)
+    return project, len(moves)
+
+
+def _rename_checkpoint(old: str, new: str):
+    """The unfinished scrape's resume.json: its name, and a top-up's previous posts file (extend)."""
+    resume = Path(scraped_files.BASES_DIR) / f"{new}_partial" / "checkpoint" / "resume.json"
+    try:
+        meta = json_file.load(str(resume), None)
+    except ValueError:  # a broken checkpoint: pending_resume ignores it too
+        return
+    if meta is None:
+        return
+    meta["name"] = new
+    extend = Path(meta.get("extend") or "")
+    if extend.name.startswith(f"{old}_"):
+        meta["extend"] = str(extend.with_name(new + extend.name[len(old):]))
+    json_file.save(str(resume), meta)
+
+
 def remove(name: str):
     """Drop the project; its scraped files stay where they are."""
     projects = load()
@@ -141,7 +203,7 @@ def unfinished(name: str) -> dict | None:
 
 def label(project: Project) -> str:
     """The project in a list (bot button / CLI line); ⏸ marks an interrupted scrape."""
-    return f"{project.name} · каналов: {len(project.channels)}{' ⏸' if unfinished(project.name) else ''}"
+    return f"📁 {project.name} · каналов: {len(project.channels)}{' ⏸' if unfinished(project.name) else ''}"
 
 
 def card(project: Project) -> str:

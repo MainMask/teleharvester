@@ -115,7 +115,12 @@ async def connect(creds: Credentials, entity_cache: Path | None = None) -> Teleg
     client = TelegramClient(session, creds.api_id, creds.api_hash,
                             proxy=creds.proxy, **(creds.device or {}), **CLIENT_KWARGS)
     await client.connect()
-    if not await client.is_user_authorized():
+    try:
+        authorized = await client.is_user_authorized()
+    except BaseException:  # a dropped connection, a lookup's timeout: not left connected
+        await client.disconnect()
+        raise
+    if not authorized:
         await client.disconnect()
         raise SystemExit("сессия аккаунта больше не авторизована — добавьте аккаунт заново")
     return client
@@ -249,9 +254,9 @@ def _write_posts(ckpt_dir: Path, out_dir: Path, name: str, attrs: dict) -> tuple
 
 
 def _merge_posts(sources: list[Path], out_dir: Path, name: str, attrs: dict) -> tuple[Path, int, str]:
-    """A top-up's posts file: the posts files in `sources` (the new run's first) stitched batch by
-    batch; a post in more than one keeps its first copy — the new run's, re-read in the overlap,
-    with its newer comments and reactions. Returns (path, rows, span), as _write_posts."""
+    """A top-up's posts file: the posts files in `sources` stitched batch by batch; a post in more
+    than one keeps its first copy — usually the new run's, re-read in the overlap, with its newer
+    comments and reactions. Returns (path, rows, span), as _write_posts."""
     from scraper.analysis import normalize_keys
 
     frames = (normalize_keys(batch.to_pandas(types_mapper=_INT64_NULLABLE.get))
@@ -1349,7 +1354,9 @@ def run(creds: Credentials, params: ScrapeParams) -> Path:
     out_dir = partial_dir / "merged" if previous else params.out_dir
     if previous:
         piece, _, _ = _write_posts(ckpt_dir, partial_dir / "piece", params.name, attrs)
-        path, rows, span = _merge_posts([piece, previous], out_dir, params.name, attrs)
+        # without comments the overlap's posts were re-read with none: their previous copies win
+        sources = [piece, previous] if params.with_comments else [previous, piece]
+        path, rows, span = _merge_posts(sources, out_dir, params.name, attrs)
     else:
         path, rows, span = _write_posts(ckpt_dir, out_dir, params.name, attrs)
     print(f"Posts:    {path}  ({rows} rows)")

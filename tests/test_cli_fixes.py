@@ -113,14 +113,18 @@ def test_accounts_table_shows_the_spambot_status_restricted_last(monkeypatch):
 
 
 class _Worker:
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, name, dead=False):
+        self.name, self.dead = name, dead
 
-    async def start(self):
-        return self
+    async def connect(self):
+        if self.dead:
+            raise OSError("proxy unreachable")
+
+    async def start(self):  # a logged-out worker's start() would wait for a phone number on stdin
+        pytest.fail("start() must not be called")
 
 
-def _run_joiner(monkeypatch, broadcast_choice, joined):
+def _run_joiner(monkeypatch, broadcast_choice, joined, workers=None):
     """Drive JoinerFunc.execute (speed normal, no captcha) with two workers; `joined` is
     what join() gives each. Returns (printed lines, broadcasts as (worker, target))."""
     printed, sent = [], []
@@ -145,7 +149,7 @@ def _run_joiner(monkeypatch, broadcast_choice, joined):
 
     monkeypatch.setattr(joiner, "Broadcast", FakeBroadcast)
 
-    workers = [_Worker("a"), _Worker("b")]
+    workers = workers or [_Worker("a"), _Worker("b")]
     func = JoinerFunc(_Storage(workers), _settings())
     func.ask_accounts_count = lambda: None
     func.ask_int = lambda *a, **k: 0
@@ -157,6 +161,12 @@ def _run_joiner(monkeypatch, broadcast_choice, joined):
     func.join = join
     asyncio.run(func.execute())
     return printed, sent
+
+
+def test_a_worker_that_cant_connect_does_not_stop_the_others_joining(monkeypatch):
+    printed, _ = _run_joiner(monkeypatch, None, [False, "chat-b"], workers=[_Worker("a", dead=True), _Worker("b")])
+    assert any("аккаунт 1" in line and "proxy unreachable" in line for line in printed)
+    assert any("Вступило аккаунтов: 1" in line for line in printed)
 
 
 def test_broadcast_ask_leaves_the_accounts_count_to_its_caller(monkeypatch):

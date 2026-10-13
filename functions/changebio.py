@@ -25,6 +25,23 @@ class ChangeBioFunc(TelethonFunction):
     async def execute(self):
         self.ask_workers()
 
-        bio = console.input("[bold red]bio> [/]")
+        from_file = console.input("[bold red]из файла? (y/n)> ")
 
-        await self.run(console_report, bio=bio)
+        if from_file == "y":  # assets/bios.txt, as the bot's button: each account gets a random line
+            try:
+                with open("assets/bios.txt", encoding="utf-8") as file:
+                    bios = [line.strip() for line in file if line.strip()]
+            except FileNotFoundError:
+                console.print("[bold red]Файл assets/bios.txt не найден!")
+                return
+
+            if not bios:
+                console.print("[bold red]Список bio пуст!")
+                return
+
+            await self.run(console_report, bios=bios)
+
+        else:
+            bio = console.input("[bold red]bio> [/]")
+
+            await self.run(console_report, bio=bio)

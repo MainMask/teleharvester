@@ -300,6 +300,19 @@ def test_expired_code_offers_a_new_one(monkeypatch):
     assert client.codes_sent == 2 and state.state == AddByPhone.code
 
 
+def test_a_resend_after_the_flow_was_left_ends_the_sign_in(monkeypatch):
+    client = _Client()
+    state, _, _ = _start(monkeypatch, client, role=sign_in.PERSONAL)
+    asyncio.run(state.clear())  # a menu button: the role is gone, the sign-in still waits
+
+    callback = ns(message=_Msg(), answer=lambda *a, **k: asyncio.sleep(0))
+    asyncio.run(router.phone_resend(callback, state))
+    # no code step without its role: a personal account would be saved as a worker
+    assert state.state is None and client.codes_sent == 1
+    assert "Вход устарел" in callback.message.answers[-1]
+    assert 7 not in logins._logins and not client.connected
+
+
 def test_a_hung_resend_is_timed_out(monkeypatch):
     monkeypatch.setattr(sign_in, "FETCH_TIMEOUT", 0.01)
     client = _Client()

@@ -7,8 +7,10 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import choice_kb, yes_no_kb
-from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, ensure_workers, require_text, resolve
+from bot.routers._common import (SEND_MESSAGE_PROMPT, build_content, ensure_workers, left_flow, require_text,
+                                 resolve)
 from bot.services.delegation import WorkerPool
+from functions.broadcast import MENTION_ADMINS, MENTION_USERS
 from modules import scraped_files
 from bot.services.jobs import JobManager
 from bot.states import BroadcastOptions, ChatBroadcast, Comments, Instant, PmMailing
@@ -16,9 +18,11 @@ from modules.settings import Settings
 
 router = Router()
 
-MODE_OPTIONS = [("Текст", "0"), ("Медиа", "2"), ("Ответ", "3"), ("Стикеры", "4")]
-INSTANT_MODES = [("Текст", "0"), ("Медиа", "2"), ("Стикеры", "4")]  # reply needs a trigger
-MMODE_OPTIONS = [("Админы", "admins"), ("Юзеры", "users")]
+MODE_OPTIONS = [("📝 Текст", "0"), ("🖼 Медиа", "2"), ("💬 Ответом на сообщение", "3"), ("🎭 Стикеры", "4")]
+INSTANT_MODES = [("📝 Текст", "0"), ("🖼 Медиа", "2"), ("🎭 Стикеры", "4")]  # reply needs a trigger
+MMODE_OPTIONS = [(f"👮 {MENTION_ADMINS} случайных админа", "admins"), (f"👤 {MENTION_USERS} случайных участников", "users")]
+MENTION_ASK = "Добавлять в сообщения скрытые упоминания участников чата? Упомянутым придёт уведомление."
+MENTION_WHO = "Кого упоминать в каждом сообщении?"
 DEFAULT_TARGETS = "assets/targets.txt"
 MAX_RECIPIENTS_FILE_SIZE = 5 * 1024 * 1024  # a recipients list is text; cap at 5 MB
 
@@ -35,16 +39,21 @@ async def mail_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
+    await ask_recipients(callback.message, state, scraped_files.participant_bases())
+
+
+async def ask_recipients(message: Message, state: FSMContext, bases: list[tuple[str, str]]):
+    """The mailing's first step: a base by button (`bases`: the newest scraped ones, or a project's —
+    bot/routers/projects.py), a .txt, a pasted list or a path."""
     await state.clear()  # an abandoned run's `recipients` would otherwise override a new path
     await state.set_state(PmMailing.path)
-    bases = scraped_files.participant_bases()
     await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
     choose = "выберите базу из скрапа ниже, или " if bases else ""
-    await callback.message.answer(
+    await message.answer(
         f"Получатели: {choose}пришлите <b>.txt файлом</b>, вставьте список (по одному @username/номеру "
         f"на строку), или укажите путь к .parquet/.txt («-» = {DEFAULT_TARGETS}):",
         parse_mode="HTML",
-        reply_markup=choice_kb("mail_base", [(label, str(i)) for i, (_, label) in enumerate(bases)])
+        reply_markup=choice_kb("mail_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)])
         if bases else None,
     )
 
@@ -57,7 +66,7 @@ async def mail_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     if not 0 <= index < len(bases):
         return
     await state.update_data(path=bases[index])
-    await callback.message.answer("Пропускать уже отправленных?", reply_markup=yes_no_kb("mail_skip"))
+    await callback.message.answer("Пропустить тех, кому уже писали раньше?", reply_markup=yes_no_kb("mail_skip"))
 
 
 @router.message(PmMailing.path)
@@ -91,11 +100,13 @@ async def mail_path(message: Message, state: FSMContext):
                 return
             await state.update_data(recipients=recipients)
 
-    await message.answer("Пропускать уже отправленных?", reply_markup=yes_no_kb("mail_skip"))
+    await message.answer("Пропустить тех, кому уже писали раньше?", reply_markup=yes_no_kb("mail_skip"))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "mail_skip"))
 async def mail_skip(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, PmMailing.path):
+        return
     await state.update_data(skip=callback_data.value == "yes")
     await state.set_state(PmMailing.limit)
     await callback.message.answer("Сколько получателей («-» = все):")
@@ -195,6 +206,7 @@ async def com_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
+    await state.clear()
     await state.set_state(Comments.link)
     await callback.message.answer("Ссылка на пост:")
 
@@ -251,29 +263,36 @@ async def ins_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool
     if not await ensure_workers(callback, pool):
         return
     await state.clear()
-    await callback.message.answer("Режим рассылки:", reply_markup=choice_kb("ins_mode", INSTANT_MODES))
+    await state.set_state(Instant.mode)
+    await callback.message.answer("Что отправлять?", reply_markup=choice_kb("ins_mode", INSTANT_MODES))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "ins_mode"))
 async def ins_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, Instant.mode):
+        return
     await state.update_data(choice=int(callback_data.value))
-    await callback.message.answer("Упоминать всех?", reply_markup=yes_no_kb("ins_mention"))
+    await callback.message.answer(MENTION_ASK, reply_markup=yes_no_kb("ins_mention"))
     await callback.answer()
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "ins_mention"))
 async def ins_mention(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, Instant.mode):
+        return
     await state.update_data(mention_all=callback_data.value == "yes")
     await callback.answer()
 
     if callback_data.value == "yes":
-        await callback.message.answer("Кого упоминать?", reply_markup=choice_kb("ins_mmode", MMODE_OPTIONS))
+        await callback.message.answer(MENTION_WHO, reply_markup=choice_kb("ins_mmode", MMODE_OPTIONS))
     else:
         await _instant_next(callback.message, state)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "ins_mmode"))
 async def ins_mmode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, Instant.mode):
+        return
     await state.update_data(mention_mode=callback_data.value)
     await callback.answer()
     await _instant_next(callback.message, state)
@@ -354,29 +373,38 @@ async def cha_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool
     if not await ensure_workers(callback, pool):
         return
     await state.clear()
-    await callback.message.answer("Режим кампании:", reply_markup=choice_kb("cha_mode", MODE_OPTIONS))
+    await state.set_state(ChatBroadcast.mode)
+    await callback.message.answer(
+        "Что отправлять?\n💬 Ответом на сообщение — отправьте триггер ответом на нужное сообщение: "
+        "воркеры ответят на него.", reply_markup=choice_kb("cha_mode", MODE_OPTIONS))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "cha_mode"))
 async def cha_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, ChatBroadcast.mode):
+        return
     await state.update_data(choice=int(callback_data.value))
-    await callback.message.answer("Упоминать всех?", reply_markup=yes_no_kb("cha_mention"))
+    await callback.message.answer(MENTION_ASK, reply_markup=yes_no_kb("cha_mention"))
     await callback.answer()
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "cha_mention"))
 async def cha_mention(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, settings: Settings):
+    if await left_flow(callback, state, ChatBroadcast.mode):
+        return
     await state.update_data(mention_all=callback_data.value == "yes")
     await callback.answer()
 
     if callback_data.value == "yes":
-        await callback.message.answer("Кого упоминать?", reply_markup=choice_kb("cha_mmode", MMODE_OPTIONS))
+        await callback.message.answer(MENTION_WHO, reply_markup=choice_kb("cha_mmode", MMODE_OPTIONS))
     else:
         await _chat_next(callback.message, state, settings)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "cha_mmode"))
 async def cha_mmode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, settings: Settings):
+    if await left_flow(callback, state, ChatBroadcast.mode):
+        return
     await state.update_data(mention_mode=callback_data.value)
     await callback.answer()
     await _chat_next(callback.message, state, settings)

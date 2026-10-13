@@ -11,6 +11,7 @@ from telethon.tl.types.auth import SentCodeTypeApp
 
 from functions.base import TelethonFunction
 from modules import instance_lock, login as sign_in
+from modules.tdata_import import import_all
 from modules.config import load_env
 from modules.console import console
 from modules.settings import Settings
@@ -157,6 +158,30 @@ class AddByPhoneFunc(TelethonFunction):
             # the menu's workers were connected at start: so is this one, for the next items
             await self.storage.check_session(self.storage.full_sessions[path], path)
         say(sign_in.added_text(login, me, role, len(self.storage)))
+
+
+class TdataImportFunc(TelethonFunction):
+    """Import tdata"""
+
+    async def execute(self):
+        """The tdata_import/ folders startup converts (main.py), taken again without a restart; the new
+        workers join the menu's pool, as an account added by phone does."""
+        known = set(self.storage.full_sessions)
+        try:
+            imported = await import_all()
+        except Exception as err:  # e.g. too few proxies for the new accounts: nothing is converted
+            say(f"⚠️ Импорт tdata не удался: {err}")
+            return
+        if not imported:
+            say("Нечего импортировать: положите папку tdata аккаунта в tdata_import/<имя>/tdata "
+                "(пароль 2FA — в файле «Пароль 2фа….txt» рядом). Уже импортированные папки пропускаются.")
+            return
+        for name in sorted(os.listdir("sessions")):
+            path = os.path.join("sessions", name)
+            if name.endswith(".jsession") and path not in known and self.storage.add_jsession(path):
+                if self.storage.initialize:  # the menu's workers were connected at start
+                    await self.storage.check_session(self.storage.full_sessions[path], path)
+        say(f"✅ Импортировано аккаунтов: {imported}. Воркеров: {len(self.storage)}.")
 
 
 class LoginCodesFunc(TelethonFunction):

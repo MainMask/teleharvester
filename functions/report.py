@@ -9,6 +9,18 @@ from functions.base.base import console_report
 class ReportFunc(TelethonFunction):
     """Moderation report (message/post)"""
 
+    @staticmethod
+    def post_id(link: str) -> int | None:
+        """The post a link points at (t.me/<name>/<id>, t.me/c/<chat>/<id>, a forum topic's post,
+        ?comment=…), so its number needn't be typed again; None for a chat's own link or @name."""
+        parts = link.split("?")[0].rstrip("/").split("/")
+        if len(parts) >= 2 and parts[-2] == "c":  # t.me/c/<chat>: the private chat itself, as report_peer
+            return None
+        try:
+            return TelethonFunction.parse_message_link(link)[1]
+        except (ValueError, IndexError):  # @name, t.me/name: no post in it
+            return None
+
     def report_peer(self, peer):
         """The chat of a post link (t.me/<name>/<id>, t.me/c/<id>/<id>): Telethon resolves a chat's
         link or @name, but not a post link nor a -100… id (it reads one as a phone number). Anything
@@ -122,14 +134,17 @@ class ReportFunc(TelethonFunction):
         if not self.sessions:
             return
 
-        link = Prompt.ask("[bold red]ссылка на пост или канал[/]")
+        link = Prompt.ask("[bold red]ссылка на канал или чат — или сразу на пост[/]")
+        post = self.post_id(link)
         while True:
-            parts = [p.strip() for p in Prompt.ask("[bold red]id постов через запятую[/]").split(",") if p.strip()]
+            parts = [p.strip() for p in (Prompt.ask(
+                "[bold red]номера постов через запятую — число в конце ссылки на пост (t.me/name/123 → 123)[/]",
+                default=str(post) if post is not None else None) or "").split(",") if p.strip()]
             if parts and all(p.isdigit() for p in parts):
                 posts = [int(p) for p in parts]
                 break
 
-        comment = console.input("[bold red]комментарий> [/]")
+        comment = console.input("[bold red]комментарий для модераторов Telegram (необязательно)> [/]")
 
         first, rest = self.sessions[0], self.sessions[1:]
 

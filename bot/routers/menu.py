@@ -10,27 +10,28 @@ from bot.keyboards.menu import functions_kb, main_menu
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.services.registry import SECTIONS, WORKER_GROUPS, section_text
+from bot.services.registry import MAIN_MENU_HINTS, SECTIONS, WORKER_GROUPS, section_text
 
 router = Router()
 
-WELCOME = (
-    "👋 Привет, <b>{name}</b>!\n\n"
-    "Добро пожаловать в <b>teleharvester</b> — твою панель управления Telegram-аккаунтами.\n\n"
-    "🤖 Воркеров онлайн: <b>{workers}</b>\n\n"
-    "📣 <b>Рассылки</b> — в личку, в комментарии и в чаты\n"
-    "💬 <b>Активность</b> — вступления, реакции, опросы, репорты\n"
-    "🎯 <b>Аудитория</b> — скрапинг, инвайтинг, контакты\n"
-    "🤖 <b>Воркеры</b> — аккаунты, профиль, безопасность, проверка\n\n"
-    "<i>Выбери раздел в меню ниже 👇</i>"
-)
+def welcome(name: str, workers: int) -> str:
+    """The /start message: each main-menu button with what it holds (registry MAIN_MENU_HINTS)."""
+    lines = []
+    for label, hint in MAIN_MENU_HINTS.items():
+        icon, title = label.split(" ", 1)
+        lines.append(f"{icon} <b>{title}</b> — {hint}")
+    sections = "\n".join(lines)
+    return (f"👋 Здравствуйте, <b>{html.escape(name)}</b>!\n\n"
+            "Добро пожаловать в <b>teleharvester</b> — вашу панель управления Telegram-аккаунтами.\n\n"
+            f"🤖 Воркеров онлайн: <b>{workers}</b>\n\n{sections}\n\n"
+            "<i>Выберите раздел в меню ниже 👇</i>")
 
 
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext, pool: WorkerPool):
     await state.clear()
     await message.answer(
-        WELCOME.format(name=html.escape(message.from_user.first_name), workers=pool.count()),
+        welcome(message.from_user.first_name, pool.count()),
         parse_mode="HTML",
         reply_markup=main_menu(),
     )

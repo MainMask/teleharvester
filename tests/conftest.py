@@ -28,6 +28,14 @@ def _isolated_personal_accounts(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_broadcast_temp(monkeypatch, tmp_path):
+    """No test may create the real tmp/broadcast/ (as root it would be left root-owned)."""
+    from bot.services import capture
+
+    monkeypatch.setattr(capture, "BROADCAST_TMP_DIR", str(tmp_path / "broadcast"))
+
+
+@pytest.fixture(autouse=True)
 def _isolated_projects(monkeypatch, tmp_path):
     """No test may read or write the real stats/projects.json."""
     from modules import projects

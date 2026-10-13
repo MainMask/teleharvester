@@ -198,6 +198,23 @@ def _scraped(tmp_path, monkeypatch, window=None):
     return str(path)
 
 
+def test_verify_func_without_a_stored_window_does_not_crash_on_enter(tmp_path, monkeypatch):
+    _scraped(tmp_path, monkeypatch)  # an older file: no scrape window to default the dates to
+    printed = []
+    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
+    monkeypatch.setattr(scraper, "verify_run", lambda creds, params: pytest.fail("ran without dates"))
+    monkeypatch.setattr(scraper.console, "print", lambda *a, **k: printed.append(str(a[0]) if a else ""))
+    answers = iter(["1", "", "", "", ""])  # the file, the channel's default, Enter at both dates, no output file
+
+    def ask(label, *a, default=None, **k):  # as rich: Enter gives the default, None for the dates
+        return next(answers) or default
+
+    monkeypatch.setattr(scraper.Prompt, "ask", ask)
+    monkeypatch.setattr(scraper.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 0))
+    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute()  # no AttributeError out of the menu
+    assert any("Неверная дата" in p for p in printed)
+
+
 def test_ask_file_number_path_or_default(monkeypatch):
     from functions.base.base import BaseFunction
 

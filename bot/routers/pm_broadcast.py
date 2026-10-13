@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import choice_kb
-from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, ensure_workers, require_text, resolve
+from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, ensure_workers, left_flow, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PmBroadcast
@@ -20,14 +20,17 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
         return
 
     await state.clear()
+    await state.set_state(PmBroadcast.mode)
     await callback.message.answer(
         "Рассылка в ЛС. Кому отправляем?",
-        reply_markup=choice_kb("pm_mode", [("По username", "username"), ("По номеру", "phone")]),
+        reply_markup=choice_kb("pm_mode", [("🔤 По username", "username"), ("📞 По номеру", "phone")]),
     )
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "pm_mode"))
 async def pick_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, PmBroadcast.mode):
+        return
     await state.update_data(by_phone=callback_data.value == "phone")
     await state.set_state(PmBroadcast.peer)
 

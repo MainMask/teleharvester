@@ -2,6 +2,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class PmBroadcast(StatesGroup):
+    mode = State()
     peer = State()
     message = State()
 
@@ -12,6 +13,7 @@ class Invite(StatesGroup):
 
 
 class Join(StatesGroup):
+    mode = State()
     link = State()
 
 
@@ -96,12 +98,14 @@ class Comments(StatesGroup):
 
 
 class Instant(StatesGroup):
+    mode = State()
     sticker = State()
     link = State()
     message = State()
 
 
 class ChatBroadcast(StatesGroup):
+    mode = State()
     sticker = State()
     message = State()
 
@@ -133,6 +137,7 @@ class Projects(StatesGroup):
     name = State()
     channels = State()
     edit = State()
+    rename = State()
 
 
 class Members(StatesGroup):

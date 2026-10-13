@@ -16,6 +16,7 @@ from bot.keyboards.common import choice_kb
 from bot.keyboards.menu import main_menu
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
+from bot.services.registry import menu_path
 from bot.states import AddByPhone
 from modules import login as sign_in
 from modules.scraper_creds import find_account, scrape_accounts
@@ -174,8 +175,10 @@ async def phone_input(message: Message, state: FSMContext, pool: WorkerPool, per
 async def phone_resend(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     login = logins.get(callback.message.chat.id)
-    if login is None:
-        await callback.message.answer("Вход устарел — начните заново: 🤖 Воркеры → 📲 Добавить по номеру.")
+    # a menu button cleared the flow meanwhile: without its role a personal account would be saved as a worker
+    if login is None or "role" not in await state.get_data():
+        await logins.close(callback.message.chat.id)
+        await callback.message.answer(f"Вход устарел — начните заново: {menu_path('phone')}.")
         return
     try:  # as the first request: a dead proxy must not hang the button
         await asyncio.wait_for(login.client.send_code_request(login.phone), sign_in.FETCH_TIMEOUT * 2)
@@ -193,7 +196,7 @@ async def phone_resend(callback: CallbackQuery, state: FSMContext):
 async def code_input(message: Message, state: FSMContext, pool: WorkerPool, personal):
     login = logins.get(message.chat.id)
     if login is None:
-        await _end_login(message, state, "Вход устарел — начните заново: 🤖 Воркеры → 📲 Добавить по номеру.")
+        await _end_login(message, state, f"Вход устарел — начните заново: {menu_path('phone')}.")
         return
     code = sign_in.code_digits(message.text)
     await _delete(message)
@@ -230,7 +233,7 @@ async def code_input(message: Message, state: FSMContext, pool: WorkerPool, pers
 async def password_input(message: Message, state: FSMContext, pool: WorkerPool, personal):
     login = logins.get(message.chat.id)
     if login is None:
-        await _end_login(message, state, "Вход устарел — начните заново: 🤖 Воркеры → 📲 Добавить по номеру.")
+        await _end_login(message, state, f"Вход устарел — начните заново: {menu_path('phone')}.")
         return
     password = message.text  # as typed: spaces may be part of it
     await _delete(message)

@@ -385,12 +385,12 @@ class PmMailingFunc(TelethonFunction):
 
         console.print(table)
 
-    async def execute(self):
+    async def execute(self, bases=None):  # bases: a project's own (functions/projects.py)
         self.ask_accounts_count()
 
         path = self.ask_file(
             "[bold red]файл с получателями[/]",
-            scraped_files.participant_bases(),  # the scraped bases, newest first, as in the bot
+            bases or scraped_files.participant_bases(),  # the scraped bases, newest first, as in the bot
             default=os.path.join("assets", "targets.txt"),
         )
 

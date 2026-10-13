@@ -122,7 +122,7 @@ def test_the_check_offers_the_button(tmp_path):
     (text, markup), = bot.sent
     assert text.startswith("⛔ @a — ограничен бессрочно\nЕго контакты (12) ждут решения")
     button = markup.inline_keyboard[0][0]
-    assert button.text == "Передать контакты (12)"
+    assert button.text == "📤 Передать контакты (12)"
     assert ReleaseCB.unpack(button.callback_data).user_id == 7
 
 

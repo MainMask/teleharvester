@@ -1,5 +1,4 @@
 from aiogram.types import (
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
@@ -7,16 +6,20 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import CategoryCB, FunctionCB, MenuAction, MenuCB
-from bot.services.registry import RISKY, SECTIONS, WORKER_GROUPS, by_category
+from bot.services.registry import PROJECTS, RISKY, SCREENS, SECTIONS, SETTINGS, WORKER_GROUPS, WORKERS, by_category
 
-WORKERS_BUTTON = "🤖 Воркеры"
+PROJECTS_BUTTON = PROJECTS
+WORKERS_BUTTON = WORKERS
+SETTINGS_BUTTON = SETTINGS
 
 
 def main_menu() -> ReplyKeyboardMarkup:
+    """The projects on top, the sections of functions in a row, the two hub screens under them."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=SECTIONS[0]), KeyboardButton(text=SECTIONS[1])],
-            [KeyboardButton(text=SECTIONS[2]), KeyboardButton(text=WORKERS_BUTTON)],
+            [KeyboardButton(text=PROJECTS_BUTTON)],
+            [KeyboardButton(text=section) for section in SECTIONS],
+            [KeyboardButton(text=WORKERS_BUTTON), KeyboardButton(text=SETTINGS_BUTTON)],
         ],
         resize_keyboard=True,
     )
@@ -38,20 +41,12 @@ def functions_kb(category: str, back: bool = False) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def workers_kb() -> InlineKeyboardMarkup:
-    def button(text, callback_data):
-        return InlineKeyboardButton(text=text, callback_data=callback_data.pack())
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [button("📋 Список аккаунтов", MenuCB(action=MenuAction.LIST))],
-            *[[button(group, CategoryCB(index=index))] for index, group in enumerate(WORKER_GROUPS)],
-            [button("🌐 Прокси", MenuCB(action=MenuAction.PROXY)),
-             button("⏱ Задержка", MenuCB(action=MenuAction.DELAY))],
-            [button("⏳ Пауза профиля", MenuCB(action=MenuAction.PROFILE_PAUSE)),
-             button("💬 Автоответ", MenuCB(action=MenuAction.AUTOREPLY))],
-            [button("📲 Добавить по номеру", MenuCB(action=MenuAction.PHONE)),
-             button("🔑 Код входа", MenuCB(action=MenuAction.CODES))],
-            [button("📥 Загрузить tdata", MenuCB(action=MenuAction.TDATA))],
-        ]
-    )
+def screen_kb(screen: str) -> InlineKeyboardMarkup:
+    """A hub screen's buttons (registry SCREENS): an action, or a group of functions to open."""
+    builder = InlineKeyboardBuilder()
+    for button in SCREENS[screen]:
+        callback = (MenuCB(action=MenuAction(button.action)) if button.action
+                    else CategoryCB(index=WORKER_GROUPS.index(button.title)))
+        builder.button(text=button.title, callback_data=callback)
+    builder.adjust(1)
+    return builder.as_markup()

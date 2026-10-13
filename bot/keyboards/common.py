@@ -16,7 +16,7 @@ def choice_kb(scope: str, options: list[tuple[str, str]]) -> InlineKeyboardMarku
 
 
 def yes_no_kb(scope: str) -> InlineKeyboardMarkup:
-    return choice_kb(scope, [("Да", "yes"), ("Нет", "no")])
+    return choice_kb(scope, [("✅ Да", "yes"), ("❌ Нет", "no")])
 
 
 def stop_kb() -> InlineKeyboardMarkup:

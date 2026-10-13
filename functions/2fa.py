@@ -54,7 +54,14 @@ class SetPasswordFunc(TelethonFunction):
     async def execute(self):
         self.ask_workers()
 
-        password = console.input("[bold red]новый пароль> [/]")
+        while True:  # typed unseen: twice, and never empty (that would remove every account's 2FA)
+            password = console.input("[bold red]новый пароль> [/]", password=True)
+            if not password:
+                console.print("[bold red]Пароль не может быть пустым.[/]")
+                continue
+            if console.input("[bold red]повторите пароль> [/]", password=True) == password:
+                break
+            console.print("[bold red]Пароли не совпадают.[/]")
 
         with console.status("Установка пароля..."):
             await self.run(password, console_report)

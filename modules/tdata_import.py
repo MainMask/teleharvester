@@ -25,6 +25,12 @@ from modules.types.proxy import ACCOUNTS_PER_PROXY, Proxy, parse_proxies
 PROXIES_FILE = "assets/proxies.txt"  # the proxy pool, one `scheme://[user:pass@]ip:port` per line
 
 
+def save_proxies(text: str) -> None:
+    """Make `text` (one proxy per line) the pool: the phone login and the tdata import take theirs from it."""
+    with open(PROXIES_FILE, "w", encoding="utf-8") as fileobj:
+        fileobj.write("\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n")
+
+
 def load_proxies(path: str = PROXIES_FILE) -> list[Proxy]:
     """Read proxies (one per line, `scheme://[user:pass@]ip:port`) from `path`.
 

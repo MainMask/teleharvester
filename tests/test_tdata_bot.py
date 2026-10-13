@@ -5,6 +5,8 @@ import io
 import types
 import zipfile
 
+import pytest
+
 from bot.routers import accounts
 from modules.types.proxy import Proxy
 
@@ -49,7 +51,11 @@ class _Msg:
         self.document = document
         self._zip = zip_bytes
         self.replies = []
+        self.deleted = False
         self.bot = ns(download=self._download)
+
+    async def delete(self):
+        self.deleted = True
 
     async def _download(self, document):
         return io.BytesIO(self._zip)
@@ -129,7 +135,7 @@ def test_password_step_happy_path(monkeypatch):
 
     asyncio.run(accounts.tdata_password(msg, state, _Pool(storage), manager))
 
-    assert captured["password"] == "secret"
+    assert captured["password"] == "secret" and msg.deleted  # not left in the chat
     assert storage.added == "sessions/79990001122.jsession"
     assert manager.released is True
     assert state.cleared is True
@@ -229,3 +235,16 @@ def test_password_step_frees_the_slot_when_no_temp_dir(monkeypatch):
 
     assert manager.released is True
     assert any("Ошибка импорта" in r for r in msg.replies)
+
+
+def test_password_step_refuses_an_archive_that_unpacks_too_big(monkeypatch):
+    storage = _Storage()
+    msg = _Msg(text="-")
+    manager = _Manager(free=True)
+    monkeypatch.setattr(accounts, "MAX_TDATA_UNZIPPED", 1)  # the test archive's two files are 2 bytes
+    monkeypatch.setattr(accounts.zipfile.ZipFile, "extractall", lambda *a, **k: pytest.fail("unpacked"))
+
+    asyncio.run(accounts.tdata_password(msg, _State({"zip": _zip_bytes()}), _Pool(storage), manager))
+
+    assert storage.added is None and manager.released is True
+    assert any("слишком велик" in r for r in msg.replies)

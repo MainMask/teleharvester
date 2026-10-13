@@ -159,6 +159,8 @@ class ScrapeFunc(TelethonFunction):
             name=name,
             keyword=plan.keyword,
             out_dir=Path(scraped_files.BASES_DIR),
+            # as the bot's «🔢 Максимум постов»
+            max_messages=self.ask_int("[bold red]максимум постов[/]", default=ScrapeParams.max_messages, min_value=1),
             with_comments=Confirm.ask("[bold red]собирать комментарии?[/]", default=True),
             with_reactors=Confirm.ask("[bold red]собирать реакции? (медленно)[/]", default=True),
             with_participants=Confirm.ask("[bold red]пересобрать базу участников?[/]", default=True),
@@ -180,23 +182,24 @@ class ScrapeFunc(TelethonFunction):
 class VerifyFunc(TelethonFunction):
     """Verify scrape against live channel"""
 
-    def execute(self):
+    def execute(self, posts=None):  # posts: a project's own files (functions/projects.py)
         account = pick_session(self.storage, personal_storage(self.settings.api_id, self.settings.api_hash))
         if account is None:
             return
 
-        input_path = self.ask_file("[bold red]файл постов скрапа[/]", scraped_files.posts_bases())
+        input_path = self.ask_file("[bold red]файл постов скрапа[/]", posts or scraped_files.posts_bases())
         # the file's channels and the scrape's own window, when the scrape stored it
         channels, window = scraped_files.verify_presets(input_path)
         if len(channels) > 1:
             console.print(f"[bold white]каналы в файле:[/] {', '.join(channels)}")
         while True:
             channel = Prompt.ask("[bold red]канал (@name / t.me / числовой id)[/]",
-                                 default=channels[0] if channels else None)
-            if _chats_ok(account, [channel])[0]:
+                                 default=channels[0] if channels else None) or ""
+            if channel and _chats_ok(account, [channel])[0]:
                 break
-        date_min = Prompt.ask("[bold red]дата с (как в скрапе)[/]", default=window[0] if window else None)
-        date_max = Prompt.ask("[bold red]дата по (как в скрапе)[/]", default=window[1] if window else None)
+        # no stored window: Enter gives None, and parse_date says the date is missing
+        date_min = Prompt.ask("[bold red]дата с (как в скрапе)[/]", default=window[0] if window else None) or ""
+        date_max = Prompt.ask("[bold red]дата по (как в скрапе)[/]", default=window[1] if window else None) or ""
         output = Prompt.ask("[bold red]файл результата (необязательно)[/]", default="")
         comment_sample = self.ask_int("[bold red]сколько веток комментариев перепроверить[/]", default=0, min_value=0)
 

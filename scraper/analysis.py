@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from scraper.datafiles import _EXCEL_MAX_ROWS, read_table, resolve_inputs, save_table
+from scraper.datafiles import _EXCEL_MAX_ROWS, read_attrs, read_table, resolve_inputs, save_table
 
 _URL_RE = re.compile(r"http\S+|www\S+")
 # the scheme is often omitted; telegram.me (the pre-2017 domain) and telegram.dog are t.me aliases.
@@ -261,7 +261,7 @@ def participants(input_path: str, output: str, reactors: str | None = None,
         posts = pq.ParquetFile(input_path)
         _require_columns(pd.DataFrame(columns=posts.schema_arrow.names), ["Comments List"], input_path)
         present = [c for c in columns if c in posts.schema_arrow.names]
-        file_attrs = json.loads((posts.schema_arrow.metadata or {}).get(b"PANDAS_ATTRS", b"{}"))
+        file_attrs = read_attrs(input_path)
         # nullable Int64, not float64: a 64-bit access hash must not be rounded
         batches = (batch.to_pandas(types_mapper={pa.int64(): pd.Int64Dtype()}.get)
                    for batch in posts.iter_batches(batch_size=POSTS_BATCH_ROWS, columns=present))
@@ -345,7 +345,7 @@ def participants(input_path: str, output: str, reactors: str | None = None,
 
 def summary(input_path: str, output_base: str, date_col: str, group_col: str, comments_col: str) -> None:
     """Per-group monthly counts of contents, comments and their total."""
-    df = read_table(input_path)
+    df = read_table(input_path, columns=[date_col, group_col, comments_col])  # not a big scrape's texts
     _require_columns(df, [date_col, group_col, comments_col], input_path)
     if df.empty:  # a scrape that found nothing still writes its _posts file: no months to span
         raise SystemExit(f"{input_path}: нет постов.")
@@ -438,7 +438,7 @@ def filter_keywords(input_path: str, output: str, content_col: str, keywords: li
 
 def links(input_path: str, output: str) -> Path:
     """Extract, normalise and count t.me links found in Content (snowball sampling)."""
-    df = read_table(input_path)
+    df = read_table(input_path, columns=["Content"])
     _require_columns(df, ["Content"], input_path)
     found = df["Content"].fillna("").astype(str).apply(_TME_RE.findall)
     normalised = []

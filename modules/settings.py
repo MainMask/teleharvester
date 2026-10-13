@@ -76,6 +76,19 @@ def _is_pause(value) -> bool:
     return isinstance(value, list) and 1 <= len(value) <= 2 and all(_is_int(v) and v >= 0 for v in value)
 
 
+def parse_seconds(text: str | None) -> List[int] | None:
+    """[sec] or [min, max] from "7" / "5-10" (as typed in ⚙️ Настройки); None if it's no such range."""
+    try:
+        seconds = [int(part) for part in (text or "").replace(" ", "").split("-")]
+    except ValueError:  # "", "-5", "abc"
+        return None
+    return seconds if _is_pause(seconds) else None
+
+
+def seconds_text(seconds: List[int]) -> str:
+    return "–".join(str(part) for part in seconds) + " с"
+
+
 class Settings:
     def __init__(self):
         config = load_toml("config.toml")

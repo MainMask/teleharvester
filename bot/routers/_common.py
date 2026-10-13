@@ -53,6 +53,16 @@ async def read_text_document(message, max_size: int) -> str | None:
     return buffer.read().decode("utf-8", "replace")
 
 
+async def left_flow(callback, state, step) -> bool:
+    """A stale button: the chat is no longer at `step` (the State its keyboard was shown at) but in
+    another flow, or none. Says so and answers the tap; the caller then changes nothing."""
+    if await state.get_state() == step.state:
+        return False
+    await callback.answer()
+    await callback.message.answer("Флоу устарел, начните заново.")
+    return True
+
+
 async def require_text(message) -> str | None:
     """Text of a text-only FSM step, stripped; re-prompt and return None if the user
     sent a non-text message (sticker/photo/…), so the step isn't lost to AttributeError."""

@@ -1,4 +1,4 @@
-"""The auto-reply screen (🤖 Воркеры → 💬 Автоответ): on/off, the text and reply stats.
+"""The auto-reply screen (⚙️ Настройки → 📬 Автоответ): on/off, the text and reply stats.
 
 The loop itself is bot/services/autoreply.py; it reads the live Settings each round, so
 what is changed here takes effect on its next round.
@@ -18,12 +18,14 @@ from bot.routers._common import require_text
 from bot.routers.accounts import send_chunked
 from bot.services import autoreply
 from bot.services.delegation import WorkerPool
+from bot.services.registry import menu_path
 from bot.states import SetAutoreplyText
 from modules.settings import Settings
 
 router = Router()
 
 TOP_WORKERS = 10  # per-worker lines on the screen: a message holds 4096 characters
+MAX_SHOWN_TEXT = 500  # the auto-reply text's part on the screen (escaped it may grow fivefold)
 
 
 def _worker_lines(stats: dict, pool: WorkerPool) -> list[str]:
@@ -46,7 +48,8 @@ def _screen(settings: Settings, stats: dict, pool: WorkerPool) -> str:
     status = "✅ включён" if on else "⏸ выключен"
     if settings.autoreply_enabled and not settings.autoreply_text:
         status += " (нет текста)"
-    text = settings.autoreply_text and f"<blockquote>{html.escape(settings.autoreply_text)}</blockquote>"
+    shown = settings.autoreply_text[:MAX_SHOWN_TEXT] + ("…" if len(settings.autoreply_text) > MAX_SHOWN_TEXT else "")
+    text = settings.autoreply_text and f"<blockquote>{html.escape(shown)}</blockquote>"
 
     lines = [
         f"💬 <b>Автоответ</b>: {status}",
@@ -77,7 +80,7 @@ def _kb(settings: Settings, all_workers: bool) -> InlineKeyboardMarkup:
         [button(toggle, ChoiceCB(scope="autoreply", value="toggle"))],
         [button("✏️ Изменить текст", ChoiceCB(scope="autoreply", value="text"))],
         *([[button("📋 Все воркеры", ChoiceCB(scope="autoreply", value="workers"))]] if all_workers else []),
-        [button("⬅️ Назад", MenuCB(action=MenuAction.WORKERS))],
+        [button("⬅️ Назад", MenuCB(action=MenuAction.SETTINGS))],
     ])
 
 
@@ -100,7 +103,7 @@ async def autoreply_toggle(callback: CallbackQuery, settings: Settings, pool: Wo
     try:
         settings.set_autoreply_enabled(enabled)
     except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
-        await callback.answer(f"Не удалось сохранить config.toml: {err}", show_alert=True)
+        await callback.answer(f"Не удалось сохранить config.toml: {err}"[:200], show_alert=True)  # Telegram's cap
         return
     text, markup = _view(settings, pool)
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
@@ -140,6 +143,6 @@ async def autoreply_text_apply(message: Message, state: FSMContext, settings: Se
         await message.answer(f"⚠️ Не удалось сохранить config.toml: {err}")
         return
     await state.clear()
-    note = "" if settings.autoreply_enabled else "\nАвтоответ выключен — включите его в 🤖 Воркеры → 💬 Автоответ."
+    note = "" if settings.autoreply_enabled else f"\nАвтоответ выключен — включите его: {menu_path('autoreply')}."
     await message.answer(f"✅ Текст автоответа сохранён, действует со следующей проверки.{note}",
                          reply_markup=main_menu())

@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import choice_kb, yes_no_kb
-from bot.routers._common import ensure_workers, require_text, resolve
+from bot.routers._common import ensure_workers, left_flow, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Join
@@ -22,17 +22,26 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
         return
 
     await state.clear()
+    await state.set_state(Join.mode)
     await callback.message.answer(
-        "Вступление в чат. Режим:",
+        "🚪 <b>Вступление в чат</b> — куда вступят воркеры?\n\n"
+        "🚪 <b>В канал или группу по ссылке</b> — туда, куда ведёт ссылка (подходит и приглашение "
+        "t.me/+…).\n"
+        "💬 <b>В чат комментариев канала</b> — дайте ссылку на канал: воркеры вступят в его группу для "
+        "комментариев, не в сам канал. Нужно, чтобы писать в комментариях. Только публичная ссылка "
+        "(@name / t.me/name).",
+        parse_mode="HTML",
         reply_markup=choice_kb("join_mode", [
-            ("Просто вступить", "1"),
-            ("Вступить в привязанный чат", "2"),
+            ("🚪 В канал или группу по ссылке", "1"),
+            ("💬 В чат комментариев канала", "2"),
         ]),
     )
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "join_mode"))
 async def pick_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, Join.mode):
+        return
     await state.update_data(mode=callback_data.value)
     await callback.message.answer(
         f"Нажимать капчу после вступления? (каждый воркер ждёт её до {CAPTCHA_WAIT} с)",
@@ -43,6 +52,8 @@ async def pick_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
 
 @router.callback_query(ChoiceCB.filter(F.scope == "join_captcha"))
 async def pick_captcha(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    if await left_flow(callback, state, Join.mode):
+        return
     await state.update_data(captcha=callback_data.value == "yes")
     await state.set_state(Join.link)
     await callback.message.answer("Ссылка на чат/канал:")

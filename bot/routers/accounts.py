@@ -11,16 +11,15 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import choice_kb
-from bot.keyboards.menu import WORKERS_BUTTON, main_menu, workers_kb
+from bot.keyboards.menu import WORKERS_BUTTON, main_menu, screen_kb
 from bot.routers._common import ensure_workers, require_text
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.states import ImportTdata, SetDelay, SetProfilePause, SetProxy
-from functions.base.base import BaseFunction
+from bot.services.registry import WORKERS, screen_text
+from bot.states import ImportTdata, SetProxy
 from modules import login as sign_in, restricted_workers, scraped_files, tdata_import
 from modules.scraper_creds import find_account, scrape_accounts
 from modules.storages.sessions_storage import profile_order
-from modules.settings import Settings
 from modules.types.proxy import ACCOUNTS_PER_PROXY, parse_proxies
 
 router = Router()
@@ -30,6 +29,7 @@ MAX_MESSAGE = 4000   # keep each chunk under Telegram's 4096-char limit
 
 MAX_PROXY_FILE_SIZE = 256 * 1024       # a proxy list is tiny; reject anything clearly wrong
 MAX_TDATA_ZIP_SIZE = 10 * 1024 * 1024  # a tdata archive is small; cap at 10 MB
+MAX_TDATA_UNZIPPED = 100 * 1024 * 1024  # and so is what it unpacks to: a 10 MB archive mustn't fill the disk
 
 PROXY_PROMPT = (
     "Пришлите список прокси — <b>.txt файлом</b> или текстом, по одному на строку:\n"
@@ -74,38 +74,23 @@ async def send_chunked(message: Message, header: str, lines: list[str], sep: str
         await message.answer(chunk, parse_mode="HTML")
 
 
-WORKERS_HELP = (
-    "<b>📋 Список аккаунтов</b> — имя, username и номер каждого воркера, ограничения от @SpamBot; "
-    "личные аккаунты (и их удаление)\n"
-    "<b>👤 Профиль</b> — имя, username, bio, фото, видимость\n"
-    "<b>🔐 Безопасность</b> — 2FA и сброс чужих сессий\n"
-    "<b>🩺 Проверка и статистика</b> — ограничения от @SpamBot, страны номеров, очистка\n"
-    "<b>🌐 Прокси</b> — раздать прокси всем аккаунтам\n"
-    "<b>⏱ Задержка</b> — пауза между действиями воркера в рассылках и вступлениях\n"
-    "<b>💬 Автоответ</b> — ответ тем, кто ответил на рассылку в ЛС, и их сообщения сюда\n"
-    "<b>📲 Добавить по номеру</b> — войти по номеру и коду: воркер или личный аккаунт (только для скрапа)\n"
-    "<b>🔑 Код входа</b> — коды от Telegram, пришедшие воркеру или личному аккаунту (для входа с другого устройства)\n"
-    "<b>📥 Загрузить tdata</b> — добавить аккаунт из Telegram Desktop"
-)
-
-
 def _workers_screen(pool: WorkerPool) -> str:
     text = f"🤖 <b>Воркеры</b> — подключено: <b>{pool.count()}</b>"
     if pool.count() == 0:
         text += "\n\nЗагрузите tdata или добавьте сессии в <code>sessions/</code>, чтобы запускать задачи."
-    return f"{text}\n\n{WORKERS_HELP}"
+    return f"{text}\n\n{screen_text(WORKERS)}"
 
 
 @router.message(F.text == WORKERS_BUTTON)
 async def workers(message: Message, state: FSMContext, pool: WorkerPool):
     await state.clear()
-    await message.answer(_workers_screen(pool), parse_mode="HTML", reply_markup=workers_kb())
+    await message.answer(_workers_screen(pool), parse_mode="HTML", reply_markup=screen_kb(WORKERS))
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.WORKERS))
 async def back_to_workers(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await state.clear()
-    await callback.message.edit_text(_workers_screen(pool), parse_mode="HTML", reply_markup=workers_kb())
+    await callback.message.edit_text(_workers_screen(pool), parse_mode="HTML", reply_markup=screen_kb(WORKERS))
     await callback.answer()
 
 
@@ -194,14 +179,16 @@ async def _personal_at(personal, state: FSMContext, value: str):
     return find_account(scrape_accounts(None, personal), paths[index]) if 0 <= index < len(paths) else None
 
 
-async def _confirm_removal(message: Message, account, index: int):
+async def _confirm_removal(message: Message, state: FSMContext, account, index: int):
+    # the button carries an index into prm_paths, which a new 🗑 rebuilds: it removes this account only
+    await state.update_data(prm_confirm=account.path)
     await message.answer(
         f"Убрать личный аккаунт {html.escape(account.label)}?\n\n"
         f"Бот завершит авторизацию из этого файла и удалит его: <code>{html.escape(account.path)}</code>. "
         "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
         "тот Desktop тоже выйдет из аккаунта.",
         parse_mode="HTML",
-        reply_markup=choice_kb("prm_ok", [("🗑 Да, убрать", str(index)), ("Отмена", "no")]),
+        reply_markup=choice_kb("prm_ok", [("🗑 Да, убрать", str(index)), ("↩️ Отмена", "no")]),
     )
 
 
@@ -226,10 +213,10 @@ async def personal_remove_start(callback: CallbackQuery, state: FSMContext, pers
         return
     await state.update_data(prm_paths=[account.path for account in listed])  # buttons carry an index
     if len(listed) == 1:
-        await _confirm_removal(callback.message, listed[0], 0)
+        await _confirm_removal(callback.message, state, listed[0], 0)
         return
     await callback.message.answer("Какой личный аккаунт убрать?", reply_markup=choice_kb(
-        "prm_pick", [(account.label, str(i)) for i, account in enumerate(listed)]))
+        "prm_pick", [(f"👤 {account.label}", str(i)) for i, account in enumerate(listed)]))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prm_pick"))
@@ -239,7 +226,7 @@ async def personal_remove_pick(callback: CallbackQuery, callback_data: ChoiceCB,
     if account is None:  # a stale button: the list changed or another flow cleared it
         await callback.message.answer("Список устарел — откройте 📋 Список аккаунтов заново.")
         return
-    await _confirm_removal(callback.message, account, int(callback_data.value))
+    await _confirm_removal(callback.message, state, account, int(callback_data.value))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prm_ok"))
@@ -251,7 +238,7 @@ async def personal_remove(callback: CallbackQuery, callback_data: ChoiceCB, stat
         await callback.message.answer("Отменено.")
         return
     account = await _personal_at(personal, state, callback_data.value)
-    if account is None:
+    if account is None or account.path != (await state.get_data()).get("prm_confirm"):
         await callback.message.answer("Список устарел — откройте 📋 Список аккаунтов заново.")
         return
     if reason := _removal_blocked(pool, account.path):
@@ -318,8 +305,7 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
         await message.answer(f"⚠️ {err}. Пришлите больше прокси.")
         return
 
-    with open(tdata_import.PROXIES_FILE, "w", encoding="utf-8") as fileobj:
-        fileobj.write("\n".join(p.strip() for p in raw.splitlines() if p.strip()) + "\n")
+    tdata_import.save_proxies(raw)
 
     await state.clear()
 
@@ -331,85 +317,6 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
         text += f"\n⚠️ Пропущено .session-аккаунтов (без метаданных): {summary['string_sessions_skipped']}."
 
     await message.answer(text, parse_mode="HTML")
-
-
-# --- delay between actions ---------------------------------------------------
-
-def _delay_text(delay: list) -> str:
-    return "–".join(str(part) for part in delay) + " с"
-
-
-def _parse_seconds(text: str | None) -> list | None:
-    """[sec] or [min, max] from "7" / "5-10"; None if it's no such (non-negative) range."""
-    try:
-        seconds = BaseFunction.parse_delay((text or "").replace(" ", ""))
-    except ValueError:
-        return None
-    if not seconds or len(seconds) > 2 or any(part < 0 for part in seconds):
-        return None
-    return seconds
-
-
-@router.callback_query(MenuCB.filter(F.action == MenuAction.DELAY))
-async def delay_start(callback: CallbackQuery, state: FSMContext, settings: Settings):
-    await callback.answer()
-    await state.set_state(SetDelay.input)
-    await callback.message.answer(
-        f"⏱ Сейчас между действиями воркера: <b>{_delay_text(settings.delay)}</b> "
-        "(рассылки, инвайтинг, контакты, вступления, реакции, опросы, жалобы).\n\n"
-        "Пришлите новую задержку в секундах: <code>5-10</code> (случайная в диапазоне) "
-        "или <code>7</code>.",
-        parse_mode="HTML",
-    )
-
-
-@router.message(SetDelay.input)
-async def delay_apply(message: Message, state: FSMContext, settings: Settings):
-    delay = _parse_seconds(message.text)
-    if delay is None:
-        await message.answer("Нужно число или диапазон, например 5-10 или 7. Пришлите ещё раз.")
-        return
-
-    try:
-        settings.set_delay(delay)
-    except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
-        await message.answer(f"⚠️ Не удалось сохранить config.toml: {err}")
-        return
-    await state.clear()
-    await message.answer(f"✅ Задержка: {_delay_text(delay)}. Действует сразу и в CLI.", reply_markup=main_menu())
-
-
-# --- pause between accounts for profile changes ------------------------------
-
-@router.callback_query(MenuCB.filter(F.action == MenuAction.PROFILE_PAUSE))
-async def profilepause_start(callback: CallbackQuery, state: FSMContext, settings: Settings):
-    await callback.answer()
-    await state.set_state(SetProfilePause.input)
-    await callback.message.answer(
-        f"⏳ Сейчас пауза между аккаунтами при смене профиля: <b>{_delay_text(settings.profile_pause)}</b> "
-        "(имя, bio, username, 2FA, фото, канал, last seen).\n\n"
-        "Пришлите новую паузу в секундах: <code>60-180</code> (случайная в диапазоне) "
-        "или <code>120</code>.",
-        parse_mode="HTML",
-    )
-
-
-@router.message(SetProfilePause.input)
-async def profilepause_apply(message: Message, state: FSMContext, settings: Settings):
-    pause = _parse_seconds(message.text)
-    if pause is None:
-        await message.answer("Нужно число или диапазон, например 60-180 или 120. Пришлите ещё раз.")
-        return
-
-    try:
-        settings.set_profile_pause(pause)
-    except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
-        await message.answer(f"⚠️ Не удалось сохранить config.toml: {err}")
-        return
-    await state.clear()
-    await message.answer(
-        f"✅ Пауза профиля: {_delay_text(pause)}. Действует сразу и в CLI.", reply_markup=main_menu()
-    )
 
 
 # --- tdata upload ---------------------------------------------------------
@@ -459,6 +366,10 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
     if raw is None:
         return
     password = None if raw == "-" else raw
+    try:
+        await message.delete()  # don't leave the password in the chat history
+    except Exception:
+        pass
 
     data = await state.get_data()
     zip_bytes = data.get("zip")
@@ -477,6 +388,10 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
     try:
         tmp_dir = tempfile.mkdtemp(prefix="tdata_")  # inside try: a full disk must not hold the slot
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            if sum(info.file_size for info in archive.infolist()) > MAX_TDATA_UNZIPPED:
+                await message.answer("Архив слишком велик в распакованном виде для папки tdata.",
+                                     reply_markup=main_menu())
+                return
             archive.extractall(tmp_dir)
 
         tdata_dir = tdata_import.find_tdata_dir(tmp_dir)
