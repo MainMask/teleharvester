@@ -2,7 +2,7 @@ from modules.console import console
 from rich.prompt import Prompt
 
 from functions.base import TelethonFunction
-from modules.settings import parse_seconds, seconds_text
+from modules.settings import seconds_text
 
 
 class SettingsFunc(TelethonFunction):
@@ -19,18 +19,12 @@ class SettingsFunc(TelethonFunction):
                       markup=False, highlight=False)
         action = Prompt.ask("[bold red]что изменить[/]", default="")
         if action == "1":
-            delay = self._ask_seconds("задержка между действиями воркера, с: 5-10 (случайная в диапазоне) или 7")
+            delay = self.ask_seconds(
+                "[bold red]задержка между действиями воркера, с: 5-10 (случайная в диапазоне) или 7[/]")
             self._save(self.settings.set_delay, delay, "Задержка")
         elif action == "2":
-            pause = self._ask_seconds("пауза между аккаунтами при смене профиля, с: 60-180 или 120")
+            pause = self.ask_seconds("[bold red]пауза между аккаунтами при смене профиля, с: 60-180 или 120[/]")
             self._save(self.settings.set_profile_pause, pause, "Пауза профиля")
-
-    @staticmethod
-    def _ask_seconds(label: str) -> list:
-        """[sec] or [min, max], asked again until it is one (as the bot takes it)."""
-        while (seconds := parse_seconds(Prompt.ask(f"[bold red]{label}[/]"))) is None:
-            console.print("[bold red]Нужно число или диапазон, например 5-10 или 7.[/]")
-        return seconds
 
     def _save(self, setter, seconds: list, title: str):
         try:

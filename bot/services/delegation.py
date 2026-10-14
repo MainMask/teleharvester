@@ -1,8 +1,31 @@
+import asyncio
 from collections import Counter
 
 from telethon import TelegramClient
 
+from modules.storages.sessions_storage import connect_client, release_client
+
 from .registry import RISKY, BotFunction
+
+
+async def borrow(pool, client, path: str, work, timeout: float):
+    """work() on the account's own client — a worker's is the one its jobs and the auto-reply use,
+    so its key is never used from a second connection — connected for it, within `timeout`
+    (connect() too: a dead proxy must not hang the button). The account counts as busy meanwhile
+    (no scrape starts on it); one a job or the auto-reply uses stays connected, else it is released."""
+    async def run():
+        await connect_client(client)  # a no-op if a job already has it connected
+        return await work()
+
+    pool.borrowed[path] += 1  # before any await: a scrape must not start on it meanwhile
+    try:
+        return await asyncio.wait_for(run(), timeout)
+    finally:
+        pool.borrowed[path] -= 1  # before the busy check, or it would see this use itself
+        if not pool.borrowed[path]:
+            del pool.borrowed[path]
+        if not pool.busy(path):
+            await release_client(client)  # the cache would grow every use
 
 
 class HostActionBlocked(Exception):
@@ -24,8 +47,9 @@ class WorkerPool:
         self.scraping = None
         self.in_job: list = []  # the workers of the job run() is running: no scrape starts on them
         self.polling = None  # the session path autoreply is polling now: no scrape starts on it either
-        # the session paths 🔑 Код входа is reading now (path -> reads in flight: a double 🔄): nor on them
-        self.reading_codes: Counter = Counter()
+        # the session paths borrow() uses now — 🔑 Код входа, a chat names check (path -> uses in
+        # flight: a double 🔄): nor on them
+        self.borrowed: Counter = Counter()
 
     @property
     def workers(self) -> list:
@@ -43,9 +67,10 @@ class WorkerPool:
                 )
 
     def busy(self, path: str) -> bool:
-        """The account (session path) is in the job run() is running, autoreply polls it or its
-        login codes are being read."""
-        return path == self.polling or self.reading_codes[path] > 0 or any(self.storage.get_session_path(worker) == path for worker in self.in_job)
+        """The account (session path) is in the job run() is running, autoreply polls it or
+        borrow() uses it."""
+        return (path == self.polling or self.borrowed[path] > 0
+                or any(self.storage.get_session_path(worker) == path for worker in self.in_job))
 
     def delegate(self, func_instance, only=None) -> list:
         """Point a function at the workers (never the host) but the one the scraper runs

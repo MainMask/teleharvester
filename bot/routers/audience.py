@@ -2,10 +2,9 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import choice_kb
-from bot.routers._common import ensure_workers, require_text, resolve
-from modules import scraped_files
+from bot.callbacks import ChoiceCB
+from bot.keyboards.common import cancel_kb, choice_kb
+from bot.routers._common import require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import AddContacts
@@ -16,25 +15,17 @@ router = Router()
 DEFAULT_DB = "assets/contacts.parquet"
 
 
-@router.callback_query(FunctionCB.filter(F.key == "addcontacts"))
-async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await ask_base(callback.message, state, scraped_files.participant_bases())
-
-
 async def ask_base(message: Message, state: FSMContext, bases: list[tuple[str, str]]):
-    """The base to add to contacts: by button (`bases`: the newest scraped ones, or a project's —
-    bot/routers/projects.py) or a path."""
+    """The base to add to contacts, from a project's card (bot/routers/projects.py): by button
+    (`bases`: the project's) or a path."""
     await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(AddContacts.path)
     await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
     choose = "Выберите базу из скрапа ниже или укажите путь" if bases else "Путь"
     await message.answer(
         f"{choose} к .parquet («-» = {DEFAULT_DB}):",
-        reply_markup=choice_kb("contacts_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)])
-        if bases else None,
+        reply_markup=cancel_kb(AddContacts.path, choice_kb(
+            "contacts_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)]) if bases else None),
     )
 
 
@@ -61,7 +52,8 @@ async def run_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMC
 
 
 @router.message(AddContacts.path)
-async def run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager, settings: Settings):
+async def run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager,
+              settings: Settings):
     raw = await require_text(message)  # a file / photo must not fall back to the default base
     if raw is None:
         return

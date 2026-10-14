@@ -1,35 +1,42 @@
 import asyncio
 import html
 import io
+import secrets
 import shutil
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
-from bot.keyboards.common import choice_kb
-from bot.keyboards.menu import WORKERS_BUTTON, main_menu, screen_kb
-from bot.routers._common import ensure_workers, require_text
+from bot.keyboards.common import cancel_kb, choice_kb, paged_kb
+from bot.keyboards.menu import main_menu
+from bot.routers._common import ensure_workers, require_text, send_chunked
+from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.services.registry import WORKERS, screen_text
+from bot.services import screens
+from bot.services.registry import ACCOUNTS, MAIN_MENU, menu_path
 from bot.states import ImportTdata, SetProxy
-from modules import login as sign_in, restricted_workers, scraped_files, tdata_import
-from modules.scraper_creds import find_account, scrape_accounts
+from modules import login as sign_in, phone_countries, restricted_workers, scraped_files, tdata_import
+from modules.scraper_creds import card_lines, find_account, scrape_accounts
 from modules.storages.sessions_storage import profile_order
 from modules.types.proxy import ACCOUNTS_PER_PROXY, parse_proxies
 
 router = Router()
 
 GET_ME_TIMEOUT = 20  # seconds per worker when polling profiles for the accounts list
-MAX_MESSAGE = 4000   # keep each chunk under Telegram's 4096-char limit
 
 MAX_PROXY_FILE_SIZE = 256 * 1024       # a proxy list is tiny; reject anything clearly wrong
 MAX_TDATA_ZIP_SIZE = 10 * 1024 * 1024  # a tdata archive is small; cap at 10 MB
 MAX_TDATA_UNZIPPED = 100 * 1024 * 1024  # and so is what it unpacks to: a 10 MB archive mustn't fill the disk
+
+NO_WORKERS = (f"Добавьте аккаунт ({menu_path('add')}) или положите сессии в <code>sessions/</code>, "
+              "чтобы запускать задачи.")
+STALE_LIST = f"Список устарел — откройте заново: {menu_path('list')}."
 
 PROXY_PROMPT = (
     "Пришлите список прокси — <b>.txt файлом</b> или текстом, по одному на строку:\n"
@@ -60,70 +67,52 @@ def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str 
             f"👤 {username} · 🆔 <code>{me.id}</code>{premium}{mark}")
 
 
-async def send_chunked(message: Message, header: str, lines: list[str], sep: str = "\n\n"):
-    """Send header + cards (blank line between, or `sep`) in message-sized chunks."""
-    chunks, current = [], header
-    for line in lines:
-        if len(current) + len(line) + len(sep) > MAX_MESSAGE:
-            chunks.append(current)
-            current = ""
-        current += (sep if current else "") + line
-    chunks.append(current)
-
-    for chunk in chunks:
-        await message.answer(chunk, parse_mode="HTML")
-
-
-def _workers_screen(pool: WorkerPool) -> str:
-    text = f"🤖 <b>Воркеры</b> — подключено: <b>{pool.count()}</b>"
+@screens.view(ACCOUNTS)
+async def accounts_screen(message: Message, state: FSMContext, edit: bool, pool: WorkerPool, **_):
+    header = f"🤖 <b>Аккаунты</b> — воркеров подключено: <b>{pool.count()}</b>"
     if pool.count() == 0:
-        text += "\n\nЗагрузите tdata или добавьте сессии в <code>sessions/</code>, чтобы запускать задачи."
-    return f"{text}\n\n{screen_text(WORKERS)}"
-
-
-@router.message(F.text == WORKERS_BUTTON)
-async def workers(message: Message, state: FSMContext, pool: WorkerPool):
-    await state.clear()
-    await message.answer(_workers_screen(pool), parse_mode="HTML", reply_markup=screen_kb(WORKERS))
-
-
-@router.callback_query(MenuCB.filter(F.action == MenuAction.WORKERS))
-async def back_to_workers(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await state.clear()
-    await callback.message.edit_text(_workers_screen(pool), parse_mode="HTML", reply_markup=screen_kb(WORKERS))
-    await callback.answer()
+        header += f"\n\n{NO_WORKERS}"
+    await screens.show(message, ACCOUNTS, edit, header)
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.LIST))
-async def list_accounts(callback: CallbackQuery, pool: WorkerPool, manager: JobManager, personal):
+async def list_accounts(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, manager: JobManager, personal):
     await callback.answer()
-    await accounts(callback.message, pool, manager, personal)
+    await accounts(callback.message, state, pool, manager, personal)
 
 
-async def accounts(message: Message, pool: WorkerPool, manager: JobManager, personal):
-    await _list_workers(message, pool, manager)
-    await _list_personal(message, personal)
+async def accounts(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager, personal):
+    order = await _list_workers(message, pool, manager)
+    await _list_personal(message, state, pool, personal, order)
 
 
-async def _list_workers(message: Message, pool: WorkerPool, manager: JobManager):
+def _countries(storage, workers, profiles) -> str:
+    """The workers' countries, a line under the list's header; "" with no number known."""
+    countries = phone_countries.summary(phone_countries.phone_of(storage, client, me)
+                                        for client, me in zip(workers, profiles))
+    return f"\n🌍 {html.escape(countries)}" if countries else ""
+
+
+async def _list_workers(message: Message, pool: WorkerPool, manager: JobManager) -> list[str]:
+    """The workers' list; their session paths in its order ([] when it wasn't polled)."""
     count = pool.count()
 
     if count == 0:
         await message.answer(
             "👥 <b>Аккаунты</b>\n\n"
-            "🤖 Воркеров: <b>0</b>\n\n"
-            "Загрузите tdata или добавьте сессии в <code>sessions/</code>, чтобы запускать задачи.",
+            f"🤖 Воркеров: <b>0</b>\n\n{NO_WORKERS}",
             parse_mode="HTML",
         )
-        return
+        return []
 
     if not manager.acquire("Просмотр аккаунтов", cancelable=False, timeout=0):
+        workers = pool.workers  # their stored numbers only: none is polled now
         await message.answer(
-            f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>\n\n"
-            f"⛔ Идёт задача «{manager.label}». Детали аккаунтов — после её завершения.",
+            f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>{_countries(pool.storage, workers, [None] * len(workers))}"
+            f"\n\n⛔ Идёт задача «{manager.label}». Детали аккаунтов — после её завершения.",
             parse_mode="HTML",
         )
-        return
+        return []
 
     # the scraper's worker isn't polled: its auth key is in use by the scrape's own client, and
     # a second connection from another IP (a rotating proxy) risks AUTH_KEY_DUPLICATED
@@ -155,32 +144,136 @@ async def _list_workers(message: Message, pool: WorkerPool, manager: JobManager)
     header = f"👥 <b>Аккаунты</b> — всего: <b>{count}</b>"
     if restricted := sum(1 for group, _ in checks.values() if group):
         header += f" · ограничены: <b>{restricted}</b>"
+    header += _countries(pool.storage, workers, profiles)
     await send_chunked(message, header, lines)
+    return [pool.storage.get_session_path(client) for client, _ in ordered]
 
 
-# --- personal accounts (personal_sessions/): listed from their files, removable -----------
+# --- personal accounts (personal_sessions/), each account's card ---------------------------
 
-async def _list_personal(message: Message, personal):
-    """The personal accounts, as stored: one is never connected just to be listed."""
-    listed = scrape_accounts(None, personal)
+async def _list_personal(message: Message, state: FSMContext, pool: WorkerPool, personal, order=()):
+    """The personal accounts, as stored: one is never connected just to be listed; under them a
+    button for each account's card, as listed: the workers in `order` (their list's), then the personal ones."""
+    rank = {path: i for i, path in enumerate(order)}
+    listed = sorted(scrape_accounts(pool.storage, personal),
+                    key=lambda account: (account.personal, rank.get(account.path, len(rank))))
     if not listed:
         return
-    lines = [f"{i}. {html.escape(account.label)}" for i, account in enumerate(listed, 1)]
-    await message.answer(
-        f"👤 <b>Личные</b> (только для скрапа): <b>{len(listed)}</b>\n\n" + "\n".join(lines),
-        parse_mode="HTML",
-        reply_markup=choice_kb("prm_start", [("🗑 Убрать личный аккаунт", "go")]),
-    )
+    # the buttons carry an index into acc_paths and this list's token: an older list's (or card's)
+    # must not act on the account at its index now
+    token = secrets.token_hex(4)
+    labels = [f"{'👤' if account.personal else '🤖'} {account.label}" for account in listed]
+    await state.update_data(acc_paths=[account.path for account in listed], acc_labels=labels,
+                            acc_token=token)
+    text = "🗂 Карточка аккаунта — код входа, удаление личного:"
+    if own := [account for account in listed if account.personal]:
+        lines = "\n".join(f"{i}. {html.escape(account.label)}" for i, account in enumerate(own, 1))
+        text = f"👤 <b>Личные</b> (только для скрапа): <b>{len(own)}</b>\n\n{lines}\n\n{text}"
+    await message.answer(text, parse_mode="HTML", reply_markup=_cards_kb(labels, token, 0))
 
 
-async def _personal_at(personal, state: FSMContext, value: str):
-    paths = (await state.get_data()).get("prm_paths", [])
-    index = int(value)
-    return find_account(scrape_accounts(None, personal), paths[index]) if 0 <= index < len(paths) else None
+def _cards_kb(labels: list[str], token: str, page: int):
+    """The list's buttons, a page of them (keyboards.paged_kb), each with the list's token."""
+    return paged_kb("acc", [(label, f"{i}.{token}") for i, label in enumerate(labels)], page, f".{token}")
 
 
-async def _confirm_removal(message: Message, state: FSMContext, account, index: int):
-    # the button carries an index into prm_paths, which a new 🗑 rebuilds: it removes this account only
+async def _account_at(state: FSMContext, pool: WorkerPool, personal, key: str):
+    """The account of a button's key ("index.token"); None for a stale one (another list since, or a flow
+    cleared it)."""
+    index, token = key.split(".")
+    data = await state.get_data()
+    paths, index = data.get("acc_paths", []), int(index)
+    if token != data.get("acc_token") or not 0 <= index < len(paths):
+        return None
+    return find_account(scrape_accounts(pool.storage, personal), paths[index])
+
+
+def _card(pool: WorkerPool, personal, account, key: str):
+    """(text, keyboard) of an account's card: from what is stored, at once — never connected for it."""
+    storage = personal if account.personal else pool.storage
+    lines = card_lines(storage, account, html=True)
+    lines[0] = f"<b>{lines[0]}</b>"
+    if pool.scraping is not None and pool.scraping.path == account.path:
+        lines.append("⏳ занят скрапом")
+    actions = [("🔑 Код входа", f"codes.{key}")]
+    if account.personal:
+        actions.append(("🗑 Убрать", f"rm.{key}"))
+    return "\n".join(lines), choice_kb("acc_act", actions, widths=(2,))
+
+
+def _codes_text(account, codes, now: datetime) -> str:
+    lines = [f"🔑 <b>Коды входа</b> — {html.escape(account.label)}", ""]
+    if not codes:
+        lines.append(f"{sign_in.NO_CODES} и нажмите 🔄 Обновить.")
+    for code, sent_at in codes:
+        lines.append(f"<code>{sign_in.spaced(code)}</code> · {sign_in.ago(sent_at, now)}")
+    return "\n".join(lines)
+
+
+async def _codes(pool: WorkerPool, account, key: str) -> tuple[str, object]:
+    """(text, keyboard) of an account's (a worker's or a personal one's) recent login codes, in its card's place."""
+    keyboard = choice_kb("acc_act", [("🔄 Обновить", f"codes.{key}"), ("⬅️ Назад", f"card.{key}")], widths=(2,))
+    if pool.scraping is not None and pool.scraping.path == account.path:
+        # its key is in use by the scrape's own client: a second connection risks AUTH_KEY_DUPLICATED
+        return f"⏳ {html.escape(account.label)} занят скрапом — коды после его окончания.", keyboard
+    try:
+        codes = await logins.fetch_codes(pool, account.client, account.path)
+    except Exception as err:  # a dead proxy, a logged-out session: a timeout has no text
+        why = html.escape(str(err) or type(err).__name__)
+        return f"⚠️ {html.escape(account.label)}: не удалось подключиться ({why}).", keyboard
+    except asyncio.CancelledError:
+        if asyncio.current_task().cancelling():  # the bot is stopping
+            raise
+        # a job's end released this account mid-read: Telethon cancels a disconnected client's requests
+        return f"⚠️ {html.escape(account.label)}: соединение прервано — нажмите 🔄.", keyboard
+    return _codes_text(account, codes, datetime.now(timezone.utc)), keyboard
+
+
+@router.callback_query(ChoiceCB.filter(F.scope == "acc"))
+async def account_card(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool,
+                       personal):
+    await callback.answer()
+    if callback_data.value.startswith("pg."):  # ⬅️ · 📄 · ➡️: another page of the list's buttons
+        _, page, token = callback_data.value.split(".")
+        data = await state.get_data()
+        if token != data.get("acc_token"):
+            await callback.message.answer(STALE_LIST)
+            return
+        try:
+            await callback.message.edit_reply_markup(reply_markup=_cards_kb(data["acc_labels"], token, int(page)))
+        except Exception:  # 📄, the page shown: "message is not modified"
+            pass
+        return
+    account = await _account_at(state, pool, personal, callback_data.value)
+    if account is None:
+        await callback.message.answer(STALE_LIST)
+        return
+    text, markup = _card(pool, personal, account, callback_data.value)
+    await callback.message.answer(text, parse_mode="HTML", reply_markup=markup)
+
+
+@router.callback_query(ChoiceCB.filter(F.scope == "acc_act"))
+async def account_action(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool,
+                         personal):
+    """A card's button: 🔑 (and its 🔄) and ⬅️ in the card's place, 🗑 asks first."""
+    await callback.answer()
+    action, key = callback_data.value.split(".", 1)
+    account = await _account_at(state, pool, personal, key)
+    if account is None or (action == "rm" and not account.personal):
+        await callback.message.answer(STALE_LIST)
+        return
+    if action == "rm":
+        await _confirm_removal(callback.message, state, account, key)
+        return
+    text, markup = _card(pool, personal, account, key) if action == "card" else await _codes(pool, account, key)
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    except Exception:  # 🔄 with nothing new: "message is not modified"
+        pass
+
+
+async def _confirm_removal(message: Message, state: FSMContext, account, key: str):
+    # the button carries the card's key; prm_confirm, this account: it removes this account only
     await state.update_data(prm_confirm=account.path)
     await message.answer(
         f"Убрать личный аккаунт {html.escape(account.label)}?\n\n"
@@ -188,7 +281,7 @@ async def _confirm_removal(message: Message, state: FSMContext, account, index: 
         "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
         "тот Desktop тоже выйдет из аккаунта.",
         parse_mode="HTML",
-        reply_markup=choice_kb("prm_ok", [("🗑 Да, убрать", str(index)), ("↩️ Отмена", "no")]),
+        reply_markup=choice_kb("prm_ok", [("🗑 Да, убрать", key), ("↩️ Отмена", "no")]),
     )
 
 
@@ -197,36 +290,11 @@ def _removal_blocked(pool: WorkerPool, path: str) -> str | None:
     if pool.scraping is not None and pool.scraping.path == path:
         return "⛔ На этом аккаунте идёт скрап — уберите его после окончания."
     if pool.busy(path):
-        return "⛔ Бот сейчас читает коды входа этого аккаунта — повторите через несколько секунд."
+        return ("⛔ Бот сейчас читает коды входа или проверяет названия чатов на этом аккаунте — "
+                "повторите через несколько секунд.")
     if scraped_files.unfinished_scrape(path):
         return "⛔ На этом аккаунте есть незавершённый скрап — продолжить его можно только на нём."
     return None
-
-
-@router.callback_query(ChoiceCB.filter(F.scope == "prm_start"))
-async def personal_remove_start(callback: CallbackQuery, state: FSMContext, personal):
-    await callback.answer()
-    await state.clear()
-    listed = scrape_accounts(None, personal)
-    if not listed:
-        await callback.message.answer("Личных аккаунтов нет.")
-        return
-    await state.update_data(prm_paths=[account.path for account in listed])  # buttons carry an index
-    if len(listed) == 1:
-        await _confirm_removal(callback.message, state, listed[0], 0)
-        return
-    await callback.message.answer("Какой личный аккаунт убрать?", reply_markup=choice_kb(
-        "prm_pick", [(f"👤 {account.label}", str(i)) for i, account in enumerate(listed)]))
-
-
-@router.callback_query(ChoiceCB.filter(F.scope == "prm_pick"))
-async def personal_remove_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, personal):
-    await callback.answer()
-    account = await _personal_at(personal, state, callback_data.value)
-    if account is None:  # a stale button: the list changed or another flow cleared it
-        await callback.message.answer("Список устарел — откройте 📋 Список аккаунтов заново.")
-        return
-    await _confirm_removal(callback.message, state, account, int(callback_data.value))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prm_ok"))
@@ -237,9 +305,9 @@ async def personal_remove(callback: CallbackQuery, callback_data: ChoiceCB, stat
         await state.clear()
         await callback.message.answer("Отменено.")
         return
-    account = await _personal_at(personal, state, callback_data.value)
-    if account is None or account.path != (await state.get_data()).get("prm_confirm"):
-        await callback.message.answer("Список устарел — откройте 📋 Список аккаунтов заново.")
+    account = await _account_at(state, pool, personal, callback_data.value)
+    if account is None or not account.personal or account.path != (await state.get_data()).get("prm_confirm"):
+        await callback.message.answer(STALE_LIST)
         return
     if reason := _removal_blocked(pool, account.path):
         await callback.message.answer(reason)
@@ -268,10 +336,10 @@ async def proxy_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPo
         return
 
     await state.set_state(SetProxy.input)
-    await callback.message.answer(PROXY_PROMPT, parse_mode="HTML")
+    await callback.message.answer(PROXY_PROMPT, parse_mode="HTML", reply_markup=cancel_kb(SetProxy.input))
 
 
-@router.message(SetProxy.input)
+@router.message(SetProxy.input, ~F.text.in_(MAIN_MENU))
 async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager):
     if message.document is not None:
         if (message.document.file_size or 0) > MAX_PROXY_FILE_SIZE:
@@ -332,11 +400,11 @@ async def tdata_start(callback: CallbackQuery, state: FSMContext, manager: JobMa
     await state.set_state(ImportTdata.archive)
     await callback.message.answer(
         "Пришлите <b>ZIP-архив с одной папкой tdata</b> (Telegram Desktop).",
-        parse_mode="HTML",
+        parse_mode="HTML", reply_markup=cancel_kb(ImportTdata.archive),
     )
 
 
-@router.message(ImportTdata.archive)
+@router.message(ImportTdata.archive, ~F.text.in_(MAIN_MENU))
 async def tdata_archive(message: Message, state: FSMContext):
     document = message.document
 
@@ -357,10 +425,11 @@ async def tdata_archive(message: Message, state: FSMContext):
 
     await state.update_data(zip=data)
     await state.set_state(ImportTdata.password)
-    await message.answer("Введите пароль 2FA для аккаунта («-», если пароля нет):")
+    await message.answer("Введите пароль 2FA для аккаунта («-», если пароля нет):",
+                         reply_markup=cancel_kb(ImportTdata.password))
 
 
-@router.message(ImportTdata.password)
+@router.message(ImportTdata.password, ~F.text.in_(MAIN_MENU))
 async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager):
     raw = await require_text(message)  # a sticker/photo must not import with "no password"
     if raw is None:
@@ -414,7 +483,8 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
             return
 
         # an account already loaded may sit in a file not named after its phone
-        session = None if pool.storage.is_phone_exists(phone) else pool.storage.add_jsession(f"sessions/{phone}.jsession")
+        session = (None if pool.storage.is_phone_exists(phone)
+                   else pool.storage.add_jsession(f"sessions/{phone}.jsession"))
         if session is None:
             await message.answer(
                 f"ℹ️ Аккаунт +{phone} уже есть в sessions/ — файл не изменён.",

@@ -16,7 +16,7 @@ class _Bot:
         self.sent = []       # (text, reply_markup)
         self.edits = []
 
-    async def send_message(self, chat_id, text, reply_markup=None):
+    async def send_message(self, chat_id, text, reply_markup=None, **kw):
         self.sent.append((text, reply_markup))
         return ns(message_id=len(self.sent))
 
@@ -188,3 +188,21 @@ def test_a_huge_error_still_fits_the_report_in_one_message():
     report_text = bot.sent[-1][0]
     # Telegram refuses a longer message: the report and its menu would be lost
     assert len(report_text) <= 4096 and "Время:" in report_text
+
+
+def test_the_report_is_html_with_the_ids_copyable():
+    """A function's lines are plain text (the terminal prints them too): escaped here, "🆔 123" in <code>."""
+    bot = _Bot()
+    reporter = TelegramReporter(bot, 1, header="Инвайтинг <1>", min_interval=0)
+
+    async def scenario():
+        await reporter.start()
+        await reporter("[A&B] приглашён 🆔 123456789, всего: 1")
+        await reporter("[!] 🆔 -1001234567890: <ошибка>")
+        await reporter.finish("Готово ✅")
+
+    asyncio.run(scenario())
+    text = bot.edits[-1]
+    assert "[A&amp;B] приглашён 🆔 <code>123456789</code>, всего: 1" in text
+    assert "[!] 🆔 <code>-1001234567890</code>: &lt;ошибка&gt;" in text
+    assert "Задача: Инвайтинг &lt;1&gt;" in bot.sent[-1][0]

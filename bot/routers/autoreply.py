@@ -12,13 +12,12 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.callbacks import ChoiceCB, MenuAction, MenuCB
-from bot.keyboards.menu import main_menu
-from bot.routers._common import require_text
-from bot.routers.accounts import send_chunked
+from bot.callbacks import ChoiceCB, MenuAction, MenuCB, NavCB
+from bot.keyboards.common import cancel_kb
+from bot.routers._common import leave_form, require_text, send_chunked
 from bot.services import autoreply
 from bot.services.delegation import WorkerPool
-from bot.services.registry import menu_path
+from bot.services.registry import SETTINGS
 from bot.states import SetAutoreplyText
 from modules.settings import Settings
 
@@ -80,14 +79,14 @@ def _kb(settings: Settings, all_workers: bool) -> InlineKeyboardMarkup:
         [button(toggle, ChoiceCB(scope="autoreply", value="toggle"))],
         [button("✏️ Изменить текст", ChoiceCB(scope="autoreply", value="text"))],
         *([[button("📋 Все воркеры", ChoiceCB(scope="autoreply", value="workers"))]] if all_workers else []),
-        [button("⬅️ Назад", MenuCB(action=MenuAction.SETTINGS))],
+        [button("⬅️ Назад", NavCB(screen=SETTINGS))],
     ])
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.AUTOREPLY))
 async def autoreply_screen(callback: CallbackQuery, state: FSMContext, settings: Settings, pool: WorkerPool):
-    await state.clear()
-    # navigation edits the workers screen in place, as the worker groups do
+    await leave_form(callback.message, state)
+    # navigation edits the settings screen in place, as the worker groups do
     text, markup = _view(settings, pool)
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
@@ -125,14 +124,13 @@ async def autoreply_text_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SetAutoreplyText.input)
     await callback.message.answer(
         "Пришлите новый текст автоответа одним сообщением, например:\n"
-        "<code>Спасибо за ответ! Для дальнейшей связи напишите @MainMask</code>\n\n"
-        "/cancel — отмена.",
-        parse_mode="HTML",
+        "<code>Спасибо за ответ! Для дальнейшей связи напишите @MainMask</code>",
+        parse_mode="HTML", reply_markup=cancel_kb(SetAutoreplyText.input),
     )
 
 
 @router.message(SetAutoreplyText.input)
-async def autoreply_text_apply(message: Message, state: FSMContext, settings: Settings):
+async def autoreply_text_apply(message: Message, state: FSMContext, settings: Settings, pool: WorkerPool):
     text = await require_text(message)
     if text is None:
         return
@@ -143,6 +141,7 @@ async def autoreply_text_apply(message: Message, state: FSMContext, settings: Se
         await message.answer(f"⚠️ Не удалось сохранить config.toml: {err}")
         return
     await state.clear()
-    note = "" if settings.autoreply_enabled else f"\nАвтоответ выключен — включите его: {menu_path('autoreply')}."
-    await message.answer(f"✅ Текст автоответа сохранён, действует со следующей проверки.{note}",
-                         reply_markup=main_menu())
+    # the screen again, with the new text and its ▶️ Включить if it is off
+    text, markup = _view(settings, pool)
+    await message.answer(f"✅ Текст автоответа сохранён, действует со следующей проверки.\n\n{text}",
+                         parse_mode="HTML", reply_markup=markup)

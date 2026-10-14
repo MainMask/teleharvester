@@ -1,6 +1,8 @@
+import html as html_text
 import os
 from typing import NamedTuple
 
+from modules import restricted_workers
 from modules.console import console
 from modules.storages.sessions_storage import SessionsStorage
 from rich.prompt import Prompt
@@ -55,6 +57,27 @@ def _label(storage, path: str) -> str:
     phone = account.phone_number if account.phone_number.startswith("+") else f"+{account.phone_number}"
     handle = f"@{account.username}" if account.username else phone
     return f"{account.first_name} ({handle})" if account.first_name else handle
+
+
+def card_lines(storage, account: ScrapeAccount, html: bool = False) -> list[str]:
+    """An account's card, from what is stored — never connected for it: its kind, number, proxy, a worker's
+    last @SpamBot check, its file. `html`: for the bot — escaped, the number, id and file in <code> (a tap
+    copies them), else plain text for the terminal."""
+    esc = html_text.escape if html else str
+    code = (lambda value: f"<code>{html_text.escape(str(value))}</code>") if html else str
+    kind = "👤 Личный (только для скрапа)" if account.personal else "🤖 Воркер"
+    lines = [f"{kind}: {esc(account.label)}"]
+    js = storage.jsessions_paths.get(account.path) if storage is not None else None
+    if js is not None:
+        number = str(js.account.account.phone_number).lstrip("+")
+        lines.append(f"📱 {code('+' + number)} · 🆔 {code(js.account.account.user_id)}")
+        proxy = js.account.proxy
+        lines.append(f"🌐 {esc(f'{proxy.proxy_type}://{proxy.ip}:{proxy.port}')}" if proxy else "🌐 без прокси")
+    if not account.personal:
+        lines.append(esc(restricted_workers.classify(account.path, set(restricted_workers.load()),
+                                                     restricted_workers.load_status())[1]))
+    lines.append(f"📄 {code(account.path)}")
+    return lines
 
 
 def scrape_accounts(workers, personal=None) -> list[ScrapeAccount]:

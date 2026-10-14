@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import choice_kb
+from bot.keyboards.common import cancel_kb, choice_kb
 from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, ensure_workers, left_flow, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -35,7 +35,7 @@ async def pick_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     await state.set_state(PmBroadcast.peer)
 
     label = "номер телефона" if callback_data.value == "phone" else "username"
-    await callback.message.answer(f"Введите {label} получателя:")
+    await callback.message.answer(f"Введите {label} получателя:", reply_markup=cancel_kb(PmBroadcast.peer))
     await callback.answer()
 
 
@@ -46,7 +46,7 @@ async def got_peer(message: Message, state: FSMContext):
         return
     await state.update_data(peer=peer)
     await state.set_state(PmBroadcast.message)
-    await message.answer(SEND_MESSAGE_PROMPT)
+    await message.answer(SEND_MESSAGE_PROMPT, reply_markup=cancel_kb(PmBroadcast.message))
 
 
 @router.message(PmBroadcast.message)

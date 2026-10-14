@@ -15,7 +15,7 @@ from scraper.scrape import _channel_ref, group_channel
 BASES_DIR = "assets/databases"  # default scrape output; holds the <name>_participants bases
 # a bot scrape in progress, continued after a bot restart (bot/routers/scraping.py)
 SCRAPE_MARKER = os.path.join("stats", "bot_scrape.json")
-# what a scrape's file names are cut at (project_files, _scraped_files, pending_resume)
+# what a scrape's file names are cut at (project_files, pending_resume)
 FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial", "_previous")
 # the analysis tools' outputs, named after the posts file: <name>_<suffix><span>… (see output_path)
 ANALYSIS_SUFFIXES = ("links", "keywords", "comments", "summary", "sample")
@@ -56,43 +56,54 @@ def _newest(pattern: str, limit: int, skip=lambda path: False) -> list[tuple[Pat
     return found
 
 
+def row_count(path) -> int:
+    """How many rows the parquet file has (its footer: never read whole); 0 without one."""
+    try:
+        return pq.ParquetFile(path).metadata.num_rows
+    except Exception:  # none, half-written, unreadable
+        return 0
+
+
 def _rows(rows: int) -> str:
     return f"{rows:,}".replace(",", " ")
 
 
-def _scraped_files(marker: str, limit: int = 10) -> list[tuple[str, str]]:
-    """(path, label) of the scrape's <name><marker>… files in BASES_DIR, newest first.
-
-    label: "OmniBase · 01.05.2022-27.09.2026 · 48 213".
-    """
-    bases = []
-    # a verify result (<posts>_missed) is no scrape output
-    for path, rows in _newest(f"*{marker}*.parquet", limit, skip=lambda p: p.stem.endswith("_missed")):
-        name, _, span = path.stem.partition(marker)
-        parts = [name, span.strip("_"), _rows(rows)]
-        bases.append((str(path), " · ".join(part for part in parts if part)))
-    return bases
-
-
-def participant_bases(limit: int = 10) -> list[tuple[str, str]]:
-    """The scraped recipient bases (for the mailing / adding to contacts)."""
-    return _scraped_files("_participants", limit)
+def scrape_names(limit: int = 30) -> list[str]:
+    """The names the scrape's files in BASES_DIR are under (a scrape's, a members base's), newest first."""
+    names = []
+    for path, _ in _newest("*.parquet", limit * 5, skip=lambda p: p.stem.endswith("_missed")):
+        for marker in ("_posts", "_reactors", "_participants"):
+            name, found, _ = path.stem.partition(marker)
+            if found:
+                if name not in names:
+                    names.append(name)
+                break
+    return names[:limit]
 
 
-def posts_bases(limit: int = 10) -> list[tuple[str, str]]:
-    """The scraped posts files (for the verify)."""
-    return _scraped_files("_posts", limit)
+def members_base(name: str) -> Path:
+    """The members' base of `name` (scraper/members.py names it so): a project's when named after it."""
+    return Path(BASES_DIR) / f"{name}_participants_members.parquet"
 
 
-def data_files(limit: int = 20) -> list[tuple[str, str]]:
-    """(path, "file name · N строк") of every .parquet in BASES_DIR, newest first."""
-    return [(str(path), f"{path.stem} · {_rows(rows)} строк") for path, rows in _newest("*.parquet", limit)]
+def list_path(name: str) -> Path:
+    """A project's uploaded list (modules/projects.add_to_list): one @username or +phone a line."""
+    return Path(BASES_DIR) / f"{name}_participants_list.txt"
+
+
+def read_list(path) -> list[str]:
+    """The list's lines; none without the file."""
+    try:
+        return Path(path).read_text(encoding="utf-8").split()
+    except FileNotFoundError:
+        return []
 
 
 def project_files(name: str, limit: int = 50, kinds=("posts", "reactors", "participants")) -> list[tuple[str, str]]:
     """(path, label) of a project's scrape files in BASES_DIR, newest first: the posts, reactors
     and participants files (or only `kinds` of them) whose name before the marker is the project's
-    exactly (GreenBase's, not GreenBase2's). label: "posts · 01.05.2022-27.09.2026 · 48 213"."""
+    exactly (GreenBase's, not GreenBase2's). label: "posts · 01.05.2022-27.09.2026 · 48 213".
+    "list" in `kinds`: its uploaded list too, last ("list · 120") — a text file, for the mailing only."""
     files = []
     for path, rows in _newest(f"{glob.escape(name)}_*.parquet", limit, skip=lambda p: p.stem.endswith("_missed")):
         for marker in ("_posts", "_reactors", "_participants"):
@@ -102,6 +113,8 @@ def project_files(name: str, limit: int = 50, kinds=("posts", "reactors", "parti
                     parts = [marker[1:], span.strip("_"), _rows(rows)]
                     files.append((str(path), " · ".join(part for part in parts if part)))
                 break
+    if "list" in kinds and (path := list_path(name)).exists():
+        files.append((str(path), f"list · {_rows(len(read_list(path)))}"))
     return files
 
 

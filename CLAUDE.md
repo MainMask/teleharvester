@@ -47,3 +47,11 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - Hook into existing plugin/handler mechanisms instead of building parallel infrastructure.
 - Match surrounding style: naming, module layout, abstraction level.
 For any non-trivial feature: read the relevant files → propose a plan (what changes, what's added, why) → wait for approval → implement.
+
+### 6. Design Principles: SOLID, DRY, KISS, YAGNI
+**Clean structure, not ceremony.**
+- SOLID: one responsibility per unit, narrow interfaces, dependencies passed in, not hardcoded.
+- DRY: one source of truth. Reuse before writing; extract only real repetition.
+- KISS: the most straightforward solution that works.
+- YAGNI: nothing "for later".
+When they conflict, simplicity wins: a little duplication beats a premature abstraction.

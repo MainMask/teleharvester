@@ -1,1 +1,1 @@
-from .telethon import TelethonFunction
+from .telethon import TelethonFunction as TelethonFunction  # re-exported: from functions.base import TelethonFunction

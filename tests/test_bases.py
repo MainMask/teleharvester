@@ -8,9 +8,11 @@ from pathlib import Path
 import pandas as pd
 
 from bot.callbacks import ChoiceCB
+from bot.keyboards.common import cancel_kb
 from bot.routers import audience, broadcasts
 from bot.routers import scraping as scraping_router
 from bot.services import scraping
+from bot.states import Analysis, PmMailing, Verify
 from modules import scraped_files
 
 
@@ -67,13 +69,12 @@ def _bases_dir(tmp_path, monkeypatch):
     return old, new
 
 
-def test_bases_newest_first_with_row_counts(tmp_path, monkeypatch):
+def test_a_project_s_bases_with_row_counts_and_the_scrapes_newest_first(tmp_path, monkeypatch):
     old, new = _bases_dir(tmp_path, monkeypatch)
 
-    assert scraped_files.participant_bases() == [
-        (new, "OmniBase · 01.05.2022-27.09.2026 · 1 234"),
-        (old, "Old · 01.01.2026-31.01.2026 · 3"),
-    ]
+    assert scraped_files.project_files("OmniBase", kinds=("participants",)) == [
+        (new, "participants · 01.05.2022-27.09.2026 · 1 234")]
+    assert scraped_files.scrape_names() == ["OmniBase", "Old"]  # by their newest file
 
 
 def test_a_base_removed_while_listing_is_left_out(tmp_path, monkeypatch):
@@ -82,12 +83,12 @@ def test_a_base_removed_while_listing_is_left_out(tmp_path, monkeypatch):
     found = [Path(old), Path(new), gone]
     monkeypatch.setattr(scraped_files.Path, "glob", lambda self, pattern: iter(found))
 
-    assert [path for path, _ in scraped_files.participant_bases()] == [new, old]
+    assert scraped_files.scrape_names() == ["OmniBase", "Old"]
 
 
 def test_no_bases_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path / "missing"))
-    assert scraped_files.participant_bases() == []
+    assert scraped_files.scrape_names() == [] and scraped_files.project_files("OmniBase") == []
 
 
 def _buttons(markup):
@@ -97,9 +98,8 @@ def _buttons(markup):
 def test_mailing_offers_bases_and_takes_the_picked_one(tmp_path, monkeypatch):
     old, new = _bases_dir(tmp_path, monkeypatch)
     state, callback = _State(), _Callback()
-    pool = ns(count=lambda: 1, workers=[object()])
 
-    asyncio.run(broadcasts.mail_start(callback, state, pool))
+    asyncio.run(broadcasts.ask_recipients(callback.message, state, [(new, "OmniBase"), (old, "Old")]))
     _, markup = callback.message.answers[0]
     assert [b.text for b in _buttons(markup)][0].startswith("📄 OmniBase")
     assert state.data["bases"] == [new, old]
@@ -110,12 +110,12 @@ def test_mailing_offers_bases_and_takes_the_picked_one(tmp_path, monkeypatch):
     assert pick.message.answers[0][0] == "Пропустить тех, кому уже писали раньше?"
 
 
-def test_mailing_without_bases_has_no_keyboard(tmp_path, monkeypatch):
+def test_mailing_without_bases_offers_only_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     callback = _Callback()
-    asyncio.run(broadcasts.mail_start(callback, _State(), ns(count=lambda: 1, workers=[object()])))
+    asyncio.run(broadcasts.ask_recipients(callback.message, _State(), []))  # a project with no base yet
     text, markup = callback.message.answers[0]
-    assert markup is None and "выберите базу" not in text
+    assert markup == cancel_kb(PmMailing.path) and "выберите базу" not in text
 
 
 def test_contacts_button_launches_with_the_picked_base(tmp_path, monkeypatch):
@@ -270,6 +270,22 @@ def test_split_queues_by_owner():
     unknown = [dict(r, owner_id=999) for r in ROWS]
     assert fn.split_queues(unknown) == [([a, b], unknown)]  # owner isn't a worker
     assert fn.split_queues(["@x"]) == [([a, b], ["@x"])]    # a .txt list has no owner
+
+
+def test_split_queues_a_base_of_two_owners():
+    """A members base collected again by another worker (scraper/members.py merges them): each
+    person without a username goes to the worker that listed them, whose hash it is."""
+    from functions.pmmailing import PmMailingFunc
+
+    a, b, c = _Session(1, "a"), _Session(2, "b"), _Session(3, "c")
+    fn = PmMailingFunc(_WorkerStorage([a, b, c]), ns(delay=[0]))
+    fn.sessions = [a, b, c]
+    rows = [{"user_id": 10, "access_hash": 11, "username": "", "owner_id": 1},
+            {"user_id": 20, "access_hash": 22, "username": "", "owner_id": 2},
+            {"user_id": 30, "access_hash": 33, "username": "carol", "owner_id": 2}]
+
+    # the shared queue: the owners last, as with one owner
+    assert fn.split_queues(rows) == [([a], [rows[0]]), ([b], [rows[1]]), ([c, a, b], [rows[2]])]
 
 
 def test_split_queues_contacts_ledger_wins():
@@ -539,7 +555,7 @@ def test_preflight_excludes_a_permanently_restricted_worker(monkeypatch, tmp_pat
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
     assert any("его контакты (1) ждут решения" in m for m in msgs)
     assert ("Контакты бессрочно ограниченных воркеров ждут решения (1 чел.): "
-            "🤖 Воркеры → 🩺 Проверка и обслуживание → 🛡 Проверка статуса (SpamBot)") in msgs
+            "🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)") in msgs
     assert not any(m.startswith("✅") for m in msgs)
 
 
@@ -608,14 +624,18 @@ def _posts(dir_, name, mtime, window=None, groups=("@omni",)):
     return str(path)
 
 
-def test_posts_bases_lists_only_posts_files(tmp_path, monkeypatch):
+def test_a_project_s_posts_files_are_only_its_posts_files(tmp_path, monkeypatch):
     _bases_dir(tmp_path, monkeypatch)  # two _participants bases + one _posts file (mtime 3000)
-    newer = _posts(tmp_path, "New_posts_01.01.2026-02.01.2026.parquet", 4_000)
-    _posts(tmp_path, "New_posts_01.01.2026-02.01.2026_missed.parquet", 5_000)  # a verify result
+    newer = _posts(tmp_path, "OmniBase_posts_01.01.2026-02.01.2026.parquet", 4_000)
+    _posts(tmp_path, "OmniBase_posts_01.01.2026-02.01.2026_missed.parquet", 5_000)  # a verify result
 
-    assert [label for _, label in scraped_files.posts_bases()] == [
-        "New · 01.01.2026-02.01.2026 · 1", "OmniBase · 01.05.2022-27.09.2026 · 5"]
-    assert scraped_files.posts_bases()[0][0] == newer
+    posts = scraped_files.project_files("OmniBase", kinds=("posts",))
+    assert [label for _, label in posts] == ["posts · 01.01.2026-02.01.2026 · 1", "posts · 01.05.2022-27.09.2026 · 5"]
+    assert posts[0][0] == newer
+
+
+def _deps():
+    return dict(pool=_one_account(), personal=None, scrapes=None)
 
 
 def _one_account():
@@ -628,20 +648,21 @@ def _one_account():
 def test_verify_offers_posts_files(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     path = _posts(tmp_path, "Omni_posts_01.05.2022-27.09.2026.parquet", 1_000)
-    state, callback = _State(), _Callback()
+    _posts(tmp_path, "Other_posts_01.05.2022-27.09.2026.parquet", 2_000)  # another project's
+    state, msg = _State(), _Msg()
 
-    asyncio.run(scraping_router.verify_start(callback, state, _one_account(), None, None))
-    _, markup = callback.message.answers[0]
-    assert [b.text for b in _buttons(markup)] == ["📄 Omni · 01.05.2022-27.09.2026 · 1"]
+    asyncio.run(scraping_router.verify_project(msg, state, ns(name="Omni"), _deps()))
+    _, markup = msg.answers[0]
+    assert [b.text for b in _buttons(markup)] == ["📄 posts · 01.05.2022-27.09.2026 · 1", "✖️ Отмена"]
     assert state.data["files"] == [path]
 
 
 def test_verify_without_posts_files_explains(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    callback = _Callback()
-    asyncio.run(scraping_router.verify_start(callback, _State(), _one_account(), None, None))
-    text, markup = callback.message.answers[0]
-    assert markup is None and "нет файлов с постами" in text
+    msg = _Msg()
+    asyncio.run(scraping_router.verify_project(msg, _State(), ns(name="Omni"), _deps()))
+    text, markup = msg.answers[0]
+    assert markup == cancel_kb(Verify.input) and "нет файлов с постами" in text
 
 
 def _verify_calls(monkeypatch):
@@ -669,7 +690,7 @@ def test_verify_channel_button_runs_with_the_scrape_window(tmp_path, monkeypatch
                                                 _one_account(), None))
     _, markup = pick.message.answers[0]
     assert [b.text for b in _buttons(markup)] == [
-        "▶️ @omni · 01.05.2022–27.09.2026", "▶️ -100123 · 01.05.2022–27.09.2026"]
+        "▶️ @omni · 01.05.2022–27.09.2026", "▶️ -100123 · 01.05.2022–27.09.2026", "✖️ Отмена"]
 
     run = _Callback()
     asyncio.run(scraping_router.verify_channel_pick(
@@ -688,7 +709,7 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
 
     msg = _Msg()
     asyncio.run(scraping_router._ask_channel(msg, state, _one_account(), None, path))
-    assert [b.text for b in _buttons(msg.answers[0][1])] == ["📢 @omni"]
+    assert [b.text for b in _buttons(msg.answers[0][1])] == ["📢 @omni", "✖️ Отмена"]
 
     pick = _Callback()
     asyncio.run(scraping_router.verify_channel_pick(
@@ -700,28 +721,38 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
 def test_verify_channel_buttons_carry_the_channels_titles(tmp_path, monkeypatch):
     import conftest
     from scraper.scrape import ChatInfo
+    from test_sync import _borrow_offline
 
-    async def lookup_chats(creds, chats):
+    pool, asked_on = _one_account(), []
+
+    async def lookup_on(client, chats):
+        asked_on.append(client)
         return [ChatInfo("@omni", "«Omni»", None), ChatInfo("-100123", None, "нет доступа")]
 
     monkeypatch.setattr(scraping_router, "_lookup", conftest.REAL_BOT_LOOKUP)
-    monkeypatch.setattr(scraping_router, "lookup_chats", lookup_chats)
-    monkeypatch.setattr(scraping_router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(scraping_router, "lookup_on", lookup_on)
+    monkeypatch.setattr(scraping_router, "borrow", _borrow_offline)
     path = _posts(tmp_path, "Omni_posts_x.parquet", 1_000, window=("2022-05-01", "2026-09-27"),
                   groups=("@omni", "@c123"))
     msg = _Msg()
-    asyncio.run(scraping_router._ask_channel(msg, _State({"account": "sessions/w.jsession"}),
-                                             _one_account(), None, path))
+    state = _State({"account": "sessions/w.jsession", "only_project": "Omni"})
+    asyncio.run(scraping_router._ask_channel(msg, state, pool, None, path))
+    assert asked_on == pool.workers  # the worker's own client, the one its jobs use: no second connection
     text, markup = msg.answers[-1]
     assert [b.text for b in _buttons(markup)] == [  # not found: as in the file, marked
-        "▶️ «Omni» · 01.05.2022–27.09.2026", "⚠️ -100123 · 01.05.2022–27.09.2026"]
-    assert text.endswith("\n\n⚠️ -100123 — нет доступа")  # why, for that one only
+        "▶️ «Omni» · 01.05.2022–27.09.2026", "⚠️ -100123 · 01.05.2022–27.09.2026", "✖️ Отмена"]
+    assert text.endswith("\n\n2. <code>-100123</code>\n⚠️ нет доступа")  # why, for that one only, as its button
 
 
 def test_verify_typed_path_that_can_t_be_read_asks_the_channel(tmp_path):
     msg, state = _Msg(), _State()
     asyncio.run(scraping_router._ask_channel(msg, state, _one_account(), None, str(tmp_path / "missing.parquet")))
-    assert msg.answers == [("Канал (@name / t.me / числовой id):", None)]
+    assert msg.answers == [("Канал (@name / t.me / числовой id):", cancel_kb(Verify.channel))]
+
+    typo = _Msg()
+    typo.text = "канал омни"  # never asked on an account: typed again
+    asyncio.run(scraping_router.verify_channel(typo, state, _one_account(), None))
+    assert typo.answers[0][0].startswith("Не похоже на канал: «канал омни»") and "channel" not in state.data
 
 
 # --- analysis: Russian buttons, a file by button, results named and placed automatically ----
@@ -739,16 +770,22 @@ def _analysis_run(monkeypatch):
     return JobManager(), sent
 
 
+def _project_analysis(name="Omni"):
+    """A project's analysis menu was opened: its state, and the token its buttons carry."""
+    return _State({"only_project": name, "analysis_token": "t0"}), "t0"
+
+
 def test_analysis_menu_is_russian():
-    callback = _Callback()
-    asyncio.run(scraping_router.analysis_start(callback, _State()))
-    text, markup = callback.message.answers[0]
+    msg, state = _Msg(), _State()
+    asyncio.run(scraping_router.analysis_project(msg, state, ns(name="Omni")))
+    text, markup = msg.answers[0]
     labels = [b.text for b in _buttons(markup)]
     assert labels == ["🔗 Ссылки на другие каналы", "🔎 Поиск постов по словам", "👀 Посмотреть файл", "➕ Ещё"]
     assert "Аккаунты не нужны" in text
 
     more = _Callback()
-    asyncio.run(scraping_router.analysis_tool(more, ChoiceCB(scope="an_tool", value="more"), _State()))
+    token = state.data["analysis_token"]
+    asyncio.run(scraping_router.analysis_tool(more, ChoiceCB(scope="an_tool", value=f"more.{token}"), state))
     assert [b.text for b in _buttons(more.message.answers[0][1])] == [
         "🧩 Объединить файлы постов", "💬 Комментарии одной таблицей",
         "📊 Активность по месяцам", "🎲 Случайная выборка постов", "👥 Пересобрать базу участников"]
@@ -786,13 +823,13 @@ def test_analysis_links_by_button(tmp_path, monkeypatch):
 
     monkeypatch.setattr(analysis, "links", links)
     manager, sent = _analysis_run(monkeypatch)
-    state = _State()
+    state, token = _project_analysis()
 
     tool = _Callback()
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="links"), state))
+    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"links.{token}"), state))
     text, markup = tool.message.answers[0]
     assert "Ссылки на другие каналы" in text and [b.text for b in _buttons(markup)] == [
-        "📄 Omni · 01.05.2022-27.09.2026 · 1"]
+        "📄 posts · 01.05.2022-27.09.2026 · 1", "✖️ Отмена"]
 
     pick = _Callback()
     asyncio.run(scraping_router.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
@@ -801,6 +838,20 @@ def test_analysis_links_by_button(tmp_path, monkeypatch):
     assert any("5 — https://t.me/a" in r for r in replies)
     assert sent == [str(tmp_path / "Omni_links_01.05.2022-27.09.2026.xlsx")]
     assert manager.active is False
+
+
+def test_the_analysis_has_a_slot_of_its_own():
+    """It reads files in a child process, no account: a days-long mailing must not hold it up. aiogram
+    hands a handler the dispatcher's value of its parameter's name: `analyses` (bot/app.py), not `manager`."""
+    import inspect
+
+    import bot.app as app
+
+    for handler in (scraping_router.analysis_file_pick, scraping_router.analysis_file_text,
+                    scraping_router.analysis_keywords):
+        parameters = inspect.signature(handler).parameters
+        assert "analyses" in parameters and "manager" not in parameters
+    assert 'dp["analyses"] = JobManager()' in inspect.getsource(app.run_bot)
 
 
 def test_analysis_filter_asks_for_words(tmp_path, monkeypatch):
@@ -829,12 +880,14 @@ def test_analysis_filter_asks_for_words(tmp_path, monkeypatch):
     assert sent == [str(tmp_path / "Omni_keywords_unique.xlsx")]
 
 
-def test_analysis_read_offers_every_file(tmp_path, monkeypatch):
+def test_analysis_read_offers_every_file_of_the_project(tmp_path, monkeypatch):
     _bases_dir(tmp_path, monkeypatch)
-    state, tool = _State(), _Callback()
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="read"), state))
+    (state, token), tool = _project_analysis("OmniBase"), _Callback()
+    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"read.{token}"), state))
     labels = [b.text for b in _buttons(tool.message.answers[0][1])]
-    assert labels[0] == "📄 OmniBase_posts_01.05.2022-27.09.2026 · 5 строк" and len(labels) == 3
+    # its posts and its base, not Old's
+    assert labels == ["📄 posts · 01.05.2022-27.09.2026 · 5", "📄 participants · 01.05.2022-27.09.2026 · 1 234",
+                      "✖️ Отмена"]
 
     manager, _ = _analysis_run(monkeypatch)
     pick = _Callback()
@@ -846,16 +899,17 @@ def test_analysis_combine_all_posts_files(tmp_path, monkeypatch):
     from scraper import analysis
 
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    a = _posts(tmp_path, "A_posts.parquet", 1_000)
-    b = _posts(tmp_path, "B_posts.parquet", 2_000)
-    _posts(tmp_path, "B_posts_missed.parquet", 3_000)  # a verify result: not merged
+    a = _posts(tmp_path, "P_posts_01.01.2026-02.01.2026.parquet", 1_000)
+    b = _posts(tmp_path, "P_posts_03.01.2026-04.01.2026.parquet", 2_000)
+    _posts(tmp_path, "P_posts_03.01.2026-04.01.2026_missed.parquet", 3_000)  # a verify result: not merged
+    _posts(tmp_path, "Q_posts.parquet", 4_000)  # another project's
     seen = []
     monkeypatch.setattr(analysis, "combine", lambda inputs, output, cols: seen.append((inputs, output)))
     manager, _ = _analysis_run(monkeypatch)
-    state, tool = _State(), _Callback()
+    (state, token), tool = _project_analysis("P"), _Callback()
 
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="combine"), state))
-    assert [x.text for x in _buttons(tool.message.answers[0][1])] == ["🗂 Все файлы постов (2)"]
+    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"combine.{token}"), state))
+    assert [x.text for x in _buttons(tool.message.answers[0][1])] == ["🗂 Все файлы постов (2)", "✖️ Отмена"]
 
     asyncio.run(scraping_router.analysis_file_pick(
         _Callback(), ChoiceCB(scope="an_file", value="all"), state, manager))
@@ -864,10 +918,19 @@ def test_analysis_combine_all_posts_files(tmp_path, monkeypatch):
 
 def test_analysis_without_posts_files_explains(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    tool = _Callback()
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="links"), _State()))
+    (state, token), tool = _project_analysis(), _Callback()
+    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"links.{token}"), state))
     text, markup = tool.message.answers[0]
-    assert markup is None and "нет файлов с постами" in text
+    assert markup == cancel_kb(Analysis.file) and "нет файлов с постами" in text
+
+
+def test_an_analysis_button_without_its_project_s_token_is_stale():
+    """The tools' menu of the section without a project (gone): its buttons carry no token."""
+    from bot.routers._common import STALE_BUTTON
+
+    tool = _Callback()
+    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="links"), _project_analysis()[0]))
+    assert tool.message.answers == [(STALE_BUTTON, None)]
 
 
 # --- mid-run: a worker out for good hands its people over; a passing limit keeps them ---------
@@ -1037,7 +1100,8 @@ def test_adding_contacts_leaves_a_worker_on_hold_its_people(tmp_path):
 
     assert v.added == [] and w.added == []  # alice is W's already; the no-username one is W's base
     assert contacts_ledger.load() == {"1": OWNER}
-    assert "Уже в контактах (пропущено): 1" in msgs and "Ждут своего воркера (он не участвует в этом запуске): 1" in msgs
+    assert "Уже в контактах (пропущено): 1" in msgs
+    assert "Ждут своего воркера (он не участвует в этом запуске): 1" in msgs
     assert not any("база другого аккаунта" in m or "Внимание" in m for m in msgs)
 
 

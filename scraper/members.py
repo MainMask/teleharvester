@@ -125,8 +125,24 @@ async def _run(creds: Credentials, params: MembersParams) -> tuple[dict, list[tu
     return members, problems
 
 
+def _with_previous(df: pd.DataFrame, path: Path) -> pd.DataFrame:
+    """The base collected before under the same name keeps its people: the new list is added to it,
+    a person in both as listed now (its hash is the listing account's: Owner ID, per row)."""
+    if not path.exists():
+        return df
+    try:
+        old = pd.read_parquet(path)
+        merged = pd.concat([old, df], ignore_index=True).drop_duplicates("ID", keep="last")
+    except Exception as exc:  # half-written, or not a members base: the new list replaces it
+        print(f"  ! the previous base can't be read ({exc}): replaced")
+        return df
+    print(f"  added to the previous base: {len(merged) - len(old)} new")
+    return merged.reset_index(drop=True)
+
+
 def run(creds: Credentials, params: MembersParams) -> tuple[Path | None, list[tuple[str, str]]]:
-    """List the chats' members into <out_dir>/<name>_participants_members.parquet.
+    """List the chats' members into <out_dir>/<name>_participants_members.parquet, added to the base
+    there (a project's, collected again: its people are kept).
 
     Returns (the file, or None if nobody was listed; [(chat, problem)])."""
     members, problems = asyncio.run(_run(creds, params))
@@ -142,6 +158,8 @@ def run(creds: Credentials, params: MembersParams) -> tuple[Path | None, list[tu
     df["ID"] = df["ID"].astype("Int64")
     if params.owner_id is not None:
         df["Owner ID"] = pd.array([params.owner_id] * len(df), dtype="Int64")
-    path = save_table(df, params.out_dir / f"{params.name}_participants_members", "parquet")
+    target = params.out_dir / f"{params.name}_participants_members"
+    df = _with_previous(df, target.with_name(target.name + ".parquet"))
+    path = save_table(df, target, "parquet")
     print(f"Members: {path}  ({len(df)} people)")
     return path, problems

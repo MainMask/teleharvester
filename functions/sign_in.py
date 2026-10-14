@@ -39,12 +39,18 @@ def run_standalone(func_class, *args):
 
 
 class AddByPhoneFunc(TelethonFunction):
-    """Add an account by phone"""
+    """Add an account"""
 
     async def execute(self):
-        say("[1] Воркер — в пул для рассылок и задач\n"
-            "[2] Личный — только для скрапа (personal_sessions/)")
+        """As the bot's ➕ Добавить: by phone, a worker or a personal account; or the
+        tdata_import/ folders (TdataImportFunc)."""
+        say("[1] Воркер — по номеру: в пул для рассылок и задач\n"
+            "[2] Личный — по номеру: только для скрапа (personal_sessions/)\n"
+            "[3] Воркер — из tdata (папки tdata_import/)")
         choice = console.input("[bold white]>> [/]").strip()
+        if choice == "3":
+            await TdataImportFunc(self.storage, self.settings).execute()
+            return
         if choice not in ("1", "2"):
             say("Нет такого пункта.")
             return

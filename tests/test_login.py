@@ -1,5 +1,5 @@
 """Login codes and adding an account by phone (modules/login.py, bot/services/login.py,
-bot/routers/login.py)."""
+bot/routers/login.py; the codes, from an account's card: bot/routers/accounts.py)."""
 
 import asyncio
 import json
@@ -11,7 +11,7 @@ import pytest
 from telethon import errors
 from telethon.tl.types.auth import SentCodeTypeApp
 
-from bot.routers import login as router
+from bot.routers import accounts, login as router
 from bot.services import login as logins
 from bot.states import AddByPhone
 from modules import login as sign_in
@@ -67,7 +67,7 @@ class _Worker:
 
 
 def _pool(busy=False, scraping=None):
-    return ns(busy=lambda path: busy, scraping=scraping, reading_codes=Counter())
+    return ns(busy=lambda path: busy, scraping=scraping, borrowed=Counter())
 
 
 def test_free_worker_read_then_disconnected_and_cache_cleared():
@@ -117,7 +117,7 @@ def test_a_double_refresh_keeps_the_account_connected_until_the_last_read():
         return await asyncio.gather(logins.fetch_codes(pool, worker, path), logins.fetch_codes(pool, worker, path))
     first, second = asyncio.run(both())
     assert first == second and len(first) == 1
-    assert not worker.connected and not pool.busy(path) and path not in pool.reading_codes
+    assert not worker.connected and not pool.busy(path) and path not in pool.borrowed
 
 
 def test_a_read_cut_by_a_release_says_so(monkeypatch):
@@ -126,19 +126,19 @@ def test_a_read_cut_by_a_release_says_so(monkeypatch):
         raise asyncio.CancelledError
     monkeypatch.setattr(logins, "fetch_codes", cut)
     account = ns(path="sessions/w.jsession", label="W", client=_Worker())
-    text, markup = asyncio.run(router._codes(_pool(), account, 0))
+    text, markup = asyncio.run(accounts._codes(_pool(), account, 0))
     assert "соединение прервано" in text and markup is not None
 
 
 def test_scraping_worker_is_not_connected():
     worker = _Worker()
     account = ns(path="sessions/w.jsession", label="W", client=worker)
-    text, _ = asyncio.run(router._codes(_pool(scraping=ns(path=account.path)), account, 0))
+    text, _ = asyncio.run(accounts._codes(_pool(scraping=ns(path=account.path)), account, 0))
     assert "занят скрапом" in text and not worker.connected
 
 
 def test_codes_text_spaces_digits():
-    text = router._codes_text(ns(label="Ann (@ann)"), [("12345", NOW - timedelta(minutes=3))], NOW)
+    text = accounts._codes_text(ns(label="Ann (@ann)"), [("12345", NOW - timedelta(minutes=3))], NOW)
     assert "<code>1 2 3 4 5</code> · 3 мин назад" in text and "12345" not in text
 
 
@@ -403,20 +403,18 @@ def test_known_number_gets_no_personal_code(monkeypatch, where):
     assert client.codes_sent == 0 and state.cleared and logins._logins == {}
 
 
-def test_codes_offer_the_personal_accounts_first():
+def test_the_cards_offer_the_workers_then_the_personal_accounts():
     worker, me = ns(), ns()
     workers = ns(sessions=[worker], jsessions_paths={}, get_session_path=lambda c: "sessions/w.session")
     personal = ns(sessions=[me], jsessions_paths={}, get_session_path=lambda c: "personal_sessions/me.session")
-    callback = ns(message=ns(), answer=lambda *a, **k: asyncio.sleep(0))
     sent = []
 
     async def answer(text, **kw):
         sent.append([b.text for row in kw["reply_markup"].inline_keyboard for b in row])
-    callback.message.answer = answer
     state = _State()
-    asyncio.run(router.codes_start(callback, state, ns(storage=workers), personal))
-    assert sent == [["👤 me.session", "🤖 w.session"]]
-    assert state.data["code_paths"] == ["personal_sessions/me.session", "sessions/w.session"]
+    asyncio.run(accounts._list_personal(ns(answer=answer), state, ns(storage=workers), personal))
+    assert sent == [["🤖 w.session", "👤 me.session"]]  # as listed: the workers first
+    assert state.data["acc_paths"] == ["sessions/w.session", "personal_sessions/me.session"]
 
 
 def test_cancel_closes_the_sign_in_at_once(monkeypatch):

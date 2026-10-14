@@ -123,7 +123,6 @@ class ReportMessage(StatesGroup):
 
 
 class Scrape(StatesGroup):
-    name = State()
     resume = State()
     channels = State()
     date_min = State()
@@ -138,11 +137,11 @@ class Projects(StatesGroup):
     channels = State()
     edit = State()
     rename = State()
+    upload = State()
 
 
 class Members(StatesGroup):
     chats = State()
-    name = State()
 
 
 class Verify(StatesGroup):

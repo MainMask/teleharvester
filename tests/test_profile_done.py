@@ -271,6 +271,7 @@ def test_cli_picker_says_why_it_asks_again():
     profile_done.seed(["only"])  # changed already: no new ones for Enter to take
     printed = []
     with patch("functions.base.telethon.Prompt.ask", side_effect=["", "all"]), \
-            patch("functions.base.telethon._report_console.print", side_effect=lambda *a, **k: printed.append(str(a[0]))):
+            patch("functions.base.telethon._report_console.print",
+                  side_effect=lambda *a, **k: printed.append(str(a[0]))):
         ChangeBioFunc(storage, ns()).ask_workers()
     assert any("Никого не выбрано" in line for line in printed)

@@ -9,13 +9,14 @@ import unicodedata
 
 from bot.callbacks import MenuAction
 from bot.keyboards.common import yes_no_kb
-from bot.keyboards.menu import functions_kb, main_menu, screen_kb
+from bot.keyboards.menu import main_menu, screen_kb
 from bot.routers import broadcasts
 from bot.routers.scraping import ANALYSIS
 from bot.services.registry import (
-    BOT_FUNCTIONS, BOT_FUNCTIONS_BY_KEY, CLI_EXTRAS, MAIN_MENU_HINTS, SCREENS, SECTIONS, SETTINGS, WORKER_GROUPS,
-    WORKERS, menu_path, screen_text,
+    ACCOUNTS, BOT_FUNCTIONS, BOT_FUNCTIONS_BY_KEY, CLI_EXTRAS, MAIN_MENU, NOT_MENU_ITEMS, PROJECT_CARD, PROJECT_MANAGE,
+    SCREENS, children, menu_path,
 )
+from bot.services.screens import screen_text
 
 
 def _starts_with_emoji(text: str) -> bool:
@@ -23,7 +24,7 @@ def _starts_with_emoji(text: str) -> bool:
 
 
 def _texts(markup):
-    rows = getattr(markup, "inline_keyboard", None) or markup.keyboard
+    rows = markup.inline_keyboard if hasattr(markup, "inline_keyboard") else markup.keyboard
     return [button.text for row in rows for button in row]
 
 
@@ -34,11 +35,13 @@ def test_every_function_has_an_emoji_and_a_description():
 
 
 def test_every_menu_button_starts_with_an_emoji():
-    texts = _texts(main_menu()) + _texts(yes_no_kb("x"))
+    from bot.keyboards.common import cancel_kb
+    from bot.routers.login import add_kb
+    from bot.states import SetDelay
+
+    texts = _texts(main_menu()) + _texts(yes_no_kb("x")) + _texts(cancel_kb(SetDelay.input)) + _texts(add_kb())
     for screen in SCREENS:
         texts += _texts(screen_kb(screen))
-    for section in (*SECTIONS, *WORKER_GROUPS):
-        texts += _texts(functions_kb(section, back=section in WORKER_GROUPS))
     texts += [label for label, _ in broadcasts.MODE_OPTIONS + broadcasts.INSTANT_MODES + broadcasts.MMODE_OPTIONS]
     texts += [label for label, *_ in ANALYSIS.values()]
     from functions.report_user import ReportUserFunc
@@ -46,29 +49,29 @@ def test_every_menu_button_starts_with_an_emoji():
     assert [text for text in texts if not _starts_with_emoji(text)] == []
 
 
-def test_every_main_menu_button_is_described_and_opens_something():
-    assert list(MAIN_MENU_HINTS) == _texts(main_menu())
-    assert all(hint.strip() for hint in MAIN_MENU_HINTS.values())
-    from bot.services.registry import PROJECTS
-
-    assert set(MAIN_MENU_HINTS) == {PROJECTS, *SECTIONS, *SCREENS}  # the projects, a section or a hub screen
+def test_every_screen_is_described_and_the_main_menu_is_the_screens_without_a_parent():
+    assert list(MAIN_MENU) == _texts(main_menu())
+    assert all(screen.hint.strip() for screen in SCREENS.values())
 
 
 def test_every_screen_button_is_described_on_its_screen_and_does_something():
+    from bot.services.registry import PROJECTS
+
     actions = {action.value for action in MenuAction}
-    for screen, buttons in SCREENS.items():
-        text = screen_text(screen)
-        for button in buttons:
+    for title, screen in SCREENS.items():
+        if title == PROJECTS:  # its own list and cards (bot/routers/projects.py)
+            continue
+        text = screen_text(title)
+        for button in screen.buttons:
             assert button.hint.strip() and f"<b>{button.title}</b> — {button.hint}" in text
-            assert button.action in actions or button.title in WORKER_GROUPS, button.title
-    # every group of functions is on the workers screen; settings hold no function groups
-    assert {b.title for b in SCREENS[WORKERS] if not b.action} == set(WORKER_GROUPS)
-    assert all(b.action for b in SCREENS[SETTINGS])
+            assert button.action in actions, button.title
+        for child in children(title):
+            assert f"<b>{child}</b> — {SCREENS[child].hint}" in text
 
 
-def test_the_cli_workers_items_are_the_bot_s_buttons():
-    titles = {button.title for button in SCREENS[WORKERS]}
-    assert [f.title for f in CLI_EXTRAS if f.category == WORKERS and f.title not in titles] == ["🗑 Убрать личный аккаунт"]  # CLI only
+def test_the_cli_accounts_items_are_the_bot_s_buttons():
+    titles = {button.title for button in SCREENS[ACCOUNTS].buttons}
+    assert {f.title for f in CLI_EXTRAS if f.category == ACCOUNTS} == titles
 
 
 def test_every_analysis_tool_is_described():
@@ -76,17 +79,27 @@ def test_every_analysis_tool_is_described():
 
 
 def test_menu_path_finds_functions_and_screen_buttons():
-    assert menu_path("status") == "🤖 Воркеры → 🩺 Проверка и обслуживание → 🛡 Проверка статуса (SpamBot)"
-    assert menu_path("invite") == "💬 Активность → 🤝 Инвайтинг из чата"
+    assert menu_path("status") == "🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)"
+    assert menu_path("2fa") == "🤖 Аккаунты → 🛠 Обслуживание → 🔒 Установить 2FA"
+    assert menu_path("invite") == "💬 Активность → 🤝 Инвайтинг"
     assert menu_path("autoreply") == "⚙️ Настройки → 📬 Автоответ"
-    assert menu_path("phone") == "🤖 Воркеры → 📲 Добавить по номеру"
-    actions = {b.action for buttons in SCREENS.values() for b in buttons if b.action}
+    assert menu_path("members") == "📁 Проекты → карточка проекта → 👥 Участники чата"
+    assert "projects" not in BOT_FUNCTIONS_BY_KEY  # 📁 Проекты: a main-menu button; the CLI's item (CLI_EXTRAS)
+    assert menu_path("add") == "🤖 Аккаунты → ➕ Добавить"
+    actions = {b.action for screen in SCREENS.values() for b in screen.buttons}
     assert not actions & set(BOT_FUNCTIONS_BY_KEY)  # one key, one place
+
+
+def test_the_card_s_functions_are_its_own_and_its_screen_says_what_each_button_does():
+    on_card = {BOT_FUNCTIONS_BY_KEY[b.function].classname for row in PROJECT_CARD for b in row if b.function}
+    # not menu items of their own: run from a card or ➕ Добавить
+    assert set(NOT_MENU_ITEMS) == on_card | {"ScrapeFunc", "TdataImportFunc", "LoginCodesFunc"}
+    assert all(b.hint for row in PROJECT_MANAGE for b in row)
 
 
 def test_no_message_types_a_menu_path_by_hand():
     """A path typed by hand outlives a moved or renamed button: messages use menu_path."""
-    hubs = tuple(f"{label} →" for label in MAIN_MENU_HINTS)
+    hubs = tuple(f"{label} →" for label in MAIN_MENU)
     typed = []
     for path in glob.glob("bot/**/*.py", recursive=True) + glob.glob("functions/**/*.py", recursive=True):
         if path.endswith("registry.py"):
@@ -107,6 +120,7 @@ class _Screen:
 
     def __init__(self, text=None):
         self.text, self.answers = text, []
+        self.chat = types.SimpleNamespace(id=1)
         self.message = self  # a callback's .message
 
     async def answer(self, text=None, **kwargs):
@@ -125,30 +139,37 @@ class _Clean:
 def test_every_screen_of_the_main_menu_starts_with_an_emoji(monkeypatch, tmp_path):
     import asyncio
 
-    from bot.routers import accounts, menu, projects as projects_menu, scraping, settings as settings_menu
+    from bot.routers import menu, scraping
+    from bot.services.registry import ACTIVITY, PROJECTS, SETTINGS
     from modules import projects
 
-    texts = []
-    for section in SECTIONS:
-        msg = _Screen(section)
-        asyncio.run(menu.show_section(msg, _Clean()))
-        texts += msg.answers
-    for has_projects in (False, True):  # the list says one thing when it's empty, another when not
-        if has_projects:
-            projects.add("Green", ["@a"])
-        msg = _Screen()
-        asyncio.run(projects_menu.projects_menu(msg, _Clean()))
-        texts += msg.answers
-    msg = _Screen()
-    asyncio.run(accounts.workers(msg, _Clean(), types.SimpleNamespace(count=lambda: 1)))
-    texts += msg.answers
-    msg = _Screen()
-    asyncio.run(settings_menu.settings_screen(msg, _Clean(), types.SimpleNamespace(
-        delay=[2, 5], profile_pause=[60, 180], autoreply_enabled=False, autoreply_text="")))
-    texts += msg.answers
+    deps = dict(pool=types.SimpleNamespace(count=lambda: 1), settings=types.SimpleNamespace(
+        delay=[2, 5], profile_pause=[60, 180], autoreply_enabled=False, autoreply_text=""))
+
+    def opened(title):
+        msg = _Screen(title)
+        asyncio.run(menu.open_from_menu(msg, _Clean(), **deps))
+        return msg.answers
+
+    texts = opened(ACTIVITY) + opened(PROJECTS)  # the projects' list says one thing when it's empty,
+    projects.add("Green", ["@a"])
+    texts += opened(PROJECTS) + opened(ACCOUNTS) + opened(SETTINGS)  # another when not
     callback = _Screen()
-    asyncio.run(scraping.analysis_start(callback, _Clean()))  # the analysis is a screen of tools too
+    asyncio.run(scraping.analysis_project(callback, _Clean(), types.SimpleNamespace(name="P")))  # a screen of tools too
     texts += callback.answers
 
-    assert len(texts) == len(SECTIONS) + 5
+    assert len(texts) == 6
     assert [text[:40] for text in texts if not _starts_with_emoji(text.removeprefix("<b>"))] == []
+
+
+def test_a_long_choice_is_paged_under_telegram_s_100_buttons():
+    from bot.callbacks import ChoiceCB
+    from bot.keyboards.common import PAGE_SIZE, paged_kb
+
+    options = [(f"🤖 w{i}", str(i)) for i in range(130)]
+    rows = paged_kb("x", options, 0, ".t").inline_keyboard
+    assert len(rows) == PAGE_SIZE + 1 and [b.text for b in rows[-1]] == ["⬅️", "📄 стр 1/7", "➡️"]
+    assert [ChoiceCB.unpack(b.callback_data).value for b in rows[-1]] == ["pg.6.t", "pg.0.t", "pg.1.t"]  # round
+    last = paged_kb("x", options, 6).inline_keyboard
+    assert [b.text for row in last[:-1] for b in row] == [f"🤖 w{i}" for i in range(120, 130)]
+    assert len(paged_kb("x", options[:PAGE_SIZE], 0).inline_keyboard) == PAGE_SIZE  # one page: no ⬅️ · ➡️

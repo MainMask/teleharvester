@@ -7,6 +7,8 @@ failure there used to raise past every function's per-worker get_me guard and en
 import asyncio
 import types
 
+from python_socks import ProxyError
+
 from functions.changebio import ChangeBioFunc
 from functions.clear_chats import ClearDialogsFunc
 from functions.pmmailing import PmMailingFunc
@@ -16,15 +18,16 @@ from modules.storages.sessions_storage import SessionsStorage
 
 
 class _Worker:
-    def __init__(self, name, dead=False):
+    def __init__(self, name, dead=False, error=None):
         self.name, self.dead = name, dead
+        self.error = error or ConnectionError("Connection to Telegram failed 5 time(s)")
         self.connected = False
         self.requests = []
         self.session = types.SimpleNamespace(_entities=set())
 
     async def connect(self):
         if self.dead:
-            raise ConnectionError("Connection to Telegram failed 5 time(s)")
+            raise self.error
         self.connected = True
 
     async def disconnect(self):
@@ -107,6 +110,41 @@ def test_mailing_rotates_past_the_dead_worker(tmp_path, monkeypatch):
     fn.sessions = [dead, ok]
 
     async def no_check(report):  # the @SpamBot pre-check is not under test here
+        pass
+
+    monkeypatch.setattr(fn, "check_workers", no_check)
+    msgs, report = _messages()
+
+    asyncio.run(fn.run(["alice", "bob"], RichContent(text="hi"), [0], report))
+
+    assert [peer for _, peer in ok.requests] == ["alice", "bob"]
+
+
+# the proxy answers but refuses (bad login, its upstream down): python_socks' ProxyError is no
+# OSError, and Telethon doesn't retry it — it must not end the job either
+PROXY_REFUSED = ProxyError("Host unreachable", error_code=4)
+
+
+def test_refusing_proxy_does_not_raise(tmp_path):
+    storage, dead = _storage(tmp_path), _Worker("dead", dead=True, error=PROXY_REFUSED)
+
+    async def use():
+        async with storage.ainitialize_session(dead):
+            return "inside"
+
+    assert asyncio.run(use()) == "inside"
+
+
+def test_mailing_rotates_past_a_refusing_proxy(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm.json"))
+    monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "limits.json"))
+    dead, ok = _Worker("dead", dead=True, error=PROXY_REFUSED), _Worker("ok")
+    settings = types.SimpleNamespace(delay=[0], per_account_daily=0, account_pause=[0])
+    fn = PmMailingFunc(_storage(tmp_path), settings)
+    fn.sessions = [dead, ok]
+
+    async def no_check(report):
         pass
 
     monkeypatch.setattr(fn, "check_workers", no_check)

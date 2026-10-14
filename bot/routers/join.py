@@ -3,8 +3,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import choice_kb, yes_no_kb
-from bot.routers._common import ensure_workers, left_flow, require_text, resolve
+from bot.keyboards.common import cancel_kb, choice_kb, yes_no_kb
+from bot.routers._common import STALE_STEP, ensure_workers, left_flow, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Join
@@ -56,7 +56,7 @@ async def pick_captcha(callback: CallbackQuery, callback_data: ChoiceCB, state: 
         return
     await state.update_data(captcha=callback_data.value == "yes")
     await state.set_state(Join.link)
-    await callback.message.answer("Ссылка на чат/канал:")
+    await callback.message.answer("Ссылка на чат/канал:", reply_markup=cancel_kb(Join.link))
     await callback.answer()
 
 
@@ -77,7 +77,7 @@ async def got_link(
     await state.clear()
 
     if "mode" not in data:  # stale flow after a state clear
-        await message.answer("Флоу устарел, начните заново.")
+        await message.answer(STALE_STEP)
         return
 
     instance, bot_function = resolve(functions, "join")

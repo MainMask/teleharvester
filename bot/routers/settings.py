@@ -3,35 +3,32 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import MenuAction, MenuCB
-from bot.keyboards.menu import SETTINGS_BUTTON, main_menu, screen_kb
-from bot.services.registry import SETTINGS, screen_text
+from bot.keyboards.common import cancel_kb
+from bot.keyboards.menu import screen_kb
+from bot.services import screens
+from bot.services.registry import SETTINGS
 from bot.states import SetDelay, SetProfilePause
 from modules.settings import Settings, parse_seconds, seconds_text
 
 router = Router()
 
-# ⚙️ Настройки: what the bot writes back to config.toml (the CLI reads it too). The auto-reply's
-# own screen is bot/routers/autoreply.py.
+# ⚙️ Настройки: the delays the bot writes back to config.toml (the CLI reads them too), and the
+# auto-reply kept there too: its own screen, bot/routers/autoreply.py.
+
+
+def _header(settings: Settings) -> str:
+    autoreply = "включён" if settings.autoreply_enabled and settings.autoreply_text else "выключен"
+    return (f"⚙️ <b>Настройки</b> — задержка <b>{seconds_text(settings.delay)}</b> · "
+            f"пауза профиля <b>{seconds_text(settings.profile_pause)}</b> · автоответ <b>{autoreply}</b>")
 
 
 def _settings_screen(settings: Settings) -> str:
-    autoreply = "вкл" if settings.autoreply_enabled and settings.autoreply_text else "выкл"
-    return (f"⚙️ <b>Настройки</b> — задержка <b>{seconds_text(settings.delay)}</b> · пауза профиля "
-            f"<b>{seconds_text(settings.profile_pause)}</b> · автоответ <b>{autoreply}</b>\n\n{screen_text(SETTINGS)}")
+    return screens.screen_text(SETTINGS, _header(settings))
 
 
-@router.message(F.text == SETTINGS_BUTTON)
-async def settings_screen(message: Message, state: FSMContext, settings: Settings):
-    await state.clear()
-    await message.answer(_settings_screen(settings), parse_mode="HTML", reply_markup=screen_kb(SETTINGS))
-
-
-@router.callback_query(MenuCB.filter(F.action == MenuAction.SETTINGS))
-async def back_to_settings(callback: CallbackQuery, state: FSMContext, settings: Settings):
-    await state.clear()
-    # navigation edits the screen in place, as the workers screen does
-    await callback.message.edit_text(_settings_screen(settings), parse_mode="HTML", reply_markup=screen_kb(SETTINGS))
-    await callback.answer()
+@screens.view(SETTINGS)  # by ⬅️ from the auto-reply's screen too: the settings come back in its place
+async def settings_screen(message: Message, state: FSMContext, edit: bool, settings: Settings, **_):
+    await screens.show(message, SETTINGS, edit, _header(settings))
 
 
 # --- delay between actions ---------------------------------------------------
@@ -45,7 +42,7 @@ async def delay_start(callback: CallbackQuery, state: FSMContext, settings: Sett
         "(рассылки, инвайтинг, контакты, вступления, реакции, опросы, жалобы).\n\n"
         "Пришлите новую задержку в секундах: <code>5-10</code> (случайная в диапазоне) "
         "или <code>7</code>.",
-        parse_mode="HTML",
+        parse_mode="HTML", reply_markup=cancel_kb(SetDelay.input),
     )
 
 
@@ -62,7 +59,11 @@ async def delay_apply(message: Message, state: FSMContext, settings: Settings):
         await message.answer(f"⚠️ Не удалось сохранить config.toml: {err}")
         return
     await state.clear()
-    await message.answer(f"✅ Задержка: {seconds_text(delay)}. Действует сразу и в CLI.", reply_markup=main_menu())
+    # the settings screen again, with the new value: the one above still shows the old
+    await message.answer(
+        f"✅ Задержка: {seconds_text(delay)}. Действует сразу и в CLI.\n\n{_settings_screen(settings)}",
+        parse_mode="HTML", reply_markup=screen_kb(SETTINGS),
+    )
 
 
 # --- pause between accounts for profile changes ------------------------------
@@ -76,7 +77,7 @@ async def profilepause_start(callback: CallbackQuery, state: FSMContext, setting
         "(имя, bio, username, 2FA, фото, канал, last seen).\n\n"
         "Пришлите новую паузу в секундах: <code>60-180</code> (случайная в диапазоне) "
         "или <code>120</code>.",
-        parse_mode="HTML",
+        parse_mode="HTML", reply_markup=cancel_kb(SetProfilePause.input),
     )
 
 
@@ -94,5 +95,6 @@ async def profilepause_apply(message: Message, state: FSMContext, settings: Sett
         return
     await state.clear()
     await message.answer(
-        f"✅ Пауза профиля: {seconds_text(pause)}. Действует сразу и в CLI.", reply_markup=main_menu()
+        f"✅ Пауза профиля: {seconds_text(pause)}. Действует сразу и в CLI.\n\n{_settings_screen(settings)}",
+        parse_mode="HTML", reply_markup=screen_kb(SETTINGS),
     )

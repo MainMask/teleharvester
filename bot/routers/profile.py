@@ -7,8 +7,8 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import choice_kb
-from bot.routers._common import ensure_workers, read_text_document, require_text, resolve
+from bot.keyboards.common import cancel_kb, choice_kb
+from bot.routers._common import STALE_BUTTON, ensure_workers, read_text_document, require_text, resolve
 from bot.services.registry import BOT_FUNCTIONS_BY_KEY
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -76,7 +76,8 @@ def _workers_kb(labels: list[str], picked: list[int], page: int):
     nav = []
     if pages > 1:
         nav = [("⬅️", "prev"), (f"📄 стр {page + 1}/{pages}", "page"), ("➡️", "next")]
-    for text, value in [*nav, ("☑️ Все", "all"), ("⬜ Никого", "none"), ("🆕 Ещё не менялись", "new"), ("▶️ Далее", "go")]:
+    for text, value in [*nav, ("☑️ Все", "all"), ("⬜ Никого", "none"), ("🆕 Ещё не менялись", "new"),
+                        ("▶️ Далее", "go")]:
         builder.button(text=text, callback_data=ChoiceCB(scope="wpick", value=value))
     builder.adjust(*[1] * (min(first + PAGE_SIZE, len(labels)) - first), *([3] if nav else []), 3, 1)
     return builder.as_markup()
@@ -153,7 +154,7 @@ async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
 @router.callback_query(ChoiceCB.filter(F.scope == "wpick"))
 async def workers_pick_stale(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.answer("Флоу устарел, начните заново.")
+    await callback.message.answer(STALE_BUTTON)
 
 
 async def _picked(state: FSMContext) -> list[str] | None:
@@ -206,7 +207,7 @@ async def _bio_prompt(message: Message, state: FSMContext, deps: dict):
     await message.answer(
         "Введите новый текст bio для выбранных аккаунтов — или пришлите .txt со списком вариантов, "
         "по одному на строку: каждый аккаунт получит случайный.",
-        reply_markup=_file_kb("bio_file", BIOS_FILE),
+        reply_markup=cancel_kb(ChangeBio.text, _file_kb("bio_file", BIOS_FILE)),
     )
 
 
@@ -259,7 +260,7 @@ async def _name_prompt(message: Message, state: FSMContext, deps: dict):
     await message.answer(
         "Введите имя для выбранных аккаунтов (напр. «Иван Петров») — или пришлите .txt со списком "
         "имён, по одному на строку: каждый аккаунт получит случайное.",
-        reply_markup=_file_kb("name_file", NAMES_FILE),
+        reply_markup=cancel_kb(ChangeName.manual, _file_kb("name_file", NAMES_FILE)),
     )
 
 
@@ -313,7 +314,7 @@ async def _username_prompt(message: Message, state: FSMContext, deps: dict):
     await message.answer(
         "База для username (если занята — добавится случайное число: base24, base3071, …) — или пришлите .txt "
         "со списком username, по одному на строку: аккаунты получат их по порядку.",
-        reply_markup=_file_kb("username_file", USERNAMES_FILE),
+        reply_markup=cancel_kb(ChangeUsername.base, _file_kb("username_file", USERNAMES_FILE)),
     )
 
 
@@ -326,7 +327,8 @@ async def username_from_file(callback: CallbackQuery, state: FSMContext, pool: W
         return
     only = await _picked(state)
     await state.clear()
-    await _run("username", callback.message, pool, functions, manager, only, usernames=[u.lstrip("@") for u in usernames])
+    await _run("username", callback.message, pool, functions, manager, only,
+               usernames=[u.lstrip("@") for u in usernames])
 
 
 @router.message(ChangeUsername.base, F.document)
@@ -365,12 +367,13 @@ async def _photo_prompt(message: Message, state: FSMContext, deps: dict):
     await state.set_state(ChangePhoto.photo)
     await message.answer(
         "Пришлите картинку (фото или файлом) — она станет аватаром выбранных аккаунтов, прежние аватарки удалятся:",
-        reply_markup=choice_kb("photo_src", [("📁 Из папки assets/photos", "folder")]),
+        reply_markup=cancel_kb(ChangePhoto.photo, choice_kb("photo_src", [("📁 Из папки assets/photos", "folder")])),
     )
 
 
 @router.callback_query(ChangePhoto.photo, ChoiceCB.filter(F.scope == "photo_src"))
-async def photo_folder(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+async def photo_folder(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
+                       manager: JobManager):
     await callback.answer()
     only = await _picked(state)
     await state.clear()
@@ -456,7 +459,7 @@ async def twofa_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPo
 
 async def _twofa_prompt(message: Message, state: FSMContext, deps: dict):
     await state.set_state(SetPassword.password)
-    await message.answer("Введите новый пароль 2FA:")
+    await message.answer("Введите новый пароль 2FA:", reply_markup=cancel_kb(SetPassword.password))
 
 
 @router.message(SetPassword.password)

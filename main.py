@@ -5,7 +5,7 @@ import sys
 from modules.console import console
 from rich.markup import escape
 
-from bot.services.registry import RISK_NOTE, RISKY, cli_menu
+from bot.services.registry import NOT_MENU_ITEMS, RISK_NOTE, RISKY, cli_menu
 
 from modules import instance_lock, updater
 from modules.config import load_env
@@ -16,27 +16,36 @@ from modules.tdata_import import import_all
 
 
 def menu_entries(functions) -> list:
-    """[(section, instance, title, hint, risky)] in the bot's order and words; a function
-    the registry doesn't know goes to «Прочее» under its docstring."""
+    """[(section, instance, title, hint, risky, group)] in the bot's order and words; a function
+    the registry doesn't know goes to «Прочее» under its docstring (one run from another item only,
+    NOT_MENU_ITEMS, nowhere)."""
     by_class = {type(instance).__name__: (instance, doc) for instance, doc in functions}
     entries = []
     for section, items in cli_menu():
         for item in items:
             if item.classname in by_class:
                 instance, _ = by_class.pop(item.classname)
-                entries.append((section, instance, item.title, item.hint, item.risk == RISKY))
-    for instance, doc in by_class.values():
-        entries.append(("Прочее", instance, doc or type(instance).__name__, "", False))
+                entries.append((section, instance, item.title, item.hint, item.risk == RISKY, item.group))
+    for classname, (instance, doc) in by_class.items():
+        if classname not in NOT_MENU_ITEMS:
+            entries.append(("Прочее", instance, doc or type(instance).__name__, "", False, ""))
     return entries
 
 
 def print_menu(entries) -> None:
-    section = None
-    for number, (entry_section, _, title, hint, risky) in enumerate(entries, 1):
+    # a section whose every item is risky: ⚠️ once, on its title, as in the bot (registry.risk_marker)
+    all_risky = {}
+    for entry_section, _, _, _, risky, _ in entries:
+        all_risky[entry_section] = all_risky.get(entry_section, True) and risky
+    section = group = None
+    for number, (entry_section, _, title, hint, risky, entry_group) in enumerate(entries, 1):
         if entry_section != section:
-            section = entry_section
-            console.print(f"\n[bold magenta]{escape(section)}[/]")
-        marker = "⚠️ " if risky else ""
+            section, group = entry_section, ""
+            console.print(f"\n[bold magenta]{escape(section)}[/]" + (" ⚠️" if all_risky[section] else ""))
+        if entry_group != group:  # a subheading, as in the bot's section message
+            group = entry_group
+            console.print(f"  [italic]{escape(group)}[/]")
+        marker = "⚠️ " if risky and not all_risky[entry_section] else ""
         line = f"  \\[{number}] {marker}[bold white]{escape(title)}[/]"
         console.print(line + (f" — {escape(hint)}" if hint else ""))
     console.print(f"\n[italic]{escape(RISK_NOTE)}[/]")
@@ -44,7 +53,8 @@ def print_menu(entries) -> None:
 
 def main() -> None:
     if "utf-8" not in (locale.getlocale()[1] or "").lower():
-        console.print("[bold yellow]ВНИМАНИЕ:[/] кодировка терминала не UTF-8 — teleharvester может работать некорректно")
+        console.print("[bold yellow]ВНИМАНИЕ:[/] кодировка терминала не UTF-8 — teleharvester может работать "
+                      "некорректно")
 
     # not while the bot runs: the same worker sessions and stats/; before the update check,
     # so a `git pull` + `pip install` never runs under a live bot
@@ -62,7 +72,8 @@ def main() -> None:
 
         console.print(
             "[yellow]{current_commit}[/] → [green]{upcoming_commit}[/] : [white]{message}[/]"
-            .format(current_commit=current_commit[:8] if current_commit else "неизвестно", upcoming_commit=upcoming_commit[:8], message=message)
+            .format(current_commit=current_commit[:8] if current_commit else "неизвестно",
+                    upcoming_commit=upcoming_commit[:8], message=message)
         )
 
         install_choice = console.input("[bold white]Установить? (y/n) >> [/]")

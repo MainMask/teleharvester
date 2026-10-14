@@ -1,6 +1,7 @@
 """Async Telegram scraper (terminal port of the original notebook cells 1-3)."""
 
 import asyncio
+import html as html_text
 import json
 import re
 import shutil
@@ -122,8 +123,11 @@ async def connect(creds: Credentials, entity_cache: Path | None = None) -> Teleg
         raise
     if not authorized:
         await client.disconnect()
-        raise SystemExit("сессия аккаунта больше не авторизована — добавьте аккаунт заново")
+        raise SystemExit(NOT_AUTHORIZED)
     return client
+
+
+NOT_AUTHORIZED = "сессия аккаунта больше не авторизована — добавьте аккаунт заново"
 
 # In-run automatic resume: restart a channel from the last checkpointed message
 # id when a connection error escapes iter_messages.
@@ -450,6 +454,26 @@ def parse_channels(raw: str) -> list[str]:
     return [c.strip() for c in re.split(r"[,\s]+", raw) if c.strip()]
 
 
+# what a typed channel or group can be: an @username (with or without the @), a t.me link (an
+# invite, t.me/c/…, a post's), a numeric id. Its length is left to the check on an account, which
+# follows at once: this catches what can't be a chat at all — a dash, a word in Cyrillic, a stray sign
+_CHANNEL_FORMS = (re.compile(r"@?[A-Za-z][A-Za-z0-9_]{0,31}"),
+                  re.compile(r"(?i:(?:https?://)?(?:www\.)?(?:t\.me|telegram\.(?:me|dog)))/\S+"),
+                  re.compile(r"-?\d+"))
+
+
+def bad_channels(channels: list[str]) -> list[str]:
+    """Those of the typed channels (parse_channels') that can't be one: caught as they are typed,
+    not when a scrape or a check on an account fails on them."""
+    return [raw for raw in channels if not any(form.fullmatch(raw) for form in _CHANNEL_FORMS)]
+
+
+def bad_channels_text(bad: list[str]) -> str:
+    """What the operator is told about bad_channels'."""
+    return (f"Не похоже на канал: {', '.join(f'«{raw}»' for raw in bad)} — нужен @username, ссылка t.me "
+            "или числовой id.")
+
+
 class _ChannelRef(NamedTuple):
     arg: str | int   # what to pass to Telethon: int for a numeric ID, "@name" for a t.me/s/ link,
                      # a t.me/+hash URL for an invite, else the raw string; the scrape loop
@@ -568,6 +592,8 @@ class ChatInfo(NamedTuple):
     raw: str
     title: str | None    # the chat's title (+ its forum topic); a private chat: the user's name
     problem: str | None  # why it can't be scraped (an invite not joined yet: with its title)
+    chat_id: int | None = None   # the marked id (-100… for a channel), when the chat resolved
+    username: str | None = None  # without @
 
 
 NOT_A_MEMBER = "аккаунт не состоит в чате — вступите"
@@ -635,42 +661,87 @@ async def lookup_chats(creds: Credentials, chats: list[str]) -> list[ChatInfo]:
     async with asyncio.timeout(CHAT_LOOKUP_TIMEOUT):
         client = await connect(creds)
         try:
-            refs = [_channel_ref(raw) for raw in chats]  # parsing only: never raises
-            await _find_in_dialogs(client, [ref.arg for ref in refs if isinstance(ref.arg, int)])
-            infos = []
-            for raw, ref in zip(chats, refs):
-                try:
-                    entity = await client.get_entity(ref.arg)
-                    _, topic_title = await _resolve_topic(client, ref._replace(arg=entity), entity)
-                    title = f"«{_entity_name(entity)}»"
-                    if topic_title:
-                        title += f" / тема «{topic_title}»"
-                    infos.append(ChatInfo(raw, title, None))
-                except Exception as exc:  # unknown name, not a member, ...
-                    try:
-                        invite_title = await _invite_title(client, ref)
-                    except Exception as invite_exc:  # expired / invalid invite
-                        infos.append(ChatInfo(raw, None, chat_problem(invite_exc)))
-                        continue
-                    if invite_title is not None:
-                        infos.append(ChatInfo(raw, f"«{invite_title}»", NOT_A_MEMBER))
-                    else:
-                        infos.append(ChatInfo(raw, None, chat_problem(exc)))
-            return infos
+            return await lookup_on(client, chats)
         finally:
             await client.disconnect()
 
 
-def chat_lines(infos: list[ChatInfo]) -> str:
-    def line(i: ChatInfo) -> str:
-        if i.problem is None:
-            return f"• {i.title} — {i.raw}"
-        return f"⚠️ {i.title} — {i.raw} — {i.problem}" if i.title else f"⚠️ {i.raw} — {i.problem}"
-    return "\n".join(line(i) for i in infos)
+async def lookup_on(client, chats: list[str]) -> list[ChatInfo]:
+    """lookup_chats on a connected client: the bot's own one of the account, so its key is never
+    used from a second connection (no timeout here: the caller's)."""
+    if not await client.is_user_authorized():
+        raise SystemExit(NOT_AUTHORIZED)
+    refs = [_channel_ref(raw) for raw in chats]  # parsing only: never raises
+    await _find_in_dialogs(client, [ref.arg for ref in refs if isinstance(ref.arg, int)])
+    infos = []
+    for raw, ref in zip(chats, refs):
+        try:
+            entity = await client.get_entity(ref.arg)
+            _, topic_title = await _resolve_topic(client, ref._replace(arg=entity), entity)
+            title = f"«{_entity_name(entity)}»"
+            if topic_title:
+                title += f" / тема «{topic_title}»"
+            infos.append(ChatInfo(raw, title, None, _peer_id(entity), getattr(entity, "username", None)))
+        except Exception as exc:  # unknown name, not a member, ...
+            try:
+                invite_title = await _invite_title(client, ref)
+            except Exception as invite_exc:  # expired / invalid invite
+                infos.append(ChatInfo(raw, None, chat_problem(invite_exc)))
+                continue
+            if invite_title is not None:
+                infos.append(ChatInfo(raw, f"«{invite_title}»", NOT_A_MEMBER))
+            else:
+                infos.append(ChatInfo(raw, None, chat_problem(exc)))
+    return infos
+
+
+def _peer_id(entity) -> int | None:
+    """The chat's marked id; None if the entity can't tell it — the chat is still named."""
+    try:
+        return utils.get_peer_id(entity)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_id(raw: str) -> bool:
+    return raw.lstrip("-").isdigit()
+
+
+def chat_block(number: int, info: ChatInfo, unknown_note: str | None = None, html: bool = False) -> str:
+    """One chat in a list (the checked chats, a project's card): its title, else what was typed;
+    then its @username (or the typed link / id) and id; then why it can't be scraped, or
+    `unknown_note` for a chat never looked up. `html`: for the bot — escaped, the ids in <code>
+    (a tap copies them); without it plain text, for the terminal."""
+    esc = html_text.escape if html else str
+    code = (lambda value: f"<code>{value}</code>") if html else str
+    raw = code(info.raw) if _is_id(info.raw) else esc(info.raw)
+    lines = [f"{number}. {esc(info.title) if info.title else raw}"]
+    if info.title is None:
+        where = ""  # the first line is the input already
+    elif info.username or info.raw.startswith("@"):
+        where = f"👤 @{esc(info.username or info.raw[1:])}"
+    elif _is_id(info.raw):  # the id itself: shown as 🆔 below, or here
+        where = "" if info.chat_id is not None else f"🆔 {raw}"
+    else:
+        where = f"🔗 {raw}"
+    details = [part for part in (where, info.chat_id is not None and f"🆔 {code(info.chat_id)}") if part]
+    if details:
+        lines.append(" · ".join(details))
+    if info.problem is not None:
+        lines.append(f"⚠️ {esc(info.problem)}")
+    elif info.title is None and unknown_note:
+        lines.append(esc(unknown_note))
+    return "\n".join(lines)
+
+
+def chat_lines(infos: list[ChatInfo], html: bool = False) -> str:
+    """The checked chats, numbered, a blank line between them (see chat_block)."""
+    return "\n\n".join(chat_block(i, info, html=html) for i, info in enumerate(infos, 1))
 
 
 def chat_label(info: ChatInfo) -> str:
-    """How a chat is named in the flow's later messages: its title, else what was typed."""
+    """How a chat is named in a scrape's checkpoint (ScrapeParams.chat_labels): its title, else what was
+    typed. The bot and the CLI show chats by the project's names instead (modules/projects.chat_list)."""
     return f"{info.title} ({info.raw})" if info.title else info.raw
 
 

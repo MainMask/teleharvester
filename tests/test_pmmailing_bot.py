@@ -201,10 +201,8 @@ def test_mail_start_drops_stale_recipients_from_an_abandoned_run():
             self.data = {}
 
     state = _ClearingState({"recipients": ["@old"]})
-    callback = ns(answer=_noop, message=_Msg())
-    pool = ns(count=lambda: 1)
 
-    asyncio.run(broadcasts.mail_start(callback, state, pool))
+    asyncio.run(broadcasts.ask_recipients(_Msg(), state, []))  # a project's card's 📨
     asyncio.run(broadcasts.mail_path(_Msg(text="-"), state))
 
     assert "recipients" not in state.data
@@ -240,4 +238,4 @@ def test_mail_run_without_recipients_says_the_flow_is_stale():
     msg = _Msg()
     asyncio.run(broadcasts.mail_run(msg, _State({"skip": True, "limit": None}), None, ns(), {},
                                     _Manager(), ns(delay=[0])))
-    assert msg.replies == ["Флоу устарел, начните заново."] and not runs
+    assert msg.replies == ["Действие устарело — откройте раздел заново."] and not runs

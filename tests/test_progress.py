@@ -440,7 +440,7 @@ class TestMoreJobs:
                 pass
 
         manager = JobManager()
-        manager.acquire("Репорт", timeout=0)
+        manager.acquire("Жалоба", timeout=0)
         instance = _Instance()
         flow = {"session": _First(), "rest": ["b", "c"], "peer": "p", "ids": [1], "comment": "",
                 "selections": []}

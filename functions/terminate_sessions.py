@@ -31,7 +31,8 @@ class TerminateSessionsFunc(TelethonFunction):
                         await report(f"[!] ошибка: {error}")
                     else:
                         self.progress_ok()
-                        await report(f"Сессия сброшена: {authorization.ip} ({authorization.device_model}, {authorization.platform})")
+                        await report(f"Сессия сброшена: {authorization.ip} "
+                                     f"({authorization.device_model}, {authorization.platform})")
             if not failed:
                 self.mark_done(session)
 

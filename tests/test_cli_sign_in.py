@@ -109,6 +109,17 @@ def _add(monkeypatch, answers, client, workers=None, proxy=None, passwords=(), p
     return console, workers
 
 
+def test_add_account_offers_the_tdata_import_as_the_bot_does(monkeypatch):
+    ran = []
+
+    async def tdata(self):
+        ran.append(type(self).__name__)
+
+    monkeypatch.setattr(cli.TdataImportFunc, "execute", tdata)
+    console, workers = _add(monkeypatch, ["3"], _Client([]))
+    assert "[3] Воркер — из tdata" in console.text and ran == ["TdataImportFunc"] and workers.added == []
+
+
 def test_a_worker_gets_a_pool_proxy_and_keeps_its_password(monkeypatch, tmp_path):
     client = _Client([errors.SessionPasswordNeededError(request=None)])
     proxy = Proxy("socks5", "1.1.1.1", 1080, "u", "p")
@@ -235,16 +246,23 @@ def _personal(monkeypatch, tmp_path, answers):
 
 
 def test_the_accounts_list_shows_personal_ones_without_connecting(monkeypatch, tmp_path):
-    personal, me, _, console = _personal(monkeypatch, tmp_path, [])
+    personal, me, _, console = _personal(monkeypatch, tmp_path, [""])  # Enter: no card
     console.status = lambda *a: contextlib.nullcontext()
     asyncio.run(accounts_cli.AccountsFunc(_Workers(), SETTINGS).execute())
     assert "Личные (только для скрапа): 1" in console.text and "me.jsession" in console.text
     assert not me.connected
 
 
+def _list_and_remove(console):
+    """📋 Список → the account's number → its card's [2] 🗑 Убрать → y."""
+    console.status = lambda *a: contextlib.nullcontext()
+    asyncio.run(accounts_cli.AccountsFunc(_Workers(), SETTINGS).execute())
+
+
 def test_removal_logs_out_and_deletes(monkeypatch, tmp_path):
-    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "y"])
-    asyncio.run(accounts_cli.RemovePersonalFunc(_Workers(), SETTINGS).execute())
+    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "2", "y"])
+    _list_and_remove(console)
+    assert "👤 Личный (только для скрапа): me.jsession" in console.text and "[2] 🗑 Убрать" in console.text
     assert me.logged_out and not (tmp_path / path).exists() and personal.sessions == []
     assert "✅" in console.printed[-1]
 
@@ -252,18 +270,18 @@ def test_removal_logs_out_and_deletes(monkeypatch, tmp_path):
 def test_no_removal_with_an_unfinished_bot_scrape(monkeypatch, tmp_path):
     from modules import scraped_files
 
-    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "y"])
+    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "2", "y"])
     json_file.save(scraped_files.SCRAPE_MARKER, {"account": path})
-    asyncio.run(accounts_cli.RemovePersonalFunc(_Workers(), SETTINGS).execute())
+    _list_and_remove(console)
     assert "незавершённый скрап" in console.printed[-1] and not me.logged_out and (tmp_path / path).exists()
 
 
 def test_no_removal_with_a_checkpoint_left_by_a_stop(monkeypatch, tmp_path):
-    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "y"])
+    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "2", "y"])
     resume = tmp_path / "assets" / "databases" / "news_partial" / "checkpoint" / "resume.json"
     resume.parent.mkdir(parents=True)
     resume.write_text(json.dumps({"name": "news", "account": path}))
-    asyncio.run(accounts_cli.RemovePersonalFunc(_Workers(), SETTINGS).execute())
+    _list_and_remove(console)
     assert "незавершённый скрап" in console.printed[-1] and not me.logged_out and (tmp_path / path).exists()
 
 

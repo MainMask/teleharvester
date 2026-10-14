@@ -220,7 +220,8 @@ async def import_all(workers_dir: str = "tdata_import", sessions_dir: str = "ses
                      proxies_path: str = PROXIES_FILE) -> int:
     """Convert every not-yet-imported `tdata` folder under `workers_dir`.
 
-    A worker is skipped once a `.imported` marker sits in its folder. Each proxy
+    A worker is skipped once a `.imported` marker sits in its folder; one that turns out to be
+    a worker already gets the marker without being counted or taking a proxy. Each proxy
     is shared by up to `ACCOUNTS_PER_PROXY` accounts, counting the accounts already
     in `sessions_dir`; if a proxies file exists but has too little spare capacity
     for the new accounts, nothing is converted (raises).
@@ -242,6 +243,23 @@ async def import_all(workers_dir: str = "tdata_import", sessions_dir: str = "ses
 
         pending.append(worker_dir)
 
+    if not pending:
+        return 0
+
+    # an account already a worker (read offline, as convert() does) is no new import and takes no
+    # proxy: marked as imported, its file left as is
+    new = []
+    for worker_dir in pending:
+        try:
+            phone = _worker_phone(TDesktop(os.path.join(worker_dir, "tdata")).mainAccount.UserId, sessions_dir)
+        except Exception:  # an unreadable tdata: convert() reports it
+            phone = None
+        if phone is None:
+            new.append(worker_dir)
+            continue
+        open(os.path.join(worker_dir, ".imported"), "w").close()
+        console.print(f"[bold white]Уже воркер:[/] {worker_dir} — sessions/{phone}.jsession не изменён")
+    pending = new
     if not pending:
         return 0
 

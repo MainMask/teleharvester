@@ -15,21 +15,6 @@ router = Router()
 CONFIRM_TTL = datetime.timedelta(minutes=10)
 
 
-# --- statistics (phone numbers) ---
-
-@router.callback_query(FunctionCB.filter(F.key == "stats"))
-async def stats_run(callback: CallbackQuery, pool: WorkerPool, functions: dict, manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    instance, bot_function = resolve(functions, "stats")
-    await manager.run(
-        callback.bot, callback.message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(r),
-        "Статистика по номерам…", "Готово ✅",
-    )
-
-
 # --- clear dialogs (destructive → confirm) ---
 
 @router.callback_query(FunctionCB.filter(F.key == "clear"))
@@ -44,7 +29,8 @@ async def clear_start(callback: CallbackQuery, pool: WorkerPool):
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "clear_confirm"))
-async def clear_run(callback: CallbackQuery, callback_data: ChoiceCB, pool: WorkerPool, functions: dict, manager: JobManager):
+async def clear_run(callback: CallbackQuery, callback_data: ChoiceCB, pool: WorkerPool, functions: dict,
+                    manager: JobManager):
     message = callback.message  # inaccessible: too old for the bot to read, its date is 0
     if callback_data.value == "yes" and (isinstance(message, InaccessibleMessage) or
                                          datetime.datetime.now(datetime.timezone.utc) - message.date > CONFIRM_TTL):

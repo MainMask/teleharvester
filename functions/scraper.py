@@ -5,15 +5,15 @@ from modules.console import console
 from rich.prompt import Confirm, Prompt
 
 from functions.base import TelethonFunction
-from modules import scraped_files
+from modules import projects, scraped_files
 from modules.scraper_creds import (
     build_credentials, find_account, personal_storage, pick_session, scrape_accounts,
 )
 
 from scraper.members import MembersParams, run as members_run
 from scraper.scrape import (
-    ScrapeParams, chat_label, chat_lines, check_date_range, lookup_chats, parse_channels, parse_date,
-    pending_resume, resume_params, run as scrape_run,
+    ScrapeParams, bad_channels, bad_channels_text, chat_label, chat_lines, check_date_range, lookup_chats,
+    parse_channels, parse_date, pending_resume, resume_params, run as scrape_run,
 )
 from scraper.verify import VerifyParams, run as verify_run
 
@@ -30,15 +30,6 @@ def _note_personal(account):
         console.print(PERSONAL_NOTE, style="bold yellow", markup=False)
 
 
-def _ask_name() -> str:
-    """The scrape's file name in the bases folder, asked again until it fits (see name_problem)."""
-    while True:
-        name = Prompt.ask(f"[bold red]имя для выходных файлов (в {scraped_files.BASES_DIR})[/]").strip()
-        if (problem := scraped_files.name_problem(name)) is None:
-            return name
-        console.print(f"Не подходит: {problem}.", style="bold red", markup=False)
-
-
 def _lookup(account, chats):
     """The chats' names on `account` (see lookup_chats); None, after saying why, if they can't be asked."""
     try:
@@ -49,12 +40,18 @@ def _lookup(account, chats):
         return None
 
 
-def _chats_ok(account, chats) -> tuple[bool, list[str] | None]:
-    """Print the typed chats' names: (False when one is not found and the operator would rather
-    type the list again, the chats' labels or None if they could not be looked up)."""
+def _chats_ok(account, chats, project: str | None = None) -> tuple[bool, list[str] | None]:
+    """Print the typed chats' names: (False when one can't be a chat, or is not found and the operator
+    would rather type the list again, the chats' labels or None if they could not be looked up).
+    `project`: the names found go to its card (modules/projects.remember)."""
+    if bad := bad_channels(chats):  # never asked on the account: typed again
+        console.print(f"{bad_channels_text(bad)} Введите заново.", style="bold red", markup=False)
+        return False, None
     infos = _lookup(account, chats)
     if infos is None:
         return True, None
+    if project:
+        projects.remember(project, infos)
     console.print(chat_lines(infos), markup=False, highlight=False)
     ok = all(info.problem is None for info in infos) or Confirm.ask(
         "[bold red]продолжить всё равно? (нет — ввести заново)[/]", default=False)
@@ -62,10 +59,7 @@ def _chats_ok(account, chats) -> tuple[bool, list[str] | None]:
 
 
 class ScrapeFunc(TelethonFunction):
-    """Scrape channel/group"""
-
-    def execute(self):
-        self.scrape(_ask_name())
+    """A project's scrape (from its card)"""
 
     def scrape(self, name, channels=None):
         """A scrape under `name`; a project's (functions/projects.py) comes with its channels,
@@ -75,10 +69,11 @@ class ScrapeFunc(TelethonFunction):
         out_dir = scraped_files.BASES_DIR
 
         meta = pending_resume(out_dir, name)
+        if meta is not None:  # its channels by name, as the card lists them
+            console.print(projects.chat_list(projects.find(name), meta["channels"]), markup=False, highlight=False)
         if meta is not None and Confirm.ask(
-            f"[bold red]под этим именем есть незавершённый скрап '{self.safe(name)}' "
-            f"({self.safe(', '.join(meta.get('chat_labels') or meta['channels']))}, "
-            f"собрано постов: {meta.get('t_index', 0)}) — "
+            f"[bold red]под этим именем есть незавершённый скрап '{self.safe(name)}' по каналам выше "
+            f"(собрано постов: {meta.get('t_index', 0)}) — "
             "продолжить? (нет — начать заново, собранное удалится)[/]", default=True,
         ):
             params = resume_params(meta, out_dir)
@@ -104,11 +99,12 @@ class ScrapeFunc(TelethonFunction):
 
         while True:
             if channels is None:
-                channels = parse_channels(Prompt.ask("[bold red]каналы через запятую (в приватных аккаунт должен состоять)[/]"))
+                channels = parse_channels(
+                    Prompt.ask("[bold red]каналы через запятую (в приватных аккаунт должен состоять)[/]"))
                 if not channels:
                     console.print("[bold red]Каналы не указаны.[/]")
                     return
-            ok, chat_labels = _chats_ok(account, channels)
+            ok, chat_labels = _chats_ok(account, channels, name)
             if ok:
                 break
             channels = None  # typed again (a project's list too: for this run only)
@@ -182,20 +178,23 @@ class ScrapeFunc(TelethonFunction):
 class VerifyFunc(TelethonFunction):
     """Verify scrape against live channel"""
 
-    def execute(self, posts=None):  # posts: a project's own files (functions/projects.py)
+    def execute(self, posts, project):
+        """From a project's card (functions/projects.py): `posts` — its own files; its channels' names,
+        found by the check, go to the `project`."""
         account = pick_session(self.storage, personal_storage(self.settings.api_id, self.settings.api_hash))
         if account is None:
             return
 
-        input_path = self.ask_file("[bold red]файл постов скрапа[/]", posts or scraped_files.posts_bases())
+        input_path = self.ask_file("[bold red]файл постов скрапа[/]", posts)
         # the file's channels and the scrape's own window, when the scrape stored it
         channels, window = scraped_files.verify_presets(input_path)
         if len(channels) > 1:
-            console.print(f"[bold white]каналы в файле:[/] {', '.join(channels)}")
+            console.print("каналы в файле:", style="bold white")
+            console.print(projects.chat_list(projects.find(project), channels), markup=False, highlight=False)
         while True:
             channel = Prompt.ask("[bold red]канал (@name / t.me / числовой id)[/]",
                                  default=channels[0] if channels else None) or ""
-            if channel and _chats_ok(account, [channel])[0]:
+            if channel and _chats_ok(account, [channel], project)[0]:
                 break
         # no stored window: Enter gives None, and parse_date says the date is missing
         date_min = Prompt.ask("[bold red]дата с (как в скрапе)[/]", default=window[0] if window else None) or ""
@@ -223,27 +222,34 @@ class VerifyFunc(TelethonFunction):
 class MembersFunc(TelethonFunction):
     """Export group members"""
 
-    def execute(self):
+    def execute(self, project: str):
+        """From a project's card (functions/projects.py): the base is named after the `project`."""
         account = pick_session(self.storage, personal_storage(self.settings.api_id, self.settings.api_hash))
         if account is None:
             return
         _note_personal(account)
+        added = " — новые участники добавятся к его базе, повторы не дублируются" \
+            if scraped_files.members_base(project).exists() else ""
+        console.print(f"База ляжет в проект '{project}'{added}.", markup=False, highlight=False)
+        before = scraped_files.row_count(scraped_files.members_base(project))
 
         while True:
             chats = parse_channels(Prompt.ask("[bold red]группы через запятую[/]"))
             if not chats:
                 console.print("[bold red]Группы не указаны.[/]")
                 return
-            if _chats_ok(account, chats)[0]:
+            if _chats_ok(account, chats, project)[0]:  # the groups get named on the project too
                 break
 
         out_dir = scraped_files.BASES_DIR  # the bases folder, where the mailing picks its bases
-        name = _ask_name()
         try:
             path, _ = members_run(build_credentials(account.client),
-                                  MembersParams(chats=chats, name=name, out_dir=Path(out_dir)))
+                                  MembersParams(chats=chats, name=project, out_dir=Path(out_dir)))
         except SystemExit as err:  # e.g. the account's session is no longer authorized
             console.print(f"[bold red]Сбор участников остановлен:[/] {err}")
             return
         if path is None:
             console.print("[bold red]Ни одного участника не собрано.[/]")
+            return
+        total = scraped_files.row_count(path)
+        console.print(f"[bold green]База проекта: новых {total - before}, всего {total}.[/]")

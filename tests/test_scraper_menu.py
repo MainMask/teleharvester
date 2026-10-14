@@ -60,11 +60,11 @@ def test_scrape_func_builds_params_from_prompts(monkeypatch):
 
     _answers(
         monkeypatch, scraper,
-        texts=["Test", "@a, @b", "01.01.2024", "31.01.2024", "", "500"],
+        texts=["@a, @b", "01.01.2024", "31.01.2024", "", "500"],
         bools=[True, False, True],
     )
 
-    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).scrape("Test")
 
     p = captured["params"]
     assert p.channels == ["@a", "@b"]
@@ -78,27 +78,13 @@ def test_scrape_func_builds_params_from_prompts(monkeypatch):
     assert captured["creds"].device["device_model"] == "Pixel"     # ...and its device
 
 
-def test_scrape_func_asks_the_name_again_until_it_fits(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
-    monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
-    _answers(
-        monkeypatch, scraper,
-        texts=["../x", "a_partial", " Test ", "@a", "01.01.2024", "31.01.2024", "", "500"],
-        bools=[True, True, True],
-    )
-
-    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
-    assert captured["params"].name == "Test"
-
-
 def test_scrape_func_stops_on_empty_channels(monkeypatch):
     called = []
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
     monkeypatch.setattr(scraper, "scrape_run", lambda *a: called.append(a))
-    _answers(monkeypatch, scraper, texts=["Test", "   ,  "])  # stops at the channels
+    _answers(monkeypatch, scraper, texts=["   ,  "])  # stops at the channels
 
-    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).scrape("Test")
     assert called == []  # no run attempted
 
 
@@ -115,9 +101,9 @@ def test_scrape_func_continues_an_interrupted_scrape(monkeypatch, tmp_path):
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
     monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    _answers(monkeypatch, scraper, texts=["Test"], bools=[True])  # no other questions
+    _answers(monkeypatch, scraper, texts=[], bools=[True])  # no other questions
 
-    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).scrape("Test")
 
     p = captured["params"]
     assert p.resume and p.channels == ["@a"] and p.keyword == "war"
@@ -135,7 +121,7 @@ def test_verify_func_builds_params_from_prompts(monkeypatch):
         texts=["posts.parquet", "@a", "01.01.2024", "31.01.2024", "missed.parquet", "5"],
     )
 
-    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute(posts=[], project="P")
 
     p = captured["params"]
     assert p.input == "posts.parquet" and p.channel == "@a"
@@ -149,7 +135,7 @@ def test_analysis_dispatch_combine(monkeypatch):
                         lambda inp, out, cols: captured.update(args=(inp, out, cols)))
     _answers(monkeypatch, scraper_analysis, texts=["4", "in", "out", "Group,Message ID"])  # 4 = combine
 
-    scraper_analysis.ScraperAnalysisFunc(FakeStorage(), FakeSettings()).execute()
+    scraper_analysis.ScraperAnalysisFunc(FakeStorage(), FakeSettings()).execute(project="P")
     assert captured["args"] == ("in", "out", ["Group", "Message ID"])
 
 
@@ -160,7 +146,7 @@ def test_analysis_participants_blank_reactors_is_none(monkeypatch):
     # tool 8 = participants; reactors answer is blank -> None; no format question
     _answers(monkeypatch, scraper_analysis, texts=["8", "in", "out", ""])
 
-    scraper_analysis.ScraperAnalysisFunc(FakeStorage(), FakeSettings()).execute()
+    scraper_analysis.ScraperAnalysisFunc(FakeStorage(), FakeSettings()).execute(project="P")
     assert captured == {"reactors": None, "fmt": "parquet"}
 
 
@@ -198,6 +184,13 @@ def _scraped(tmp_path, monkeypatch, window=None):
     return str(path)
 
 
+def _omni_posts():
+    """The project Omni's posts files, as its card hands them to the verify."""
+    from modules import scraped_files
+
+    return scraped_files.project_files("Omni", kinds=("posts",))
+
+
 def test_verify_func_without_a_stored_window_does_not_crash_on_enter(tmp_path, monkeypatch):
     _scraped(tmp_path, monkeypatch)  # an older file: no scrape window to default the dates to
     printed = []
@@ -211,7 +204,8 @@ def test_verify_func_without_a_stored_window_does_not_crash_on_enter(tmp_path, m
 
     monkeypatch.setattr(scraper.Prompt, "ask", ask)
     monkeypatch.setattr(scraper.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 0))
-    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute()  # no AttributeError out of the menu
+    # no AttributeError out of the menu
+    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute(posts=_omni_posts(), project="Omni")
     assert any("Неверная дата" in p for p in printed)
 
 
@@ -238,7 +232,7 @@ def test_verify_func_prefills_channel_and_window(tmp_path, monkeypatch):
 
     monkeypatch.setattr(scraper.Prompt, "ask", ask)
     monkeypatch.setattr(scraper.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 0))
-    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute(posts=_omni_posts(), project="Omni")
 
     p = captured["params"]
     assert (p.input, p.channel) == (path, "@omni")
@@ -253,7 +247,7 @@ def test_analysis_links_defaults_its_output_next_to_the_input(tmp_path, monkeypa
     monkeypatch.setattr(scraper_analysis.Prompt, "ask",
                         lambda *a, default=None, **k: next(answers, default))
 
-    scraper_analysis.ScraperAnalysisFunc(FakeStorage(), FakeSettings()).execute()
+    scraper_analysis.ScraperAnalysisFunc(FakeStorage(), FakeSettings()).execute(project="Omni")
     assert captured["args"] == (path, str(tmp_path / "Omni_links_01.01.2024-31.12.2024"))
 
 
@@ -277,9 +271,9 @@ def test_scrape_func_continues_on_the_checkpoint_s_own_account(monkeypatch, tmp_
     monkeypatch.setattr(scraper, "pick_session", lambda *a: (_ for _ in ()).throw(AssertionError("asked")))
     monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(creds=creds, params=params))
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    _answers(monkeypatch, scraper, texts=["Test"], bools=[True])
+    _answers(monkeypatch, scraper, texts=[], bools=[True])
 
-    scraper.ScrapeFunc(storage, FakeSettings()).execute()
+    scraper.ScrapeFunc(storage, FakeSettings()).scrape("Test")
     assert captured["params"].account == "sessions/acc.jsession"
     assert captured["creds"].session_string == "SESSION"  # that account's own key
 
@@ -290,9 +284,9 @@ def test_scrape_func_won_t_continue_on_another_account(monkeypatch, tmp_path):
     monkeypatch.setattr(scraper.console, "print", lambda *a, **k: printed.append(str(a[0])))
     monkeypatch.setattr(scraper, "scrape_run", lambda *a: ran.append(1))
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    _answers(monkeypatch, scraper, texts=["Test"], bools=[True])
+    _answers(monkeypatch, scraper, texts=[], bools=[True])
 
-    scraper.ScrapeFunc(FakeStorage([]), FakeSettings()).execute()
+    scraper.ScrapeFunc(FakeStorage([]), FakeSettings()).scrape("Test")
     assert ran == [] and any("не найден" in p for p in printed)
 
 
@@ -322,8 +316,23 @@ def test_members_func_notes_a_personal_account(monkeypatch, tmp_path):
     monkeypatch.setattr(scraper, "members_run", lambda creds, params: (tmp_path / "x.parquet", []))
     _answers(monkeypatch, scraper, texts=["@grp", "Grp"])
 
-    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute(project="Grp")
     assert any("только по " in p for p in printed)
+
+
+def test_members_func_from_a_project_names_the_base_after_it(monkeypatch, tmp_path):
+    from modules.scraper_creds import ScrapeAccount
+
+    seen = []
+    monkeypatch.setattr(scraper, "pick_session",
+                        lambda *a: ScrapeAccount("sessions/w.jsession", _ACCOUNT, "W", False))
+    monkeypatch.setattr(scraper.console, "print", lambda *a, **k: None)
+    monkeypatch.setattr(scraper, "members_run",
+                        lambda creds, params: (seen.append(params.name), (tmp_path / "x.parquet", []))[1])
+    _answers(monkeypatch, scraper, texts=["@grp"])  # the groups only: a name asked would run out
+
+    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute(project="Green")
+    assert seen == ["Green"]
 
 
 def test_members_func_reports_a_logged_out_account(monkeypatch, tmp_path):
@@ -340,7 +349,7 @@ def test_members_func_reports_a_logged_out_account(monkeypatch, tmp_path):
     monkeypatch.setattr(scraper, "members_run", dead)
     _answers(monkeypatch, scraper, texts=["@grp", "Grp"])
 
-    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()  # no SystemExit out of the menu
+    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute(project="Grp")  # no SystemExit out of the menu
     assert any("no longer authorized" in p for p in printed)
 
 
@@ -355,10 +364,10 @@ def test_declining_to_continue_warns_the_saved_posts_go(monkeypatch, tmp_path):
     asked = []
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: None)
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    _answers(monkeypatch, scraper, texts=["Test"])  # then pick_session gives up
+    _answers(monkeypatch, scraper, texts=[])  # then pick_session gives up
     monkeypatch.setattr(scraper.Confirm, "ask", lambda text, **k: asked.append(text) or False)
 
-    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).scrape("Test")
 
     # a fresh scrape under the same name clears the checkpoint: as the bot's button says
     assert "удалится" in asked[0]
@@ -372,7 +381,7 @@ def test_members_func_writes_to_the_bases_folder(monkeypatch, tmp_path):
                         lambda creds, params: captured.update(params=params) or (tmp_path / "x.parquet", []))
     _answers(monkeypatch, scraper, texts=["@grp", "Grp"])  # no output folder is asked
 
-    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute(project="Grp")
     assert captured["params"].out_dir == tmp_path and captured["params"].name == "Grp"
 
 
@@ -402,13 +411,13 @@ def test_scrape_func_shows_the_channels_names_and_retakes_a_list_with_a_typo(mon
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
     monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
     _answers(monkeypatch, scraper,
-             texts=["Test", "@typo", "@a", "01.01.2024", "31.01.2024", "", "500"],
+             texts=["@typo", "@a", "01.01.2024", "31.01.2024", "", "500"],
              bools=[False, True, True, True])  # no: type the list again
 
-    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).scrape("Test")
     assert captured["params"].channels == ["@a"]
     assert captured["params"].chat_labels == ["«Канал А» (@a)"]  # kept in its checkpoint
-    assert "⚠️ @typo — нет такого" in printed and "• «Канал А» — @a" in printed
+    assert "1. @typo\n⚠️ нет такого" in printed and "1. «Канал А»\n👤 @a" in printed
 
 
 def test_members_and_verify_go_on_with_a_chat_not_found_when_told(monkeypatch):
@@ -419,18 +428,23 @@ def test_members_and_verify_go_on_with_a_chat_not_found_when_told(monkeypatch):
     monkeypatch.setattr(scraper, "verify_run", lambda creds, params: captured.update(verify=params))
 
     _answers(monkeypatch, scraper, texts=["@grp", "Grp"], bools=[True])
-    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.MembersFunc(FakeStorage(), FakeSettings()).execute(project="Grp")
     _answers(monkeypatch, scraper, texts=["posts.parquet", "@a", "01.01.2024", "31.01.2024", "", "0"],
              bools=[True])
-    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute()
+    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute(posts=[], project="P")
     assert captured["members"].chats == ["@grp"] and captured["verify"].channel == "@a"
 
 
 def test_scrape_func_offers_to_continue_with_the_channels_names(monkeypatch, tmp_path):
     import json
 
-    _named_chats(monkeypatch, {"@a": "Канал А"})
+    from modules import projects
+    from scraper.scrape import ChatInfo
+
+    printed = _named_chats(monkeypatch, {"@a": "Канал А"})
     monkeypatch.setattr(scraper, "_lookup", lambda *a: pytest.fail("asked Telegram"))
+    projects.add("Test", ["@a"])  # the project's checks named its channel
+    projects.remember("Test", [ChatInfo("@a", "«Канал А»", None, -1001, "a")])
     _checkpoint_with_account(tmp_path, "sessions/acc.jsession")
     resume = tmp_path / "Test_partial" / "checkpoint" / "resume.json"
     resume.write_text(json.dumps({**json.loads(resume.read_text()), "chat_labels": ["«Канал А» (@a)"]}))
@@ -440,8 +454,28 @@ def test_scrape_func_offers_to_continue_with_the_channels_names(monkeypatch, tmp
     asked = []
     monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: None)
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    monkeypatch.setattr(scraper.Prompt, "ask", lambda *a, **k: "Test")
     monkeypatch.setattr(scraper.Confirm, "ask", lambda prompt, **k: asked.append(prompt) or True)
 
-    scraper.ScrapeFunc(storage, FakeSettings()).execute()
-    assert "«Канал А» (@a)" in asked[0]
+    scraper.ScrapeFunc(storage, FakeSettings()).scrape("Test")
+    # one block each, as the card lists them, above the question
+    assert "1. «Канал А»\n👤 @a · 🆔 -1001" in printed and "по каналам выше" in asked[0]
+
+
+@pytest.mark.parametrize("name, own", [("Omni_posts.parquet", {"parquet"}), ("Omni_posts.xlsx", {"xlsx", "excel"})])
+def test_analysis_read_never_offers_the_file_s_own_format(tmp_path, monkeypatch, name, own):
+    """The conversion writes next to the file under its name: in the same format it would
+    overwrite the file itself."""
+    import pandas as pd
+
+    path = tmp_path / name
+    df = pd.DataFrame({"Group": ["@a"], "Message ID": ["1"]})
+    df.to_parquet(path) if path.suffix == ".parquet" else df.to_excel(path, index=False)
+    monkeypatch.setattr(scraper_analysis.TelethonFunction, "ask_file", staticmethod(lambda *a, **k: str(path)))
+    monkeypatch.setattr(scraper_analysis.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 10))
+    offered = []
+    monkeypatch.setattr(scraper_analysis.Prompt, "ask",
+                        lambda *a, choices=None, **k: offered.extend(choices or []) or "")
+
+    scraper_analysis._read("Omni")
+
+    assert offered and not own & set(offered) and "csv" in offered

@@ -163,8 +163,9 @@ def test_moving_restricted_sessions_keeps_the_ones_whose_people_wait(monkeypatch
     from modules import contacts_ledger, restricted_workers
 
     monkeypatch.chdir(tmp_path)
-    waiting, dated, released, alone = (_CheckedSession(1, tmp_path, reply=FOREVER), _CheckedSession(2, tmp_path, reply=UNTIL),
-                                       _CheckedSession(3, tmp_path, reply=FOREVER), _CheckedSession(4, tmp_path, reply=FOREVER))
+    waiting, dated, released, alone = (
+        _CheckedSession(1, tmp_path, reply=FOREVER), _CheckedSession(2, tmp_path, reply=UNTIL),
+        _CheckedSession(3, tmp_path, reply=FOREVER), _CheckedSession(4, tmp_path, reply=FOREVER))
     contacts_ledger.save({"10": 1, "11": 2, "12": 3})  # `alone` has no contacts
     storage = _checked_storage(monkeypatch, tmp_path, [waiting, dated, released, alone])
     restricted_workers.save([released.path])
@@ -180,7 +181,8 @@ def test_moving_restricted_sessions_keeps_the_ones_whose_people_wait(monkeypatch
 
 
 def test_only_permanent_replies_are_quoted_in_worker_order(monkeypatch, tmp_path):
-    a, b, c = _Slow(1, tmp_path, reply=FOREVER), _CheckedSession(2, tmp_path, reply=UNTIL), _CheckedSession(3, tmp_path, reply=FOREVER)
+    a, b, c = (_Slow(1, tmp_path, reply=FOREVER), _CheckedSession(2, tmp_path, reply=UNTIL),
+               _CheckedSession(3, tmp_path, reply=FOREVER))
     storage = _checked_storage(monkeypatch, tmp_path, [a, b, c])
 
     _, msgs = _scan(storage, [a, b, c], replies=True)

@@ -3,6 +3,10 @@ from datetime import date
 from modules import json_file
 
 
+class AccountLimited(Exception):
+    """The account can no longer perform the action (rate limit / restriction / too long wait)."""
+
+
 class DailyCounter:
     """Per-account action counter for one action type, reset each day, persisted to `path`.
 

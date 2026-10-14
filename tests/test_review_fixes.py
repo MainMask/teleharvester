@@ -875,6 +875,21 @@ class TestJoinReturnsTarget:
         chat = ns(id=5)
         assert self._join("https://t.me/joinchat/abc", "1", lambda r: ns(chats=[chat])) is chat
 
+    def test_invite_of_a_chat_already_joined_is_a_join(self):
+        """USER_ALREADY_PARTICIPANT on an invite: the worker is in the chat — a join, with its chat
+        for the follow-up broadcast, as the inviting's resolve_source takes it."""
+        from telethon.errors import UserAlreadyParticipantError
+        from telethon.tl.functions.messages import CheckChatInviteRequest
+
+        chat = ns(id=5)
+
+        def reply(request):
+            if isinstance(request, CheckChatInviteRequest):
+                return ns(chat=chat)  # ChatInviteAlready
+            raise UserAlreadyParticipantError(request=request)
+
+        assert self._join("https://t.me/+abc", "1", reply) is chat
+
     def test_falls_back_to_link_without_chats(self):
         assert self._join("@chan", "1", lambda r: ns(chats=[])) == "@chan"
 
@@ -930,7 +945,7 @@ class TestAddContactsUsernameFallback:
 
     def test_no_username_is_skipped(self):
         added, _, msgs = self._add({"user_id": 1, "access_hash": 2})
-        assert added == 0 and any("пропуск user_id=1" in m for m in msgs)
+        assert added == 0 and any("пропуск 🆔 1" in m for m in msgs)
 
 
 class TestAddContactsName:
@@ -1270,7 +1285,8 @@ class TestCancelInsideForm:
         async def answer(text, **k):
             replies.append(text)
 
-        asyncio.run(menu.cancel(ns(answer=answer, chat=ns(id=1)), _State(), ns(stop=stop, active=True, label="Рассылка")))
+        asyncio.run(menu.cancel(ns(answer=answer, chat=ns(id=1)), _State(),
+                                ns(stop=stop, active=True, label="Рассылка")))
         assert stopped == [] and replies[0].startswith("Отменено.") and "/cancel ещё раз" in replies[0]
 
 
@@ -1336,7 +1352,7 @@ class TestScrapeFuncSwappedDates:
     def test_reports_and_does_not_run(self, monkeypatch):
         from functions import scraper as fs
 
-        answers = iter(["name", "@chan", "31.12.2024", "01.01.2024", ""])
+        answers = iter(["@chan", "31.12.2024", "01.01.2024", ""])
         monkeypatch.setattr(fs, "pick_session",
                             lambda storage, personal=None: ns(path="sessions/a.jsession", client=object(),
                                                               personal=False))
@@ -1349,7 +1365,7 @@ class TestScrapeFuncSwappedDates:
 
         f = fs.ScrapeFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h"))
         f.ask_int = lambda *a, **k: 100
-        f.execute()
+        f.scrape("name")
 
         assert ran == [] and any("позже даты конца" in p for p in printed)
 
@@ -1387,7 +1403,7 @@ class TestInvitingMissingInvitees:
         asyncio.run(fn.invite(_S(), "src", "dest", [1, 2], report))
 
         invited = [m for m in msgs if "приглашён" in m]
-        assert invited == ["[A] приглашён 2, всего: 1"]
+        assert invited == ["[A] приглашён 🆔 2, всего: 1"]
 
     def test_delay_after_privacy_error(self):
         # the invite request was sent even when it errors: the delay must still apply
@@ -1641,7 +1657,7 @@ class TestVerifyFuncSwappedDates:
 
         f = fs.VerifyFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h"))
         f.ask_int = lambda *a, **k: 0
-        f.execute()
+        f.execute(posts=[], project="P")
 
         assert ran == [] and any("позже даты конца" in p for p in printed)
 
@@ -1999,7 +2015,8 @@ class TestBasicGroupAdmins:
                 return members  # a basic group: Telethon ignores the filter
 
         fn = Broadcast(_Storage(), ns(delay=[0], messages_count=1, messages=["hi"]))
-        fn.configure(choice=0, mention_all=True, mention_mode="admins", content=ns(text="hi", entities=[], media=[], sent_media={}))
+        fn.configure(choice=0, mention_all=True, mention_mode="admins",
+                     content=ns(text="hi", entities=[], media=[], sent_media={}))
         fn.delay = _no_sleep
 
         async def send(session, peer, content, report, reply_to=None):

@@ -52,3 +52,12 @@ def test_unsupported_scheme_raises(line):
 def test_percent_encoded_credentials_are_decoded():
     p = Proxy.from_url("socks5://us%3Aer:p%40ss@1.2.3.4:1080")
     assert (p.user, p.password) == ("us:er", "p@ss")
+
+
+@pytest.mark.parametrize("line", ["socks5://user@1.2.3.4:1080", "socks5://user:@1.2.3.4:1080",
+                                  "http://user@5.6.7.8:3128"])
+def test_a_login_without_a_password_is_refused(line):
+    """python_socks sends a login only with a password: such a proxy would be used without its
+    login and refuse every worker — said at once instead."""
+    with pytest.raises(ValueError, match="логин без пароля"):
+        Proxy.from_url(line)

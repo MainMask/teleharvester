@@ -12,7 +12,6 @@ from telethon.errors import (
     ChatAdminRequiredError,
 )
 
-from rich.prompt import Prompt
 from modules.console import console
 
 from functions.base import TelethonFunction
@@ -125,7 +124,7 @@ class InvitingFunc(TelethonFunction):
                         self._limits.bump(aid)  # the request was sent: counts toward the daily cap
                     except Exception as err:
                         self.progress_failed()
-                        await report(f"[{me.first_name}] пропуск {user.id}: {err}")
+                        await report(f"[{me.first_name}] пропуск 🆔 {user.id}: {err}")
                     else:
                         self._limits.bump(aid)  # the request reached Telegram
                         # privacy-restricted users come back in missing_invitees, not as an
@@ -133,7 +132,7 @@ class InvitingFunc(TelethonFunction):
                         if not getattr(result, "missing_invitees", None):
                             added += 1
                             self.progress_ok()
-                            await report(f"[{me.first_name}] приглашён {user.id}, всего: {added}")
+                            await report(f"[{me.first_name}] приглашён 🆔 {user.id}, всего: {added}")
 
                     tried += 1
                     self.progress_step()
@@ -197,9 +196,6 @@ class InvitingFunc(TelethonFunction):
         source_link = console.input("[bold red]ссылка на чат-источник> [/]")
         destination = console.input("[bold red]куда приглашать> [/]")
 
-        delay = Prompt.ask(
-            "[bold red]задержка[/]",
-            default="-".join(str(x) for x in self.settings.delay)
-        )
+        delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
 
-        await self.run(source_link, destination, self.parse_delay(delay), console_report)
+        await self.run(source_link, destination, delay, console_report)

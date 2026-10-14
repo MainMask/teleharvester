@@ -1,6 +1,6 @@
-"""Add an account by phone: the terminal menu's «Добавить по номеру» (functions/sign_in.py),
-by the bot's rules — a worker or a personal account, no duplicates, a worker's proxy from the pool,
-a personal account without a proxy and without its 2FA password."""
+"""Add an account: the terminal menu's «➕ Добавить» (functions/sign_in.py), by the bot's
+rules — by phone a worker or a personal account, no duplicates, a worker's proxy from the pool,
+a personal account without a proxy and without its 2FA password; or the tdata_import/ folders."""
 import os
 import sys
 

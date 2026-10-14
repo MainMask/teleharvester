@@ -6,12 +6,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import choice_kb, yes_no_kb
-from bot.routers._common import (SEND_MESSAGE_PROMPT, build_content, ensure_workers, left_flow, require_text,
-                                 resolve)
+from bot.keyboards.common import cancel_kb, choice_kb, yes_no_kb
+from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, build_content, ensure_workers, left_flow,
+                                 require_text, resolve)
 from bot.services.delegation import WorkerPool
 from functions.broadcast import MENTION_ADMINS, MENTION_USERS
-from modules import scraped_files
 from bot.services.jobs import JobManager
 from bot.states import BroadcastOptions, ChatBroadcast, Comments, Instant, PmMailing
 from modules.settings import Settings
@@ -20,7 +19,8 @@ router = Router()
 
 MODE_OPTIONS = [("📝 Текст", "0"), ("🖼 Медиа", "2"), ("💬 Ответом на сообщение", "3"), ("🎭 Стикеры", "4")]
 INSTANT_MODES = [("📝 Текст", "0"), ("🖼 Медиа", "2"), ("🎭 Стикеры", "4")]  # reply needs a trigger
-MMODE_OPTIONS = [(f"👮 {MENTION_ADMINS} случайных админа", "admins"), (f"👤 {MENTION_USERS} случайных участников", "users")]
+MMODE_OPTIONS = [(f"👮 {MENTION_ADMINS} случайных админа", "admins"),
+                 (f"👤 {MENTION_USERS} случайных участников", "users")]
 MENTION_ASK = "Добавлять в сообщения скрытые упоминания участников чата? Упомянутым придёт уведомление."
 MENTION_WHO = "Кого упоминать в каждом сообщении?"
 DEFAULT_TARGETS = "assets/targets.txt"
@@ -34,17 +34,9 @@ def _parse_recipients(text: str) -> list[str]:
 
 # =========================== PM mailing (with stats) ===========================
 
-@router.callback_query(FunctionCB.filter(F.key == "pmmailing"))
-async def mail_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await ask_recipients(callback.message, state, scraped_files.participant_bases())
-
-
 async def ask_recipients(message: Message, state: FSMContext, bases: list[tuple[str, str]]):
-    """The mailing's first step: a base by button (`bases`: the newest scraped ones, or a project's —
-    bot/routers/projects.py), a .txt, a pasted list or a path."""
+    """The mailing's first step, from a project's card (bot/routers/projects.py): a base by button
+    (`bases`: the project's), a .txt, a pasted list or a path."""
     await state.clear()  # an abandoned run's `recipients` would otherwise override a new path
     await state.set_state(PmMailing.path)
     await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
@@ -53,8 +45,8 @@ async def ask_recipients(message: Message, state: FSMContext, bases: list[tuple[
         f"Получатели: {choose}пришлите <b>.txt файлом</b>, вставьте список (по одному @username/номеру "
         f"на строку), или укажите путь к .parquet/.txt («-» = {DEFAULT_TARGETS}):",
         parse_mode="HTML",
-        reply_markup=choice_kb("mail_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)])
-        if bases else None,
+        reply_markup=cancel_kb(PmMailing.path, choice_kb(
+            "mail_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)]) if bases else None),
     )
 
 
@@ -109,7 +101,7 @@ async def mail_skip(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
         return
     await state.update_data(skip=callback_data.value == "yes")
     await state.set_state(PmMailing.limit)
-    await callback.message.answer("Сколько получателей («-» = все):")
+    await callback.message.answer("Сколько получателей («-» = все):", reply_markup=cancel_kb(PmMailing.limit))
     await callback.answer()
 
 
@@ -122,7 +114,7 @@ async def mail_limit(message: Message, state: FSMContext):
         return
     await state.update_data(limit=None if raw == "-" else int(raw))
     await state.set_state(PmMailing.message)
-    await message.answer(SEND_MESSAGE_PROMPT)
+    await message.answer(SEND_MESSAGE_PROMPT, reply_markup=cancel_kb(PmMailing.message))
 
 
 @router.message(PmMailing.message)
@@ -140,7 +132,7 @@ async def mail_run(
     await state.clear()
 
     if "recipients" not in data and "path" not in data:  # a stale «Пропускать?» button after a state clear
-        await message.answer("Флоу устарел, начните заново.")
+        await message.answer(STALE_STEP)
         return
 
     instance, bot_function = resolve(functions, "pmmailing")
@@ -208,7 +200,7 @@ async def com_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool
         return
     await state.clear()
     await state.set_state(Comments.link)
-    await callback.message.answer("Ссылка на пост:")
+    await callback.message.answer("Ссылка на пост:", reply_markup=cancel_kb(Comments.link))
 
 
 @router.message(Comments.link)
@@ -229,7 +221,7 @@ async def com_run(
     await state.clear()
 
     if "link" not in data or "messages_count" not in data:
-        await message.answer("Флоу устарел, начните заново.")
+        await message.answer(STALE_STEP)
         return
 
     content = await build_content(message, album)
@@ -302,10 +294,10 @@ async def _instant_next(target, state: FSMContext):
     data = await state.get_data()
     if data.get("choice") == 4 and "sticker_set" not in data:
         await state.set_state(Instant.sticker)
-        await target.answer("Ссылка на стикерсет:")
+        await target.answer("Ссылка на стикерсет:", reply_markup=cancel_kb(Instant.sticker))
     else:
         await state.set_state(Instant.link)
-        await target.answer("Ссылка на чат/канал:")
+        await target.answer("Ссылка на чат/канал:", reply_markup=cancel_kb(Instant.link))
 
 
 @router.message(Instant.sticker)
@@ -315,7 +307,7 @@ async def ins_sticker(message: Message, state: FSMContext):
         return
     await state.update_data(sticker_set=sticker_set)
     await state.set_state(Instant.link)
-    await message.answer("Ссылка на чат/канал:")
+    await message.answer("Ссылка на чат/канал:", reply_markup=cancel_kb(Instant.link))
 
 
 @router.message(Instant.link)
@@ -336,7 +328,7 @@ async def ins_run(
     await state.clear()
 
     if "choice" not in data or "link" not in data or "messages_count" not in data:
-        await message.answer("Флоу устарел, начните заново.")
+        await message.answer(STALE_STEP)
         return
 
     content = await build_content(message, album)
@@ -414,7 +406,7 @@ async def _chat_next(target, state: FSMContext, settings: Settings):
     data = await state.get_data()
     if data.get("choice") == 4 and "sticker_set" not in data:
         await state.set_state(ChatBroadcast.sticker)
-        await target.answer("Ссылка на стикерсет:")
+        await target.answer("Ссылка на стикерсет:", reply_markup=cancel_kb(ChatBroadcast.sticker))
     else:
         await _ask_trigger(target, state, settings)
 
@@ -438,7 +430,7 @@ async def cha_run(
 
     # no trigger: an empty one would fire on every media message without a caption
     if "choice" not in data or not data.get("trigger") or "messages_count" not in data:
-        await message.answer("Флоу устарел, начните заново.")
+        await message.answer(STALE_STEP)
         return
 
     content = await build_content(message, album)
@@ -490,12 +482,14 @@ def _count_text(count: int) -> str:
 async def _ask_trigger(target, state: FSMContext, settings: Settings):
     await state.set_state(BroadcastOptions.trigger)
     if not settings.trigger:  # nothing to keep: an empty trigger would fire on any caption-less media
-        await target.answer("Триггер — текст, после которого воркеры начнут писать в чат. Пришлите его:")
+        await target.answer("Триггер — текст, после которого воркеры начнут писать в чат. Пришлите его:",
+                            reply_markup=cancel_kb(BroadcastOptions.trigger))
         return
     await target.answer(
         f"Триггер — текст, после которого воркеры начнут писать в чат. Сейчас: «{settings.trigger}».\n"
         "Оставьте его или пришлите новый:",
-        reply_markup=choice_kb("bc_trigger", [(f"✅ Оставить «{settings.trigger[:40]}»", "keep")]),
+        reply_markup=cancel_kb(BroadcastOptions.trigger,
+                               choice_kb("bc_trigger", [(f"✅ Оставить «{settings.trigger[:40]}»", "keep")])),
     )
 
 
@@ -505,7 +499,8 @@ async def _ask_count(target, state: FSMContext, settings: Settings, flow: str):
     await target.answer(
         f"Сколько сообщений отправит каждый воркер? Сейчас: {_count_text(settings.messages_count)}.\n"
         "Пришлите число (0 = без лимита, до ⏹) или оставьте текущее:",
-        reply_markup=choice_kb("bc_count", [(f"✅ Оставить: {_count_text(settings.messages_count)}", "keep")]),
+        reply_markup=cancel_kb(BroadcastOptions.count, choice_kb(
+            "bc_count", [(f"✅ Оставить: {_count_text(settings.messages_count)}", "keep")])),
     )
 
 
@@ -513,10 +508,10 @@ async def _to_message_step(target, state: FSMContext):
     flow = (await state.get_data()).get("flow")
     if flow not in _MESSAGE_STEPS:  # a stale button after the state was cleared
         await state.clear()
-        await target.answer("Флоу устарел, начните заново.")
+        await target.answer(STALE_STEP)
         return
     await state.set_state(_MESSAGE_STEPS[flow])
-    await target.answer(SEND_MESSAGE_PROMPT)
+    await target.answer(SEND_MESSAGE_PROMPT, reply_markup=cancel_kb(_MESSAGE_STEPS[flow]))
 
 
 @router.callback_query(BroadcastOptions.trigger, ChoiceCB.filter(F.scope == "bc_trigger"))

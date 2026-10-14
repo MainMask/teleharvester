@@ -5,6 +5,7 @@ import shutil
 
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramNetworkError, TelegramServerError
+from aiogram.types import BotCommand
 
 from modules import instance_lock
 from modules.config import load_env
@@ -39,6 +40,30 @@ from bot.routers import (
     service,
     settings as settings_menu,
     spamblock,
+    stale,
+)
+
+# The main menu's buttons first (bot/routers/menu.py opens every screen): a button tapped in the middle
+# of any form opens its screen instead of being taken as the form's input. The order of the rest is free.
+ROUTERS = (
+    menu,
+    accounts,
+    projects,
+    settings_menu,
+    login,
+    autoreply_menu,
+    spamblock,
+    pm_broadcast,
+    invite,
+    join,
+    profile,
+    audience,
+    activity,
+    moderation,
+    service,
+    broadcasts,
+    scraping,
+    stale,  # last: a button nothing above took
 )
 
 
@@ -77,6 +102,16 @@ async def announce_start(bot, admins, pool):
             await bot.send_message(admin, f"{status} · воркеров: {pool.count()}")
         except Exception as err:  # e.g. an admin who never opened the bot
             logging.warning("start notice to %s: %s", admin, err)
+
+
+async def set_commands(bot):
+    """Bot startup: /start, /status and /cancel in the chat's «Меню» button. Without them the bot still works."""
+    try:
+        await bot.set_my_commands([BotCommand(command="start", description="Главное меню"),
+                                   BotCommand(command="status", description="Что сейчас выполняется"),
+                                   BotCommand(command="cancel", description="Отменить ввод или остановить задачу")])
+    except Exception as err:
+        logging.warning("bot commands: %s", err)
 
 
 async def mark_stopped():
@@ -132,10 +167,13 @@ async def run_bot():
     # the scraper's jobs run on their own client in their own slot, so a multi-day scrape
     # doesn't hold up the other tasks; personal accounts are scraper-only, never workers
     dp["scrapes"] = JobManager()
+    # the analysis reads files in a child process, no account: a mailing or a scrape doesn't hold it up
+    dp["analyses"] = JobManager()
     os.makedirs(PERSONAL_DIR, exist_ok=True)  # a personal account added by phone lands there
     dp["personal"] = personal_storage(settings.api_id, settings.api_hash)
     dp["admins"] = config.admins  # who autoreply notifies
     dp.startup.register(announce_start)  # first: before "continuing the scrape"
+    dp.startup.register(set_commands)
     dp.shutdown.register(mark_stopped)
     dp.startup.register(scraping.resume_after_restart)
     dp.shutdown.register(scraping.stop_for_shutdown)
@@ -145,23 +183,8 @@ async def run_bot():
     dp.update.outer_middleware(AuthMiddleware(config.admins))
     dp.message.outer_middleware(AlbumMiddleware())
 
-    dp.include_router(menu.router)
-    dp.include_router(accounts.router)
-    dp.include_router(login.router)
-    dp.include_router(autoreply_menu.router)
-    dp.include_router(spamblock.router)
-    dp.include_router(pm_broadcast.router)
-    dp.include_router(invite.router)
-    dp.include_router(join.router)
-    dp.include_router(profile.router)
-    dp.include_router(audience.router)
-    dp.include_router(activity.router)
-    dp.include_router(moderation.router)
-    dp.include_router(service.router)
-    dp.include_router(broadcasts.router)
-    dp.include_router(scraping.router)
-    dp.include_router(projects.router)
-    dp.include_router(settings_menu.router)
+    for module in ROUTERS:
+        dp.include_router(module.router)
 
     await wait_for_bot_api(bot)  # before start_polling: no startup handler runs offline
     await dp.start_polling(bot)

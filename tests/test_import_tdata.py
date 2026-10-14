@@ -210,6 +210,22 @@ def test_import_all_errors_when_existing_accounts_fill_proxies(tmp_path, monkeyp
     assert not (tmp_path / "sessions" / "79990001122.jsession").exists()
 
 
+def test_import_all_an_existing_worker_is_no_import_and_takes_no_proxy(tmp_path, monkeypatch):
+    workers, sessions, proxies = _setup_workers(tmp_path, monkeypatch, count=1, with_proxies=1)
+    (tmp_path / "sessions").mkdir()
+    # the pool's one proxy is full, the folder's account (user 123) among its accounts
+    for i, user_id in enumerate((_FakeMe.id, 1, 2)):
+        (tmp_path / "sessions" / f"old{i}.jsession").write_text(json.dumps({
+            "account": {"user_id": user_id, "phone_number": f"7000{i}"},
+            "proxy": {"proxy_type": "socks5", "ip": "10.0.0.0", "port": 1080, "user": "u", "password": "p"},
+        }))
+    _FakeTDesktop.last_client = None
+
+    assert asyncio.run(tdata_import.import_all(workers, sessions, proxies)) == 0  # no "too few proxies"
+    assert (tmp_path / "workers" / "acc0" / ".imported").exists()
+    assert _FakeTDesktop.last_client is None  # never connected
+
+
 # --- find_tdata_dir / choose_pool_proxy ---
 
 def test_find_tdata_dir_by_key_datas(tmp_path):

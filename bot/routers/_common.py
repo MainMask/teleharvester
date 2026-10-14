@@ -1,5 +1,12 @@
+from bot.keyboards.menu import main_menu
+from bot.services import login as logins
 from bot.services.capture import capture
-from bot.services.registry import BOT_FUNCTIONS_BY_KEY
+from bot.services.registry import BOT_FUNCTIONS_BY_KEY, menu_path
+
+# a stale tap: a button of an old message; a stale step: text sent to a step whose flow is gone
+STALE_BUTTON = "Кнопка устарела — откройте раздел заново."
+STALE_STEP = "Действие устарело — откройте раздел заново."
+MAX_MESSAGE = 4000  # send_chunked keeps each chunk under Telegram's 4096-char limit
 
 SEND_MESSAGE_PROMPT = (
     "Отправьте сообщение для рассылки — текст, медиа или альбом, "
@@ -39,9 +46,35 @@ def resolve(functions: dict, key: str):
 async def ensure_workers(callback, pool) -> bool:
     """True if there is at least one worker; otherwise alert the operator."""
     if pool.count() == 0:
-        await callback.message.answer("Нет воркер-аккаунтов. Добавьте сессии в sessions/.")
+        await callback.message.answer(f"Нет воркер-аккаунтов. Добавьте: {menu_path('add')}.")
         return False
     return True
+
+
+async def send_chunked(message, header: str, lines: list[str], sep: str = "\n\n"):
+    """Send header + cards (blank line between, or `sep`) in message-sized chunks."""
+    chunks, current = [], header
+    for line in lines:
+        if len(current) + len(line) + len(sep) > MAX_MESSAGE:
+            chunks.append(current)
+            current = ""
+        current += (sep if current else "") + line
+    chunks.append(current)
+
+    for chunk in chunks:
+        await message.answer(chunk, parse_mode="HTML")
+
+
+async def menu_answer(message, text: str):
+    """Send a closing message and return the operator to the main menu."""
+    await message.answer(text, reply_markup=main_menu())
+
+
+async def leave_form(message, state):
+    """A main-menu button or /start: out of any form; a sign-in by phone waiting for its code is
+    closed now, as /cancel does, not after its timeout."""
+    await logins.close(message.chat.id)
+    await state.clear()
 
 
 async def read_text_document(message, max_size: int) -> str | None:
@@ -59,7 +92,7 @@ async def left_flow(callback, state, step) -> bool:
     if await state.get_state() == step.state:
         return False
     await callback.answer()
-    await callback.message.answer("Флоу устарел, начните заново.")
+    await callback.message.answer(STALE_BUTTON)
     return True
 
 

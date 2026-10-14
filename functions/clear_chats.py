@@ -47,11 +47,11 @@ class ClearDialogsFunc(TelethonFunction):
                         return
                     except Exception as err:
                         self.progress_failed()
-                        await report(f"[!] {dialog.id}: {err}")
+                        await report(f"[!] 🆔 {dialog.id}: {err}")
                         continue
 
                     self.progress_ok()
-                    await report(f"Диалог {dialog.id} | {dialog.title} удалён")
+                    await report(f"Диалог 🆔 {dialog.id} | {dialog.title} удалён")
             except Exception as err:  # the listing itself (a long flood wait, a dropped connection): this worker only
                 self.progress_failed()
                 await report(f"[!] не удалось получить список диалогов: {err}")

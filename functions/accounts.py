@@ -5,16 +5,19 @@ from rich.table import Table
 from modules.console import console
 
 from functions.base import TelethonFunction
-from modules import login as sign_in, restricted_workers
+# the module, not its *Func class: an imported *Func would be a second menu entry (as functions/projects.py)
+from functions import sign_in as cli_sign_in
+from modules import login as sign_in, phone_countries, restricted_workers
 from modules.scraped_files import unfinished_scrape
-from modules.scraper_creds import personal_storage, scrape_accounts
+from modules.scraper_creds import card_lines, find_account, personal_storage, scrape_accounts
 from modules.storages.sessions_storage import profile_order
 
 
-def print_personal(listed) -> None:
-    """The personal accounts, as stored: one is never connected just to be listed."""
+def print_personal(listed, start: int = 1) -> None:
+    """The personal accounts, as stored: one is never connected just to be listed; numbered from `start`
+    (after the workers)."""
     console.print(f"\n[bold white]Личные (только для скрапа): {len(listed)}[/]")
-    for index, account in enumerate(listed, 1):
+    for index, account in enumerate(listed, start):
         console.print(f"[{index}] {account.label}  {account.path}", markup=False, highlight=False)
 
 
@@ -38,15 +41,39 @@ class AccountsFunc(TelethonFunction):
         return ["—", "—", "—", proxy, "[red]нет ответа[/]"]
 
     async def execute(self):
-        await self.list_workers()
-        if listed := scrape_accounts(None, personal_storage(self.settings.api_id, self.settings.api_hash)):
-            print_personal(listed)
+        """The list, then an account's card by its number."""
+        workers = await self.list_workers()
+        personal = personal_storage(self.settings.api_id, self.settings.api_hash)
+        if listed := scrape_accounts(None, personal):
+            print_personal(listed, len(workers) + 1)
+        accounts = workers + listed
+        if not accounts:
+            return
+        raw = console.input("[bold white]Номер аккаунта — его карточка (Enter — назад)> [/]").strip()
+        if not raw:
+            return
+        if not raw.isdigit() or not 1 <= int(raw) <= len(accounts):
+            console.print("[bold red]Нет такого номера.[/]")
+            return
+        await self.card(accounts[int(raw) - 1], personal)
 
-    async def list_workers(self):
+    async def card(self, account, personal):
+        """An account's card, as the bot's: what is stored, 🔑 Код входа, 🗑 Убрать (a personal one's)."""
+        actions = ["[1] 🔑 Код входа", *(["[2] 🗑 Убрать"] if account.personal else [])]
+        lines = card_lines(personal if account.personal else self.storage, account)
+        console.print("\n" + "\n".join(lines + [""] + actions), markup=False, highlight=False)
+        choice = console.input("[bold white]действие (Enter — назад)> [/]").strip()
+        if choice == "1":
+            await cli_sign_in.LoginCodesFunc(self.storage, self.settings).execute(account.path)
+        elif choice == "2" and account.personal:
+            await remove_personal(personal, account)
+
+    async def list_workers(self) -> list:
+        """The workers' table; the workers (scrape_accounts) in its order."""
         workers = self.storage.sessions
         if not workers:
             console.print("[bold red]Нет аккаунтов в sessions/[/]")
-            return
+            return []
 
         with console.status("Опрос аккаунтов..."):
             profiles = await asyncio.gather(*[self.storage.fetch_me(client) for client in workers])
@@ -68,39 +95,31 @@ class AccountsFunc(TelethonFunction):
             table.add_row(str(index), *self.row(client, me), escape(checks[id(client)][1]))
 
         console.print(table)
+        if countries := phone_countries.summary(phone_countries.phone_of(self.storage, client, me)
+                                                for client, me in zip(workers, profiles)):
+            console.print(f"🌍 {countries}", markup=False, highlight=False)
+
+        listed = scrape_accounts(self.storage)
+        return [find_account(listed, self.storage.get_session_path(client)) for client, _ in ordered]
 
 
-class RemovePersonalFunc(TelethonFunction):
-    """Remove a personal account"""
+async def remove_personal(personal, account) -> None:
+    """A personal account's card's 🗑: the session from its file ended, the file deleted — asked first."""
+    if unfinished_scrape(account.path):  # a scrape continues on the account it was started on only
+        console.print("⛔ На этом аккаунте есть незавершённый скрап — продолжить его можно только на нём.",
+                      markup=False, highlight=False)
+        return
+    console.print(f"Будет завершена авторизация из файла {account.path} ({account.label}) и удалён сам файл. "
+                  "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
+                  "тот Desktop тоже выйдет из аккаунта.", markup=False, highlight=False)
+    if console.input("[bold white]Убрать? (y/n) [/]").strip() != "y":
+        console.print("Отменено.")
+        return
 
-    async def execute(self):
-        personal = personal_storage(self.settings.api_id, self.settings.api_hash)
-        listed = scrape_accounts(None, personal)
-        if not listed:
-            console.print("[bold red]Личных аккаунтов нет (personal_sessions/).[/]")
-            return
-        print_personal(listed)
-        raw = console.input("[bold white]какой убрать> [/]").strip()
-        if not raw.isdigit() or not 1 <= int(raw) <= len(listed):
-            console.print("[bold red]Нет такого номера.[/]")
-            return
-        account = listed[int(raw) - 1]
-
-        if unfinished_scrape(account.path):  # a scrape continues on the account it was started on only
-            console.print("⛔ На этом аккаунте есть незавершённый скрап — продолжить его можно только на нём.",
-                          markup=False, highlight=False)
-            return
-        console.print(f"Будет завершена авторизация из файла {account.path} ({account.label}) и удалён сам файл. "
-                      "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
-                      "тот Desktop тоже выйдет из аккаунта.", markup=False, highlight=False)
-        if console.input("[bold white]Убрать? (y/n) [/]").strip() != "y":
-            console.print("Отменено.")
-            return
-
-        logged_out = await sign_in.remove_personal(personal, account)
-        console.print(
-            f"✅ Личный аккаунт {account.label} убран: сессия завершена, файл удалён." if logged_out else
-            f"⚠️ Файл личного аккаунта {account.label} удалён, но завершить сессию не удалось — "
-            "завершите её вручную: Telegram → Настройки → Устройства.",
-            markup=False, highlight=False,
-        )
+    logged_out = await sign_in.remove_personal(personal, account)
+    console.print(
+        f"✅ Личный аккаунт {account.label} убран: сессия завершена, файл удалён." if logged_out else
+        f"⚠️ Файл личного аккаунта {account.label} удалён, но завершить сессию не удалось — "
+        "завершите её вручную: Telegram → Настройки → Устройства.",
+        markup=False, highlight=False,
+    )

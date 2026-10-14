@@ -6,6 +6,8 @@ import types
 
 import pytest
 
+from bot.keyboards.common import cancel_kb
+from bot.states import ReportMessage
 from functions.report import ReportFunc
 from test_sync import _Msg, _SCallback, _State, _buttons
 
@@ -30,7 +32,7 @@ def test_bot_report_offers_the_post_of_its_link():
     msg = _Msg(text="https://t.me/name/123")
     asyncio.run(moderation.rm_link(msg, state))
     text, markup = msg.answers[0]
-    assert text.startswith("В ссылке пост 123") and _buttons(markup) == ["✅ Только на пост 123"]
+    assert text.startswith("В ссылке пост 123") and _buttons(markup) == ["✅ Только на пост 123", "✖️ Отмена"]
     assert state.state == ReportMessage.ids
 
     go = _SCallback()
@@ -45,7 +47,7 @@ def test_bot_report_asks_the_numbers_for_a_chat_link_and_takes_them_typed():
     state = _State()
     msg = _Msg(text="https://t.me/name")
     asyncio.run(moderation.rm_link(msg, state))
-    assert msg.answers[0] == (moderation.POSTS_ASK, None)
+    assert msg.answers[0] == (moderation.POSTS_ASK, cancel_kb(ReportMessage.ids))
 
     typed = _Msg(text="12, 13")
     asyncio.run(moderation.rm_ids(typed, state))

@@ -1,5 +1,5 @@
 import asyncio
-from rich.prompt import Prompt
+
 from modules.console import console
 
 from functions.base import TelethonFunction
@@ -82,12 +82,9 @@ class CommentsBroadcastFunc(TelethonFunction):
 
         link = console.input("[bold red]ссылка на пост> [/]")
 
-        delay = Prompt.ask(
-            "[bold red]задержка[/]",
-            default="-".join(str(x) for x in self.settings.delay)
-        )
+        delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
 
         text = console.input("[bold red]сообщение: [/]")
 
         # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
-        await self.run(link, RichContent(text=text), self.parse_delay(delay), console_report)
+        await self.run(link, RichContent(text=text), delay, console_report)

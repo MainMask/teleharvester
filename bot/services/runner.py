@@ -1,7 +1,20 @@
 import asyncio
+import html
+import re
 import time
 
 from aiogram.exceptions import TelegramRetryAfter
+
+ID = re.compile(r"🆔 (-?\d+)")  # an id in a function's report line ("🆔 123"), plain text in the terminal
+
+
+def render(text: str) -> str:
+    """A report's text for the bot's HTML: escaped, an id after 🆔 in <code> — a tap copies it, as everywhere."""
+    return ID.sub(r"🆔 <code>\1</code>", html.escape(text))
+
+
+def _units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2  # Telegram's length: an emoji is 2
 
 
 class TelegramReporter:
@@ -37,7 +50,8 @@ class TelegramReporter:
 
     async def start(self):
         self._started = time.monotonic()
-        message = await self.bot.send_message(self.chat_id, self.header, reply_markup=self.reply_markup)
+        message = await self.bot.send_message(self.chat_id, render(self.header), parse_mode="HTML",
+                                              reply_markup=self.reply_markup)
         self.message_id = message.message_id
 
     async def __call__(self, text: str):
@@ -60,18 +74,15 @@ class TelegramReporter:
 
     async def _flush(self, final=False, attempts=3):
         self._last = time.monotonic()
-        header = self.header[:1000]  # a huge error text must leave room for the body
-        body = "\n".join(self.lines) or "…"
-        # keep the newest lines within 4096 UTF-16 units (an emoji is 2); errors="ignore"
-        # drops a surrogate pair cut in half
-        budget = 4096 - len(header.encode("utf-16-le")) // 2 - 2
-        body = body.encode("utf-16-le")[-budget * 2:].decode("utf-16-le", errors="ignore")
+        header = render(self.header[:1000])  # a huge error text must leave room for the body
+        body = self._body(max(0, 4096 - _units(header) - 2))
 
         try:
             await self.bot.edit_message_text(
                 f"{header}\n\n{body}",
                 chat_id=self.chat_id,
                 message_id=self.message_id,
+                parse_mode="HTML",
                 reply_markup=self.reply_markup,
             )
         except TelegramRetryAfter as err:
@@ -88,8 +99,25 @@ class TelegramReporter:
         except Exception:
             pass  # ignore "message is not modified" and transient edit errors
 
+    def _body(self, budget: int) -> str:
+        """The newest lines, rendered, within `budget` UTF-16 units: whole lines — a cut one could cut a tag —,
+        the newest alone too long cut to its end."""
+        shown = []
+        for line in reversed(self.lines):
+            text = render(line)
+            if _units(text) + 1 > budget:
+                if not shown:  # errors="ignore" drops a surrogate pair cut in half
+                    end = line.encode("utf-16-le")[-budget * 2:].decode("utf-16-le", errors="ignore")
+                    while _units(text := render(end)) > budget:  # the escaping made it longer
+                        end = end[_units(text) - budget:]
+                    shown.append(text)
+                break
+            budget -= _units(text) + 1
+            shown.append(text)
+        return "\n".join(reversed(shown)) or "…"
+
     def _build_report(self, summary: str) -> str:
-        lines = [summary[:1000], f"📋 Задача: {self.job_label}"]  # a huge error text, as in _flush
+        lines = [render(summary[:1000]), f"📋 Задача: {render(self.job_label)}"]  # a huge error text, as in _flush
         if self.workers is not None:
             lines.append(f"🤖 Воркеров: {self.workers}")
         if self.progress is not None and self.progress.ok:
@@ -114,6 +142,7 @@ class TelegramReporter:
                 await self.bot.send_message(
                     self.chat_id,
                     self._build_report(summary),
+                    parse_mode="HTML",
                     reply_markup=self.final_markup,
                 )
             except Exception:

@@ -17,12 +17,24 @@ from modules.generators.telegram_android import TelegramAppAPI
 from modules.generators.linux import LinuxAPI
 
 
-class ParseDelayTest(unittest.TestCase):
-    def test_range(self):
-        self.assertEqual(BaseFunction().parse_delay("3-7"), [3, 7])
+class AskSecondsTest(unittest.TestCase):
+    def ask(self, answers, default=None):
+        with mock.patch("functions.base.base.Prompt.ask", side_effect=answers) as prompt:
+            return BaseFunction.ask_seconds("задержка", default), prompt
 
-    def test_single(self):
-        self.assertEqual(BaseFunction().parse_delay("5"), [5])
+    def test_range_and_single(self):
+        self.assertEqual(self.ask(["3-7"])[0], [3, 7])
+        self.assertEqual(self.ask(["5"])[0], [5])
+
+    def test_a_typo_is_asked_again_not_a_crash(self):
+        # an en dash, a word, three parts, blank: none is a delay
+        seconds, prompt = self.ask(["5–10", "abc", "1-2-3", "", "5-10"])
+        self.assertEqual(seconds, [5, 10])
+        self.assertEqual(prompt.call_count, 5)
+
+    def test_the_default_is_offered_as_typed(self):
+        _, prompt = self.ask(["2-4"], default=[1, 3])
+        self.assertEqual(prompt.call_args.kwargs["default"], "1-3")
 
 
 class PickSecondsTest(unittest.TestCase):
@@ -201,7 +213,7 @@ class GeneratorsTest(unittest.TestCase):
         self.assertTrue(LinuxAPI.sdk().startswith("Linux "))
 
     def test_system_lang_code(self):
-        allowed = {"zh-hans", "cn", "en", "ru", "af", "sq", "cs", "pl"}
+        allowed = {"zh-hans", "en", "ru", "af", "sq", "cs", "pl"}
         self.assertIn(TelegramAppAPI.system_lang_code(), allowed)
 
 

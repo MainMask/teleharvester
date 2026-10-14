@@ -346,7 +346,8 @@ def test_links_keep_channel_for_web_private_and_invite_links(tmp_path):
     pd.DataFrame({"Content": [text]}).to_parquet(tmp_path / "in.parquet")
     links(str(tmp_path / "in.parquet"), str(tmp_path / "l"))
     counts = dict(read_table(tmp_path / "l.xlsx").values)
-    assert counts == {"https://t.me/durov": 4, "https://t.me/+AbCd": 1, "https://t.me/+abcd": 1, "https://t.me/c/123": 1,
+    assert counts == {"https://t.me/durov": 4, "https://t.me/+AbCd": 1, "https://t.me/+abcd": 1,
+                      "https://t.me/c/123": 1,
                       "https://t.me/+AbC": 2,  # joinchat/AbC is the same invite
                       "https://t.me/addlist/XyZ": 1,
                       "https://t.me/foo": 2}

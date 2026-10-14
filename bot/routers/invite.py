@@ -3,6 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import FunctionCB
+from bot.keyboards.common import cancel_kb
 from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -21,7 +22,8 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
 
     await state.clear()
     await state.set_state(Invite.source)
-    await callback.message.answer("Инвайтинг. Ссылка на чат-источник (откуда брать участников):")
+    await callback.message.answer("Инвайтинг. Ссылка на чат-источник (откуда брать участников):",
+                                  reply_markup=cancel_kb(Invite.source))
 
 
 @router.message(Invite.source)
@@ -31,7 +33,8 @@ async def got_source(message: Message, state: FSMContext):
         return
     await state.update_data(source=source)
     await state.set_state(Invite.destination)
-    await message.answer("Куда приглашать (ссылка/username чата назначения):")
+    await message.answer("Куда приглашать (ссылка/username чата назначения):",
+                         reply_markup=cancel_kb(Invite.destination))
 
 
 @router.message(Invite.destination)

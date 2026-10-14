@@ -6,8 +6,11 @@ from rich.prompt import Prompt, Confirm
 
 from time import perf_counter
 
+from python_socks import ProxyError
+
 from telethon import events, types
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.errors import UserAlreadyParticipantError
+from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.sync import TelegramClient
@@ -39,6 +42,11 @@ class JoinerFunc(TelethonFunction):
                     updates = await self.safe_call(lambda: session(JoinChannelRequest("@" + slug)))
                 else:
                     updates = await self.safe_call(lambda: session(ImportChatInviteRequest(slug[1:])))
+            except UserAlreadyParticipantError:  # only an invite raises it: the worker is in the chat already
+                try:  # ChatInviteAlready: the chat itself for the follow-up broadcast (an invite link is no peer)
+                    return (await self.safe_call(lambda: session(CheckChatInviteRequest(slug[1:])))).chat
+                except Exception:
+                    return link
             except AccountLimited as error:
                 await emit(f"[!] [аккаунт {index + 1}] лимит: {error}")
                 return False
@@ -214,7 +222,7 @@ class JoinerFunc(TelethonFunction):
                     # stdin; a dead proxy ends this account only (its join below fails and is reported)
                     try:
                         await session.connect()
-                    except OSError as err:
+                    except (OSError, ProxyError) as err:  # ProxyError: the proxy refused
                         console.print(f"[!] [аккаунт {index + 1}] не подключился: {err}", markup=False)
 
                     if captcha:
@@ -237,12 +245,16 @@ class JoinerFunc(TelethonFunction):
 
             if speed == "fast":
                 if not self.storage.initialize:
-                    for session in track(
-                        self.sessions,
+                    for index, session in track(
+                        enumerate(self.sessions),
                         "[yellow]Подключение сессий[/]",
                         total=len(self.sessions)
                     ):
-                        await session.connect()
+                        # as in normal: a dead proxy ends this account only (its join fails and is reported)
+                        try:
+                            await session.connect()
+                        except (OSError, ProxyError) as err:  # ProxyError: the proxy refused
+                            console.print(f"[!] [аккаунт {index + 1}] не подключился: {err}", markup=False)
 
                 with console.status("Вступление"):
                     start = perf_counter()

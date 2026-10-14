@@ -64,7 +64,8 @@ def test_edit_2fa_uses_stored_password_and_persists(tmp_path, monkeypatch):
     on_disk = {
         "auth_key": "a",
         "account": {"first_name": "Denis", "last_name": "A", "user_id": 1, "added_at": 0, "phone_number": "1"},
-        "application": {"api_id": 1, "api_hash": "h", "device_name": "d", "app_version": "v", "sdk": "s", "lang_pack": "tdesktop", "system_lang_code": "en"},
+        "application": {"api_id": 1, "api_hash": "h", "device_name": "d", "app_version": "v", "sdk": "s",
+                        "lang_pack": "tdesktop", "system_lang_code": "en"},
         "proxy": None,
         "password": "old_pw",
     }

@@ -2,6 +2,7 @@
 bot; the accounts list and proxies in the CLI."""
 
 import asyncio
+import functools
 import io
 import os
 import types
@@ -256,7 +257,11 @@ def test_cli_settings_ask_again_and_save_as_the_bot_does(tmp_path, monkeypatch):
 
     settings = _settings(tmp_path, monkeypatch)
     printed = []
+    from functions.base import base
+
     monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
+    # the asking again is BaseFunction.ask_seconds', shared by every CLI delay prompt
+    monkeypatch.setattr(base._report_console, "print", lambda text="", *a, **k: printed.append(str(text)))
     answers = iter(["1", "abc", "1-2-3", "-5", "5 - 10", "2", "120"])
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: next(answers))
 
@@ -290,7 +295,7 @@ def test_names_button_from_assets(tmp_path, monkeypatch):
     asyncio.run(profile.name_start(_Callback(), state, _pool(), {}, None))
     _pick("all", state, _pool())
     callback = _pick("go", state, _pool())
-    assert _buttons(callback.message.answers[0][1]) == [f"📄 Из {tmp_path / 'names.txt'} (3)"]
+    assert _buttons(callback.message.answers[0][1]) == [f"📄 Из {tmp_path / 'names.txt'} (3)", "✖️ Отмена"]
 
     manager, runs = _launches()
     asyncio.run(profile.name_from_file(_Callback(), _State(), ns(), {"ChangeNameFunc": object()}, manager))
@@ -355,10 +360,13 @@ class _SBot:
 class _SMsg(_Msg):
     def __init__(self, text=None, bot=None):
         super().__init__(text=text)
-        self.bot, self.edited = bot or _SBot(), []
+        self.bot, self.edited, self.edits = bot or _SBot(), [], []
 
     async def edit_reply_markup(self, reply_markup=None):
         self.edited.append(reply_markup)
+
+    async def edit_text(self, text, **kwargs):
+        self.edits.append((text, kwargs.get("reply_markup")))
 
 
 class _SCallback:
@@ -582,52 +590,25 @@ def test_a_gone_account_is_reported_and_nothing_runs(monkeypatch):
 
 # --- the account question: workers and personal accounts ------------------------------------
 
+def _project_scrape(router, msg, state, pool=None, name="n"):
+    """A project's ▶️ Скрап (the only way to start a scrape): the project's name and channels."""
+    from bot.services.jobs import JobManager
+
+    asyncio.run(router.scrape_project(msg, state, ns(name=name, channels=["@a", "@b"]),
+                                      dict(pool=pool or _pool(), personal=None, scrapes=JobManager())))
+
+
 def test_one_account_is_taken_without_asking(monkeypatch, tmp_path):
     from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
     from bot.states import Scrape
 
     monkeypatch.setattr(router, "DEFAULT_OUT", str(tmp_path))
     state = _State({})
-    msg = _SMsg(text="n")  # the name: no output folder is asked, the bases folder is the one
-    asyncio.run(router.scrape_name(msg, state, _pool(), None, JobManager()))
-    assert state.data["account"] == _ACC and state.state == Scrape.channels
+    msg = _SMsg()  # no output folder is asked, the bases folder is the one
+    _project_scrape(router, msg, state)
+    assert state.data["account"] == _ACC and state.state == Scrape.date_min  # no «На каком аккаунте?»
     assert state.data["name"] == "n" and state.data["out_dir"] == str(tmp_path)
-    assert msg.answers[0][0].startswith("Каналы/группы")
-
-
-def test_a_name_that_would_leave_the_bases_folder_is_asked_again(monkeypatch, tmp_path):
-    from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
-    from bot.states import Scrape
-
-    monkeypatch.setattr(router, "DEFAULT_OUT", str(tmp_path))
-    state = _State()
-    state.state = Scrape.name
-    msg = _SMsg(text="../x")
-    asyncio.run(router.scrape_name(msg, state, _pool(), None, JobManager()))
-    assert msg.answers[0][0].startswith("Не подходит: имя станет частью имени файла")
-    assert state.state == Scrape.name and "account" not in state.data  # nothing asked further
-
-
-def test_a_members_base_name_with_a_file_marker_is_asked_again(monkeypatch):
-    from bot.routers import scraping as router
-    from bot.services import scraping
-    from bot.services.jobs import JobManager
-    from bot.states import Members
-
-    runs = []
-
-    async def do_members(creds, params):
-        runs.append(params)
-
-    monkeypatch.setattr(scraping, "do_members", do_members)
-    state = _State({"chats": "@g", "account": _ACC})
-    state.state = Members.name
-    msg = _SMsg(text="grp_posts")
-    asyncio.run(router.members_run(msg, state, _pool(), None, JobManager()))
-    assert "«_posts»" in msg.answers[0][0] and runs == []
-    assert state.state == Members.name and state.data["chats"] == "@g"  # the flow goes on from here
+    assert not any(text.startswith("На каком аккаунте") for text, _ in msg.answers)
 
 
 def test_a_personal_account_is_offered_marked_and_warned_about(tmp_path):
@@ -639,7 +620,8 @@ def test_a_personal_account_is_offered_marked_and_warned_about(tmp_path):
                   get_session_path=lambda c: "personal_sessions/me.jsession")
     state = _State()
     start = _SCallback()
-    asyncio.run(router.members_start(start, state, _pool(), personal, JobManager()))
+    asyncio.run(router.members_project(start.message, state, ns(name="P"),
+                                       dict(pool=_pool(), personal=personal, scrapes=JobManager())))
     assert _buttons(start.message.answers[0][1]) == ["👤 me.jsession", "🤖 w.jsession"]  # personal first
 
     pick = _SCallback()
@@ -650,6 +632,28 @@ def test_a_personal_account_is_offered_marked_and_warned_about(tmp_path):
     assert warning.startswith("⚠️ Это ваш личный аккаунт") and "только до тех, у кого есть username" in warning
 
 
+def test_many_accounts_to_scrape_on_are_paged():
+    """Telegram takes at most 100 buttons under a message: the accounts are offered 20 a page."""
+    from bot.routers import scraping as router
+    from bot.services.jobs import JobManager
+    from bot.states import Members
+
+    pool = _pool(*[f"sessions/w{i:02}.jsession" for i in range(25)])
+    state = _State()
+    start = _SCallback()
+    asyncio.run(router.members_project(start.message, state, ns(name="P"),
+                                       dict(pool=pool, personal=None, scrapes=JobManager())))
+    assert _buttons(start.message.answers[0][1])[-3:] == ["⬅️", "📄 стр 1/2", "➡️"]
+
+    page = _SCallback()
+    asyncio.run(router.account_pick(page, ChoiceCB(scope="scr_acc", value="pg.1"), state, pool, None, JobManager()))
+    assert _buttons(page.message.edited[-1]) == ["🤖 w20.jsession", "🤖 w21.jsession", "🤖 w22.jsession",
+                                                 "🤖 w23.jsession", "🤖 w24.jsession", "⬅️", "📄 стр 2/2", "➡️"]
+    asyncio.run(router.account_pick(_SCallback(), ChoiceCB(scope="scr_acc", value="22"), state, pool, None,
+                                    JobManager()))
+    assert state.data["account"] == "sessions/w22.jsession" and state.state == Members.chats
+
+
 def test_verify_on_a_personal_account_warns_only_about_limits():
     from bot.routers import scraping as router
     from bot.services.jobs import JobManager
@@ -657,7 +661,8 @@ def test_verify_on_a_personal_account_warns_only_about_limits():
     personal = ns(sessions=[object()], jsessions_paths={},
                   get_session_path=lambda c: "personal_sessions/me.jsession")
     state = _State()
-    asyncio.run(router.verify_start(_SCallback(), state, _pool(), personal, JobManager()))
+    asyncio.run(router.verify_project(_SCallback().message, state, ns(name="P"),
+                                      dict(pool=_pool(), personal=personal, scrapes=JobManager())))
     pick = _SCallback()
     asyncio.run(router.account_pick(pick, ChoiceCB(scope="scr_acc", value="0"), state, _pool(), personal,
                                     JobManager()))
@@ -683,7 +688,7 @@ def test_no_scrape_starts_on_a_personal_account_whose_codes_are_read():
     from bot.services.jobs import JobManager
 
     pool, account, said = _pool(), ns(path="personal_sessions/me.jsession", label="me", personal=True), []
-    pool.reading_codes[account.path] += 1
+    pool.borrowed[account.path] += 1
 
     async def say(text):
         said.append(text)
@@ -717,7 +722,7 @@ def test_a_stale_account_button_says_so():
     pick = _SCallback()
     asyncio.run(router.account_pick(pick, ChoiceCB(scope="scr_acc", value="0"), _State(), _pool(), None,
                                     JobManager()))
-    assert pick.message.answers[0][0] == "Флоу устарел, начните заново."
+    assert pick.message.answers[0][0] == "Кнопка устарела — откройте раздел заново."
 
 
 # --- continuing an interrupted scrape from the bot ----------------------------------------
@@ -745,11 +750,11 @@ def test_scrape_offers_to_continue_an_interrupted_one_on_its_account(monkeypatch
     _checkpoint(tmp_path)
     monkeypatch.setattr(router, "DEFAULT_OUT", str(tmp_path))
     state = _State({})
-    msg = _SMsg(text="n")
-    asyncio.run(router.scrape_name(msg, state, _pool(), None, JobManager()))
+    msg = _SMsg()
+    _project_scrape(router, msg, state)
 
     text, markup = msg.answers[0]
-    assert state.state == Scrape.resume and "Уже собрано постов: 42" in text and "@a, @b" in text
+    assert state.state == Scrape.resume and "Уже собрано постов: 42" in text and "1. @a\n\n2. @b" in text
     assert _buttons(markup)[0] == "▶️ Продолжить"
 
     asyncio.run(router.scrape_resume(_SCallback(), ChoiceCB(scope="scrape_resume", value="continue"),
@@ -772,29 +777,28 @@ def test_an_old_checkpoint_without_an_account_asks_for_one(monkeypatch, tmp_path
     assert params.resume and params.account == _ACC
 
 
-def test_scrape_start_fresh_asks_for_the_account_then_channels(monkeypatch, tmp_path):
+def test_scrape_start_fresh_keeps_the_project_s_channels(monkeypatch, tmp_path):
     from bot.routers import scraping as router
     from bot.services.jobs import JobManager
     from bot.states import Scrape
 
     calls = _scrapes(monkeypatch)
     _checkpoint(tmp_path)
-    state = _State({"name": "n", "out_dir": str(tmp_path)})
+    state = _State({"name": "n", "out_dir": str(tmp_path), "channels": "@a, @b"})
     state.state = Scrape.resume
     fresh = _SCallback()
     asyncio.run(router.scrape_resume(fresh, ChoiceCB(scope="scrape_resume", value="fresh"),
                                      state, _pool(), None, JobManager()))
-    assert calls == [] and state.state == Scrape.channels
-    assert fresh.message.answers[0][0].startswith("Каналы/группы")
+    assert calls == [] and state.state == Scrape.date_min  # the channels aren't asked: the project's
+    assert state.data["channels"] == "@a, @b"
 
 
 def test_a_new_scrape_drops_an_abandoned_ones_settings():
     from bot.routers import scraping as router
-    from bot.states import Scrape
 
     state = _State({"keyword": "крипта", "max_messages": 50, "comments": False})
-    asyncio.run(router.scrape_start(_SCallback(), state, _pool(), None))
-    assert state.state == Scrape.name and state.data == {}  # no hidden filter on the new run
+    _project_scrape(router, _SMsg(), state)
+    assert not {"keyword", "max_messages", "comments"} & set(state.data)  # no hidden filter on the new run
 
 
 def test_a_broken_marker_reads_as_none(monkeypatch, tmp_path):
@@ -883,7 +887,7 @@ def test_cli_accounts_list_by_username(monkeypatch):
         sessions = ["c2", "c10", "c1", "dead"]
 
         def get_session_path(self, client):
-            return None
+            return f"sessions/{client}.session"
 
         async def fetch_me(self, client, timeout=20):
             if client == "dead":
@@ -893,6 +897,7 @@ def test_cli_accounts_list_by_username(monkeypatch):
 
     printed = []
     monkeypatch.setattr(accounts.console, "print", lambda table, *a, **k: printed.append(table))
+    monkeypatch.setattr(accounts.console, "input", lambda *a: "")  # Enter: no card
     asyncio.run(accounts.AccountsFunc(_Storage(), ns(api_id=1, api_hash="h")).execute())
 
     usernames = list(printed[0].columns[2].cells)
@@ -1041,29 +1046,53 @@ def test_cli_photo_one_path_or_random_folder(tmp_path, monkeypatch):
     assert runs == [str(photo), None]
 
 
+def test_every_function_is_discovered_once():
+    """Discovery takes any *Func class a module has: one imported from another module would be a
+    second instance (and a second menu entry) — modules import the module, not its class."""
+    from collections import Counter
+
+    from modules.storages.functions_storage import FunctionsStorage
+
+    storage = FunctionsStorage("functions", ns(sessions=[], loop=None, initialize=False), ns())
+    counts = Counter(type(instance).__name__ for instance, _ in storage.functions)
+    assert [name for name, count in counts.items() if count > 1] == []
+
+
 def test_cli_menu_is_the_bot_s_menu(monkeypatch):
     import main
-    from bot.services.registry import BOT_FUNCTIONS, CLI_EXTRAS
+    from bot.services.registry import BOT_FUNCTIONS, CLI_EXTRAS, NOT_MENU_ITEMS
 
     class Unknown:
         """Some new thing"""
 
     functions = [(type(f.classname, (), {})(), "doc") for f in BOT_FUNCTIONS + CLI_EXTRAS]
     functions.append((Unknown(), Unknown.__doc__))
+    functions.append((type("ScrapeFunc", (), {})(), "Скрап"))  # run from a project's card only
+    functions.append((type("TdataImportFunc", (), {})(), "tdata"))  # from ➕ Добавить only
+    functions.append((type("LoginCodesFunc", (), {})(), "codes"))  # from an account's card only
     entries = main.menu_entries(functions)
 
-    assert [e[2] for e in entries[:3]] == ["📁 Проекты", "📇 Добавить в контакты", "📨 ЛС по базе (со статой)"]
-    assert len(entries) == len(functions)  # nothing lost, nothing repeated
+    # the projects — their card has all the work on a base —, then one target for all the workers
+    assert [e[2] for e in entries[:3]] == ["📁 Проекты", "✉️ ЛС человеку", "🗨 Комментарии"]
+    assert "🤝 Инвайтинг" in [e[2] for e in entries if e[0] == "💬 Активность"]
+    # nothing lost, nothing repeated; a project card's items and ➕ Добавить's tdata are other items'
+    assert len(entries) == len(functions) - len(NOT_MENU_ITEMS)
+    assert not {"Скрап", "tdata", "👥 Участники чата", "📨 ЛС по базе", "📈 Анализ"} & {e[2] for e in entries}
     assert entries[-1][0] == "Прочее" and entries[-1][2] == "Some new thing"
     assert entries[-2][:1] + entries[-2][2:3] == ("⚙️ Настройки", "⚙️ Настройки")  # after the workers' groups
-    workers = [e[2] for e in entries if e[0] == "🤖 Воркеры"]
-    assert workers == ["📋 Список аккаунтов", "🌐 Прокси", "📲 Добавить по номеру", "📥 Загрузить tdata", "🔑 Код входа",
-                       "🗑 Убрать личный аккаунт"]
+    accounts = [e[2] for e in entries if e[0] == "🤖 Аккаунты"]
+    # the screen's actions, then its function, as in the bot
+    assert accounts == ["📋 Список", "🌐 Прокси", "➕ Добавить", "🛡 Проверка статуса (SpamBot)"]
 
     printed = []
     monkeypatch.setattr(main.console, "print", lambda text="", *a, **k: printed.append(text))
     main.print_menu(entries)
-    assert any("[3] ⚠️ [bold white]📨 ЛС по базе (со статой)[/] — личные сообщения" in p for p in printed)
+    # an all-risky section: ⚠️ once, on its title, as in the bot; a mixed one: on its risky items
+    assert "\n[bold magenta]💬 Активность[/] ⚠️" in printed and "\n[bold magenta]🛠 Обслуживание[/]" in printed
+    assert any("[24] ⚠️ [bold white]🧹 Очистить диалоги[/] — удаляет" in p for p in printed)
+    heading = printed.index("  [italic]Действия в чатах[/]")  # the bot's subheadings
+    assert "[6] [bold white]🚪 Вступить в чат" in printed[heading + 1]
+    assert any("[2] [bold white]✉️ ЛС человеку" in p for p in printed)
 
 
 def test_run_instance_runs_the_chosen_function():
@@ -1156,16 +1185,6 @@ def test_a_crashed_scrape_process_says_the_data_is_kept(monkeypatch, tmp_path):
     asyncio.run(router._run_scrape(bot, 1, JobManager(), _pool(), None, params))
     text = _sent(bot)[-1]
     assert "не хватило памяти" in text and "Собранное сохранено" in text
-
-
-def test_a_sticker_for_the_name_is_asked_again(tmp_path):
-    from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
-
-    state = _State({})
-    msg = _SMsg(text=None)  # a sticker / photo: no text
-    asyncio.run(router.scrape_name(msg, state, _pool(), None, JobManager()))
-    assert "name" not in state.data and msg.answers[0][0] == "Ожидается текст. Попробуйте ещё раз."
 
 
 # --- 4. profile / security functions on the picked workers only ---------------------------
@@ -1352,7 +1371,7 @@ def _named_chats(monkeypatch, names, error=None):
 
     looked_up = []
 
-    async def lookup_chats(creds, chats):
+    async def lookup_on(client, chats):
         looked_up.append(chats)
         if error is not None:
             raise error
@@ -1360,27 +1379,40 @@ def _named_chats(monkeypatch, names, error=None):
                 for c in chats]
 
     monkeypatch.setattr(router, "_lookup", conftest.REAL_BOT_LOOKUP)
-    monkeypatch.setattr(router, "lookup_chats", lookup_chats)
-    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(router, "lookup_on", lookup_on)
+    monkeypatch.setattr(router, "borrow", _borrow_offline)
     return looked_up
+
+
+async def _borrow_offline(pool, client, path, work, timeout):
+    """delegation.borrow without connecting the stub clients: the account is busy meanwhile."""
+    pool.borrowed[path] += 1
+    try:
+        return await work()
+    finally:
+        pool.borrowed[path] -= 1
 
 
 def test_scrape_channels_are_shown_by_name_up_to_the_confirmation(monkeypatch):
     from bot.routers import scraping as router
     from bot.states import Scrape
 
+    from modules import projects
+
+    projects.add("n", ["@a", "@b"])  # a scrape is a project's: its checks name the chats on it
     _named_chats(monkeypatch, {"@a": "Канал А", "@b": "Канал Б"})
     state = _State({k: v for k, v in _SCRAPE.items() if k != "channels"})
     msg = _Msg(text="@a, @b")
     asyncio.run(router.scrape_channels(msg, state, _pool(), None))
     assert [text for text, _ in msg.answers] == [
-        "🔎 Проверяю названия…", "• «Канал А» — @a\n• «Канал Б» — @b", "Дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):"]
+        "🔎 Проверяю названия…", "1. «Канал А»\n👤 @a\n\n2. «Канал Б»\n👤 @b", "Дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):"]
     assert msg.sent[0].deleted  # the 🔎 gives way to the names
     assert state.state == Scrape.date_min
 
     confirm = _Msg(text="31.01.2024")
     asyncio.run(router.scrape_run(confirm, state))
-    assert "Каналы: «Канал А» (@a), «Канал Б» (@b)\n" in confirm.answers[0][0]
+    # one block each, as on the project's card
+    assert "Каналы:\n\n1. «Канал А»\n👤 @a\n\n2. «Канал Б»\n👤 @b\n\nПериод:" in confirm.answers[0][0]
 
 
 def test_a_chat_not_found_asks_before_each_flow_goes_on(monkeypatch):
@@ -1389,20 +1421,40 @@ def test_a_chat_not_found_asks_before_each_flow_goes_on(monkeypatch):
 
     _named_chats(monkeypatch, {"@a": "Канал А"})
     flows = [(router.scrape_channels, Scrape.channels, Scrape.date_min, "Дата с (ДД"),
-             (router.members_chats, Members.chats, Members.name, "Имя для файла базы"),
+             # ▶️ collects the project's base at once (test_members)
+             (functools.partial(router.members_chats, scrapes=None), Members.chats, None, None),
              (router.verify_channel, Verify.channel, Verify.date_min, "Дата с:")]
     for handler, asking, next_state, next_prompt in flows:
         state = _State({"account": _ACC})
         state.state = asking
         msg = _Msg(text="@typo")
         asyncio.run(handler(msg, state, _pool(), None))
+        assert msg.answers[-2][0] == "1. @typo\n⚠️ нет такого"  # the list, then the question under it
         text, markup = msg.answers[-1]
-        assert "⚠️ @typo — нет такого" in text and "заново" in text
-        assert _buttons(markup) == ["▶️ Продолжить всё равно"] and state.state == asking
+        assert text == "Пришлите список заново — или продолжите как есть:"
+        assert _buttons(markup) == ["▶️ Продолжить всё равно", "✖️ Отмена"] and state.state == asking
+        if next_state is None:
+            continue
 
         go = _SCallback()
-        asyncio.run(router.chats_ok(go, state))
+        asyncio.run(router.chats_ok(go, state, _pool(), None, None))
         assert state.state == next_state and go.message.answers[0][0].startswith(next_prompt)
+
+
+def test_a_long_list_of_chats_goes_in_messages_within_telegram_s_limit(monkeypatch):
+    from bot.routers import scraping as router
+    from bot.states import Scrape
+
+    chats = [f"@chan{i:03}" for i in range(40)]
+    _named_chats(monkeypatch, {chat: "Т" * 120 for chat in chats})  # long titles: ~5 400 characters in all
+    state = _State({"account": _ACC})
+    state.state = Scrape.channels
+    msg = _Msg(text=", ".join([*chats, "@typo"]))
+    asyncio.run(router.scrape_channels(msg, state, _pool(), None))
+    blocks = msg.answers[1:-1]  # after the 🔎, before the question
+    assert len(blocks) > 1 and all(len(text) <= 4096 for text, _ in blocks)
+    assert "\n\n".join(text for text, _ in blocks).count("\n👤 @chan") == 40
+    assert _buttons(msg.answers[-1][1]) == ["▶️ Продолжить всё равно", "✖️ Отмена"]
 
 
 def test_a_retyped_list_is_checked_again(monkeypatch):
@@ -1422,8 +1474,8 @@ def test_a_stale_continue_button_says_so():
     from bot.routers import scraping as router
 
     go = _SCallback()
-    asyncio.run(router.chats_ok(go, _State()))
-    assert go.message.answers[0][0] == "Флоу устарел, начните заново."
+    asyncio.run(router.chats_ok(go, _State(), None, None, None))
+    assert go.message.answers[0][0] == "Кнопка устарела — откройте раздел заново."
 
 
 def test_a_busy_account_is_not_asked_and_the_flow_goes_on(monkeypatch):
@@ -1452,7 +1504,20 @@ def test_a_failed_lookup_goes_on_with_the_input_as_typed(monkeypatch):
 
     confirm = _Msg(text="31.01.2024")
     asyncio.run(router.scrape_run(confirm, state))
-    assert "Каналы: @a\n" in confirm.answers[0][0]
+    assert "Каналы:\n\n1. @a\n\nПериод:" in confirm.answers[0][0]  # never named: as typed
+
+
+def test_a_check_cut_by_a_job_s_end_goes_on_with_the_input_as_typed(monkeypatch):
+    """The names are asked on the account's own client: a job ending meanwhile disconnects it, and
+    Telethon cancels the pending request — that check only, not the bot."""
+    from bot.routers import scraping as router
+    from bot.states import Scrape
+
+    _named_chats(monkeypatch, {}, error=asyncio.CancelledError())
+    state, msg, pool = _State({**_SCRAPE, "channels": None}), _Msg(text="@a"), _pool()
+    asyncio.run(router.scrape_channels(msg, state, pool, None))
+    assert msg.sent[0].edited == ["ℹ️ Названия не проверены: соединение прервано"]
+    assert state.state == Scrape.date_min and not pool.busy(_ACC)
 
 
 def test_an_empty_channel_list_is_asked_again(monkeypatch):
@@ -1470,16 +1535,22 @@ def test_an_empty_channel_list_is_asked_again(monkeypatch):
 
 def test_an_interrupted_scrape_is_offered_with_its_channels_names(monkeypatch, tmp_path):
     from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
+
+    from modules import projects
+    from scraper.scrape import ChatInfo
 
     _scrapes(monkeypatch)
     looked_up = _named_chats(monkeypatch, {"@a": "Канал А", "@b": "Канал Б"})
-    _checkpoint(tmp_path, chat_labels=["«Канал А» (@a)", "«Канал Б» (@b)"])
+    projects.add("n", ["@a", "@b"])
+    projects.remember("n", [ChatInfo("@a", "«Канал А»", None, -1001, "a"), ChatInfo("@b", "«Канал Б»", None)])
+    _checkpoint(tmp_path)
     monkeypatch.setattr(router, "DEFAULT_OUT", str(tmp_path))
-    msg = _SMsg(text="n")
-    asyncio.run(router.scrape_name(msg, _State({}), _pool(), None, JobManager()))
-    assert "Каналы: «Канал А» (@a), «Канал Б» (@b)\n" in msg.answers[0][0]
-    assert looked_up == []  # the names the scrape started with: no call to Telegram
+    msg = _SMsg()
+    _project_scrape(router, msg, _State({}))
+    # as the project's checks named them, one block each as on its card
+    assert ("Каналы:\n\n1. «Канал А»\n👤 @a · 🆔 <code>-1001</code>\n\n2. «Канал Б»\n👤 @b\n\nПериод:"
+            in msg.answers[0][0])
+    assert looked_up == []  # no call to Telegram
 
 
 def test_the_channels_names_ride_along_with_the_scrape(monkeypatch):
@@ -1556,7 +1627,7 @@ def test_an_old_mid_flow_button_leaves_another_flow_alone(module, handler, value
     state.state = Analysis.file
     replies = _mid_flow_call(module, handler, value, state, extra)
     # e.g. «Пропустить тех, кому уже писали?» would lead to a mailing to that posts file's people
-    assert replies == ["Флоу устарел, начните заново."]
+    assert replies == ["Кнопка устарела — откройте раздел заново."]
     assert state.state is Analysis.file and state.data == {"path": "assets/databases/G_posts.parquet"}
 
 

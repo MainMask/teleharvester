@@ -8,13 +8,14 @@ from modules.storages.sessions_storage import release_client
 
 
 class JobManager:
-    """One active job at a time in this slot. The bot has two (bot/app.py): `manager` for the
-    workers' jobs and `scrapes` for the scraper's (scrape, members, verify), which run on their
-    own client, so a multi-day scrape doesn't hold up the rest.
+    """One active job at a time in this slot. The bot has three (bot/app.py): `manager` for the
+    workers' jobs, `scrapes` for the scraper's (scrape, members, verify), which run on their
+    own client, so a multi-day scrape doesn't hold up the rest, and `analyses` for the analysis,
+    which uses no account at all.
 
     Coro jobs (one-shot functions + the chat trigger-listener) run as a cancellable
     background task with a ⏹ Stop button. Interactive/threaded jobs (the report flow,
-    the analysis, a tdata import) take the slot via acquire()/release().
+    the analysis, a tdata import) take their slot via acquire()/release().
 
     One slot for the workers' jobs is correct: every admin shares one worker pool, and the
     worker TelegramClient objects must not be driven by two jobs at once.

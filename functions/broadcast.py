@@ -1,6 +1,7 @@
 import asyncio
 import os
 import random
+from python_socks import ProxyError
 from rich.prompt import Prompt, Confirm
 from modules.console import console
 from telethon import events, types
@@ -269,7 +270,8 @@ class Broadcast(TelethonFunction):
                     if getattr(session, "_updates_error", None) is not None:
                         raise session._updates_error
                     return  # disconnected on purpose: the job is over
-                except OSError as err:  # ConnectionError: Telethon's reconnects ran out
+                # ConnectionError: Telethon's reconnects ran out; ProxyError: the proxy refused (its upstream down)
+                except (OSError, ProxyError) as err:
                     await report(f"[!] [{label}] соединение потеряно ({err}), "
                                  f"переподключение через {LISTENER_RECONNECT_DELAY} с")
                     await asyncio.sleep(LISTENER_RECONNECT_DELAY)
@@ -300,15 +302,11 @@ class Broadcast(TelethonFunction):
         self.choice = modes[int(choice) - 1]
 
         if self.choice == 4:
-            self.sticker_set = console.input("[bold red]ссылка на стикерпак (например https://t.me/addstickers/AlbinoEmoji)> [/]")
+            self.sticker_set = console.input(
+                "[bold red]ссылка на стикерпак (например https://t.me/addstickers/AlbinoEmoji)> [/]")
             self.sticker_set = self.sticker_set.replace("https://t.me/addstickers/", "")
 
-        delay = Prompt.ask(
-            "[bold red]задержка[/]",
-            default="-".join(str(x) for x in self.settings.delay)
-        )
-
-        self.delay_range = self.parse_delay(delay)
+        self.delay_range = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
         self.mention_all = Confirm.ask("[bold red]добавлять в сообщения скрытые упоминания участников чата? "
                                        "(упомянутым придёт уведомление)[/]", default=True)
 

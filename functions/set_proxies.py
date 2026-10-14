@@ -50,4 +50,5 @@ class SetProxiesFunc(TelethonFunction):
                 tdata_import.save_proxies(fileobj.read())
             console.print(f"[bold white]Список сохранён в {tdata_import.PROXIES_FILE}[/]")
         if summary["string_sessions_skipped"]:
-            console.print(f"[yellow]Пропущено .session-аккаунтов (без метаданных): {summary['string_sessions_skipped']}[/]")
+            console.print("[yellow]Пропущено .session-аккаунтов (без метаданных): "
+                          f"{summary['string_sessions_skipped']}[/]")

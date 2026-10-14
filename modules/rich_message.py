@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from telethon import errors, types
 
-from functions.base.base import AccountLimited
+from modules.account_limits import AccountLimited
 
 
 # aiogram entity type -> builder(ent) returning a Telethon MessageEntity.

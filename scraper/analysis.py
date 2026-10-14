@@ -401,7 +401,8 @@ def sample(input_path: str, output: str, text_col: str, category_col: str, sampl
     return path
 
 
-def filter_keywords(input_path: str, output: str, content_col: str, keywords: list[str], max_rows_per_file: int) -> None:
+def filter_keywords(input_path: str, output: str, content_col: str, keywords: list[str],
+                    max_rows_per_file: int) -> None:
     """Keep rows containing any keyword; add one 0/1 column per keyword."""
     # a repeated keyword would be counted twice; in any case, as the match ignores it
     unique = {}
@@ -424,7 +425,8 @@ def filter_keywords(input_path: str, output: str, content_col: str, keywords: li
     print(f"Matched rows: {len(filtered)}")
 
     base = Path(output)
-    if base.suffix.lower() in (".parquet", ".xlsx", ".csv"):  # a data extension only: Path("kw_01.01.2024").suffix is ".2024"
+    # a data extension only: Path("kw_01.01.2024").suffix is ".2024"
+    if base.suffix.lower() in (".parquet", ".xlsx", ".csv"):
         base = base.with_suffix("")
     num_files = max(1, int(np.ceil(len(filtered) / max_rows_per_file)))
     for i in range(num_files):

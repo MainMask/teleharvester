@@ -1,4 +1,4 @@
-"""An account's login codes from the last minutes: the terminal menu's «Код входа»
+"""An account's login codes from the last minutes: «🔑 Код входа» of the terminal menu's account card
 (functions/sign_in.py). With a session file — a worker's or a personal one — its codes at once."""
 import os
 import sys

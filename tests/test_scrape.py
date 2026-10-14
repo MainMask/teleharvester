@@ -1970,8 +1970,9 @@ def test_lookup_chats_names_each_chat_as_the_scrape_sees_it(monkeypatch):
         (None, "инвайт-ссылка истекла")]
     assert LookupClient.disconnected
     assert scrape.chat_lines(infos[:1] + infos[3:5]) == (
-        "• «Берлога» — @chan\n⚠️ @nope — нет такого username\n"
-        "⚠️ «Закрытый клуб» — t.me/+join — аккаунт не состоит в чате — вступите")
+        "1. «Берлога»\n👤 @chan\n\n"
+        "2. @nope\n⚠️ нет такого username\n\n"
+        "3. «Закрытый клуб»\n🔗 t.me/+join\n⚠️ аккаунт не состоит в чате — вступите")
     assert [scrape.chat_label(i) for i in infos[3:5]] == ["@nope", "«Закрытый клуб» (t.me/+join)"]
 
 
@@ -1985,6 +1986,18 @@ def test_lookup_chats_gives_up_on_a_connect_that_hangs(monkeypatch):
     monkeypatch.setattr(scrape, "CHAT_LOOKUP_TIMEOUT", 0.05)
     with pytest.raises(TimeoutError):
         asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["@chan"]))
+
+
+def test_lookup_on_a_logged_out_account_says_so_before_any_chat():
+    class LoggedOut:  # the bot's own client of the account: connected, but its session is gone
+        async def is_user_authorized(self):
+            return False
+
+        async def get_entity(self, ref):
+            pytest.fail("a chat asked on a logged-out session")
+
+    with pytest.raises(SystemExit, match="не авторизована"):
+        asyncio.run(scrape.lookup_on(LoggedOut(), ["@chan"]))
 
 
 def test_chat_problem_says_why_in_the_operator_s_words():
@@ -2251,3 +2264,28 @@ def test_participants_take_a_reactors_file_without_names_or_hashes(tmp_path):
     pd.DataFrame({"Reactor ID": [9]}).to_parquet(reactors)
     with pytest.raises(SystemExit, match="Reactor Username"):
         analysis.participants(str(_posts_with_a_comment(tmp_path)), str(tmp_path / "p"), str(reactors))
+
+
+def test_lookup_gives_a_channel_s_id_and_username(monkeypatch):
+    from telethon.tl.types import Channel
+
+    class ChannelClient(LookupClient):
+        async def get_entity(self, arg):
+            if arg == "@citadel":
+                return Channel(id=1629147115, title="Цитадель", photo=None, date=None, access_hash=1,
+                               username="citadel")
+            return await super().get_entity(arg)
+
+    monkeypatch.setattr(scrape, "TelegramClient", ChannelClient)
+    channel, private = asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["@citadel", "@chan"]))
+    assert (channel.title, channel.chat_id, channel.username) == ("«Цитадель»", -1001629147115, "citadel")
+    assert (private.title, private.chat_id) == ("«Берлога»", None)  # no id told: still named
+    assert scrape.chat_block(1, channel) == "1. «Цитадель»\n👤 @citadel · 🆔 -1001629147115"
+
+
+def test_the_bot_s_chat_list_copies_ids_and_escapes_names():
+    info = scrape.ChatInfo("-1001629147115", "«A <b> & B»", None, -1001629147115, None)
+    assert scrape.chat_block(1, info, html=True) == "1. «A &lt;b&gt; &amp; B»\n🆔 <code>-1001629147115</code>"
+    assert scrape.chat_block(1, info) == "1. «A <b> & B»\n🆔 -1001629147115"  # the terminal's: plain
+    unknown = scrape.ChatInfo("-1002", None, None)
+    assert scrape.chat_block(2, unknown, "❔ <x>", html=True) == "2. <code>-1002</code>\n❔ &lt;x&gt;"

@@ -15,8 +15,6 @@ from bot.services.registry import (
     BOT_FUNCTIONS_BY_KEY,
     RISKY,
     SAFE,
-    SECTIONS,
-    WORKER_GROUPS,
     by_category,
 )
 from bot.services.delegation import WorkerPool
@@ -79,16 +77,18 @@ class TestRegistry:
         assert len(BOT_FUNCTIONS_BY_KEY) == len(BOT_FUNCTIONS)
 
     def test_categories_cover_all(self):
-        from bot.services.registry import PROJECTS
+        from bot.services.registry import SCREENS
 
-        total = sum(len(by_category(c)) for c in (PROJECTS, *SECTIONS, *WORKER_GROUPS))
+        total = sum(len(by_category(c)) for c in SCREENS)
         assert total == len(BOT_FUNCTIONS)
 
     def test_every_category_is_reachable_from_the_menu(self):
-        # a category outside the projects / SECTIONS / WORKER_GROUPS would have no button leading to it
-        from bot.services.registry import PROJECTS
+        # a category that is no screen, or a screen whose parents don't lead to the main menu,
+        # would have no button leading to it
+        from bot.services.registry import MAIN_MENU, SCREENS, trail
 
-        assert {f.category for f in BOT_FUNCTIONS} == {PROJECTS} | set(SECTIONS) | set(WORKER_GROUPS)
+        assert {f.category for f in BOT_FUNCTIONS} <= set(SCREENS)
+        assert all(trail(title)[0] in MAIN_MENU for title in SCREENS)
 
     def test_risk_values_valid(self):
         assert all(f.risk in (SAFE, RISKY) for f in BOT_FUNCTIONS)
@@ -131,36 +131,21 @@ class TestRuns:
         asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), [0], report))
         assert any("отправлено" in m for m in msgs)
 
-    def test_statistics_tally(self):
-        from functions.statistics_phones import PhoneNumbersStatsFunc
-        fn = PhoneNumbersStatsFunc(_Storage(), ns())
-        rows = fn.tally(["12025550123", "12025550124"])
-        assert rows and rows[0][0] == 1 and rows[0][2] == 2
-
     def test_statistics_one_code_several_countries(self):
-        # +1 is the USA and Canada, +7 Russia and Kazakhstan: a row per country, not per code
-        from functions.statistics_phones import PhoneNumbersStatsFunc
-        fn = PhoneNumbersStatsFunc(_Storage(), ns())
-        rows = fn.tally(["12025550123", "14165550123", "79991234567", "77011234567", "79161234567"])
-        assert sorted(rows) == [(1, "Канада", 1), (1, "Соединенные Штаты", 1),
-                                (7, "Казахстан", 1), (7, "Россия", 2)]
+        # +1 is the USA and Canada, +7 Russia and Kazakhstan: a row per country, not per code, the most first
+        from modules.phone_countries import summary
+        assert summary(["12025550123", "14165550123", "79991234567", "+77011234567", "79161234567", None, "x"]) == \
+            "+7 Россия — 2 · +1 Канада — 1 · +1 Соединенные Штаты — 1 · +7 Казахстан — 1"
+        assert summary([None]) == ""
 
-    def test_statistics_count_a_worker_on_hold_by_its_stored_number(self):
-        from functions.statistics_phones import PhoneNumbersStatsFunc
+    def test_statistics_count_a_worker_not_asked_by_its_stored_number(self):
+        from modules.phone_countries import phone_of
 
-        class _Worker:
-            async def get_me(self):
-                return ns(phone="12025550123")
-
-        held = object()  # busy scraping: not asked, its .jsession has the number
         storage = _Storage()
         storage.jsessions_paths = {"sessions/w.jsession": ns(account=ns(account=ns(phone_number="447700900123")))}
-        storage.get_session_path = lambda s: "sessions/w.jsession" if s is held else None
-        fn = PhoneNumbersStatsFunc(storage, ns())
-        fn.sessions, fn.on_hold = [_Worker()], [held]
-        msgs, report = collect()
-        asyncio.run(fn.run(report))
-        assert sorted((m.split(" — ")[0], m.split(" — ")[-1]) for m in msgs) == [("+1", "1"), ("+44", "1")]
+        storage.get_session_path = lambda s: "sessions/w.jsession"
+        assert phone_of(storage, object(), ns(phone="12025550123")) == "12025550123"
+        assert phone_of(storage, object(), None) == "447700900123"  # busy scraping, or no answer
 
 
 class _DeadSession(_Session):
@@ -198,7 +183,7 @@ class _Bot:
     def __init__(self):
         self.sent = []
 
-    async def send_message(self, chat_id, text, reply_markup=None):
+    async def send_message(self, chat_id, text, reply_markup=None, **kw):
         self.sent.append(text)
         return ns(message_id=1)
 
@@ -590,6 +575,32 @@ class TestListenerSafety:
         assert sum("переподключение" in m for m in msgs) == 2
         assert len(session.removed) == 1
 
+    def test_a_refusing_proxy_reconnects_too(self, monkeypatch):
+        """The proxy answers but refuses (its upstream down, a bad login): python_socks' ProxyError is
+        no OSError, yet it is a dead proxy as well — the listener waits and tries again."""
+        import functions.broadcast as bc
+        from python_socks import ProxyError
+
+        monkeypatch.setattr(bc, "LISTENER_RECONNECT_DELAY", 0)
+
+        class Refused(_ListenSession):
+            runs = 0
+
+            async def __call__(self, request):
+                type(self).runs += 1
+                if type(self).runs < 2:
+                    raise ProxyError("Host unreachable", error_code=4)
+
+        b = self._broadcast()
+        msgs = []
+
+        async def report(text):
+            msgs.append(text)
+
+        asyncio.run(b.handle(Refused(), report))
+        assert Refused.runs == 2
+        assert sum("переподключение" in m for m in msgs) == 1 and not any("остановлен" in m for m in msgs)
+
     def test_one_broken_worker_does_not_end_the_others(self):
         class LoggedOut(_ListenSession):
             async def __call__(self, request):
@@ -624,7 +635,7 @@ class TestFinishReleasesSlot:
 
         async def scenario():
             m = JobManager()
-            m.acquire("Репорт", timeout=0)
+            m.acquire("Жалоба", timeout=0)
             flow = {"session": _Sess(), "rest": [], "peer": "x",
                     "ids": [1], "comment": "c", "selections": []}
             try:
@@ -666,7 +677,7 @@ class TestFinishLocksSlotDuringReplay:
         async def scenario():
             m = JobManager()
             # on_abort would free the slot under the running replay: it must not fire
-            m.acquire("Репорт", on_abort=lambda: aborted.append(True), timeout=0)
+            m.acquire("Жалоба", on_abort=lambda: aborted.append(True), timeout=0)
             flow = {"session": _Sess(), "rest": [], "peer": "x",
                     "ids": [1], "comment": "c", "selections": []}
             task = asyncio.create_task(_finish(_Inst(), flow, _ReportBot(), 1, m, ns(in_job=[])))
@@ -697,7 +708,7 @@ class TestSoftStop:
     def test_soft_stop_is_set_and_cleared_with_the_slot(self):
         async def scenario():
             m = JobManager()
-            m.acquire("Репорт", timeout=0)
+            m.acquire("Жалоба", timeout=0)
             m.lock()
             event = m.soft_stop()
             stopped, active = await m.stop(), m.active
@@ -759,13 +770,13 @@ class TestSoftStop:
 
         async def scenario():
             m = JobManager()
-            m.acquire("Репорт", timeout=0)
+            m.acquire("Жалоба", timeout=0)
             flow = {"session": _Sess(), "rest": [], "peer": "x",
                     "ids": [1], "comment": "c", "selections": []}
             await _finish(_Inst(), flow, _ReportBot(), 1, m, ns(in_job=[]))
 
         asyncio.run(scenario())
-        assert any("Репорт отправлен" in t for t in summaries)
+        assert any("Жалоба отправлена" in t for t in summaries)
         assert not any("Остановлено" in t for t in summaries)
 
 

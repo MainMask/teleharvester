@@ -4,14 +4,11 @@ from aiogram.filters.callback_data import CallbackData
 
 
 class MenuAction(str, Enum):
-    WORKERS = "workers"        # back to the "🤖 Воркеры" screen
-    SETTINGS = "settings"      # back to the "⚙️ Настройки" screen
-    # the hub screens' buttons (bot/services/registry.py SCREENS)
+    # the screens' actions (bot/services/registry.py SCREENS)
     LIST = "list"              # poll and list the worker accounts
     PROXY = "proxy"            # open proxy setup on the workers screen
-    TDATA = "tdata"            # upload a tdata account on the workers screen
-    PHONE = "phone"            # add an account by phone number + code
-    CODES = "codes"            # show a worker's recent login codes from Telegram
+    ADD = "add"                # add an account: by phone number + code, or from tdata
+    TDATA = "tdata"            # upload a tdata account (a choice of ADD)
     DELAY = "delay"            # set the delay between actions (config.toml)
     PROFILE_PAUSE = "ppause"   # set the pause between accounts for profile changes (config.toml)
     AUTOREPLY = "autoreply"    # the auto-reply to PM-mailing replies: on/off, text, stats
@@ -21,8 +18,8 @@ class MenuCB(CallbackData, prefix="menu"):
     action: MenuAction
 
 
-class CategoryCB(CallbackData, prefix="cat"):
-    index: int  # index into registry.WORKER_GROUPS
+class NavCB(CallbackData, prefix="nav"):
+    screen: str  # the title of the screen to open (a key of registry.SCREENS), its ⬅️ Назад too
 
 
 class FunctionCB(CallbackData, prefix="fn"):

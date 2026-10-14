@@ -8,26 +8,14 @@ from datetime import datetime
 
 from modules import login as sign_in
 from modules.login import Login
-from modules.storages.sessions_storage import connect_client, release_client
+from bot.services.delegation import borrow
 
 LOGIN_TIMEOUT = 600           # an abandoned sign-in's client is closed after this
 
 
 async def fetch_codes(pool, client, path: str) -> list[tuple[str, datetime]]:
     """The account's recent login codes. An account a job or the auto-reply uses stays connected."""
-    async def fetch():
-        await connect_client(client)  # a no-op if a job already has it connected
-        return await sign_in.read_codes(client)
-
-    pool.reading_codes[path] += 1  # before any await: a scrape must not start on it meanwhile
-    try:
-        return await asyncio.wait_for(fetch(), sign_in.FETCH_TIMEOUT)
-    finally:
-        pool.reading_codes[path] -= 1  # before the busy check, or it would see this read itself
-        if not pool.reading_codes[path]:
-            del pool.reading_codes[path]
-        if not pool.busy(path):
-            await release_client(client)  # the cache would grow every use
+    return await borrow(pool, client, path, lambda: sign_in.read_codes(client), sign_in.FETCH_TIMEOUT)
 
 
 _logins: dict[int, Login] = {}

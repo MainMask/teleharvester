@@ -97,7 +97,8 @@ def test_accounts_table_shows_the_spambot_status_restricted_last(monkeypatch):
     restricted_workers.save_status({until.path: "12 Nov 2026 [b]", clean.path: "active"})
     printed = []
     monkeypatch.setattr(accounts, "console", ns(status=lambda *a: contextlib.nullcontext(),
-                                                print=lambda *a, **k: printed.append(a[0])))
+                                                print=lambda *a, **k: printed.append(a[0]),
+                                                input=lambda *a: ""))  # Enter: no card
 
     asyncio.run(AccountsFunc(Storage([forever, until, clean, new]), _settings()).execute())
 
@@ -123,16 +124,20 @@ class _Worker:
     async def start(self):  # a logged-out worker's start() would wait for a phone number on stdin
         pytest.fail("start() must not be called")
 
+    async def disconnect(self):
+        pass
 
-def _run_joiner(monkeypatch, broadcast_choice, joined, workers=None):
-    """Drive JoinerFunc.execute (speed normal, no captcha) with two workers; `joined` is
-    what join() gives each. Returns (printed lines, broadcasts as (worker, target))."""
+
+def _run_joiner(monkeypatch, broadcast_choice, joined, workers=None, speed="normal"):
+    """Drive JoinerFunc.execute (no captcha) with two workers; `joined` is what join() gives
+    each; fast: as the menu without its sessions connected. Returns (printed lines, broadcasts
+    as (worker, target))."""
     printed, sent = [], []
     inputs = iter(["1", "https://t.me/chat"])  # mode, link
     monkeypatch.setattr(joiner, "console", ns(
         input=lambda *a: next(inputs), print=lambda *a, **k: printed.append(" ".join(map(str, a))),
         status=lambda *a: contextlib.nullcontext()))
-    monkeypatch.setattr(joiner.Prompt, "ask", lambda *a, **k: "normal")
+    monkeypatch.setattr(joiner.Prompt, "ask", lambda *a, **k: speed)
     confirms = iter([broadcast_choice is not None, False])  # broadcast instantly?, captcha?
     monkeypatch.setattr(joiner.Confirm, "ask", lambda *a, **k: next(confirms))
     monkeypatch.setattr(joiner, "track", lambda iterable, *a, **k: iterable)
@@ -151,6 +156,7 @@ def _run_joiner(monkeypatch, broadcast_choice, joined, workers=None):
 
     workers = workers or [_Worker("a"), _Worker("b")]
     func = JoinerFunc(_Storage(workers), _settings())
+    func.storage.initialize = speed != "fast"
     func.ask_accounts_count = lambda: None
     func.ask_int = lambda *a, **k: 0
     results = iter(joined)
@@ -165,6 +171,13 @@ def _run_joiner(monkeypatch, broadcast_choice, joined, workers=None):
 
 def test_a_worker_that_cant_connect_does_not_stop_the_others_joining(monkeypatch):
     printed, _ = _run_joiner(monkeypatch, None, [False, "chat-b"], workers=[_Worker("a", dead=True), _Worker("b")])
+    assert any("аккаунт 1" in line and "proxy unreachable" in line for line in printed)
+    assert any("Вступило аккаунтов: 1" in line for line in printed)
+
+
+def test_fast_join_a_worker_that_cant_connect_does_not_stop_the_others(monkeypatch):
+    printed, _ = _run_joiner(monkeypatch, None, [False, "chat-b"], workers=[_Worker("a", dead=True), _Worker("b")],
+                             speed="fast")
     assert any("аккаунт 1" in line and "proxy unreachable" in line for line in printed)
     assert any("Вступило аккаунтов: 1" in line for line in printed)
 

@@ -10,7 +10,7 @@ class Application(ABC):
     
     @staticmethod
     def system_lang_code():
-        return random.choice(["zh-hans", "cn", "en", "ru", "af", "sq", "cs", "pl"])
+        return random.choice(["zh-hans", "en", "ru", "af", "sq", "cs", "pl"])
     
     @abstractmethod
     def app_version() -> str:

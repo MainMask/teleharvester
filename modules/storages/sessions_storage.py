@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, List, Union
 
 from modules.console import console
+from python_socks import ProxyError
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
@@ -116,7 +117,8 @@ class SessionsStorage:
                     old_session_path = self.get_json_session_path(old_session)
 
                     console.print(
-                        f"[bold yellow]ВНИМАНИЕ:[/] один и тот же аккаунт дважды — {old_session_path} совпадает с {session_path}"
+                        f"[bold yellow]ВНИМАНИЕ:[/] один и тот же аккаунт дважды — {old_session_path} "
+                        f"совпадает с {session_path}"
                     )
 
                     continue
@@ -347,7 +349,7 @@ class SessionsStorage:
         if not self.initialize:
             try:
                 await connect_client(session)
-            except OSError as err:
+            except (OSError, ProxyError) as err:  # ProxyError: the proxy refused (bad login, its upstream down)
                 # one worker's dead proxy / network must not end the whole job: its first request
                 # then fails at once ("Cannot send requests while disconnected"), which every
                 # caller handles per worker, as for any get_me failure (skip it / next account)

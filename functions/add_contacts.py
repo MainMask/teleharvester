@@ -2,11 +2,10 @@ import asyncio
 
 from telethon.tl.functions.contacts import AddContactRequest
 from telethon.tl.types import InputUser
-from rich.prompt import Prompt
 
 from functions.base import TelethonFunction
 from functions.base.base import SKIPPED, AccountLimited, console_report
-from modules import contacts_ledger, parquet_db, scraped_files
+from modules import contacts_ledger, parquet_db
 from modules.account_limits import DailyCounter
 
 
@@ -69,7 +68,7 @@ class AddContactsFunc(TelethonFunction):
             raise
         except Exception as err:
             self.progress_failed()
-            await self._report(f"пропуск user_id={row.get('user_id')}: {err}")
+            await self._report(f"пропуск 🆔 {row.get('user_id')}: {err}")
             return
 
         self.added += 1
@@ -79,7 +78,7 @@ class AddContactsFunc(TelethonFunction):
         if self._unsaved >= LEDGER_SAVE_EVERY:
             self.flush_ledger()
         self.progress_ok()
-        await self._report(f"добавлен user_id={row['user_id']}, всего: {self.added}")
+        await self._report(f"добавлен 🆔 {row['user_id']}, всего: {self.added}")
 
     def flush_ledger(self):
         if self._unsaved:
@@ -126,7 +125,8 @@ class AddContactsFunc(TelethonFunction):
         stopped = set()  # workers that ran out on a queue: not tried again this run
         try:
             for sessions, queue in self.split_queues(rows):
-                if sessions and sessions[0] in self.on_hold:  # on hold (scraping, or left out of a CLI run): its people wait for it
+                # on hold (scraping, or left out of a CLI run): its people wait for it
+                if sessions and sessions[0] in self.on_hold:
                     waiting += len(queue)
                     self.progress_drop(len(queue))
                     continue
@@ -153,18 +153,15 @@ class AddContactsFunc(TelethonFunction):
                 "остаток пропущен."
             )
 
-    async def execute(self, bases=None):  # bases: a project's own (functions/projects.py)
+    async def execute(self, bases):  # bases: the project's own (functions/projects.py)
         self.ask_accounts_count()
 
         path = self.ask_file(
             "[bold red]путь к .parquet[/]",
-            bases or scraped_files.participant_bases(),  # the scraped bases, newest first, as in the bot
+            bases,
             default="assets/contacts.parquet",
         )
 
-        delay = Prompt.ask(
-            "[bold red]задержка[/]",
-            default="-".join(str(x) for x in self.settings.delay)
-        )
+        delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
 
-        await self.run(path, self.parse_delay(delay), console_report)
+        await self.run(path, delay, console_report)

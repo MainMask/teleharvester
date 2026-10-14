@@ -68,6 +68,6 @@ async def release(callback: CallbackQuery, callback_data: ReleaseCB, pool: Worke
         restricted_workers.release(path)
         await callback.message.edit_text(
             f"✅ Контакты {worker_name(pool.storage, path)} переданы: со следующего запуска им "
-            "напишут другие воркеры, а «Добавить в контакты» добавит их заново."
+            "напишут другие воркеры, а «📇 В контакты» добавит их заново."
         )
     await callback.answer()

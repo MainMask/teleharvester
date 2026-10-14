@@ -11,22 +11,19 @@ from scraper import analysis
 from scraper.datafiles import read_table, save_table
 
 
-# project: a project's name when run from its card (functions/projects.py): its files are offered only
+# project: the project's name, run from its card (functions/projects.py): its files are offered only
 
 def _posts_file(project) -> str:
     """A scraped posts file: a number from assets/databases or a typed path."""
-    files = scraped_files.project_files(project, kinds=("posts",)) if project else scraped_files.posts_bases()
+    files = scraped_files.project_files(project, kinds=("posts",))
     return TelethonFunction.ask_file("[bold red]файл постов[/]", files)
 
 
 def _combine(project):
-    if project:  # blank: all the project's posts files, as the bot's «🗂 Все файлы постов»
-        inp = Prompt.ask("[bold red]что объединить (файл / папка / шаблон *.parquet; пусто — все файлы постов "
-                         "проекта)[/]", default="")
-        inp = inp or [path for path, _ in scraped_files.project_files(project, kinds=("posts",))]
-    else:  # the posts files only, as the bot's button: the folder's bases would be read just to be skipped
-        inp = Prompt.ask("[bold red]что объединить (файл / папка / шаблон *.parquet)[/]",
-                         default=str(Path(scraped_files.BASES_DIR) / "*_posts*.parquet"))
+    # blank: all the project's posts files, as the bot's «🗂 Все файлы постов»
+    inp = Prompt.ask("[bold red]что объединить (файл / папка / шаблон *.parquet; пусто — все файлы постов "
+                     "проекта)[/]", default="")
+    inp = inp or [path for path, _ in scraped_files.project_files(project, kinds=("posts",))]
     out = Prompt.ask("[bold red]куда сохранить[/]", default=str(Path(scraped_files.BASES_DIR) / "Combined_posts"))
     dedup = Prompt.ask("[bold red]столбцы для удаления повторов[/]", default="Group,Message ID")
     analysis.combine(inp, out, [c.strip() for c in dedup.split(",")])
@@ -78,14 +75,18 @@ def _links(project):
 
 
 def _read(project):
-    files = scraped_files.project_files(project) if project else scraped_files.data_files()
+    files = scraped_files.project_files(project)
     inp = TelethonFunction.ask_file("[bold red]файл[/]", files)
     head = TelethonFunction.ask_int("[bold red]сколько строк показать[/]", default=10, min_value=1)
     df = read_table(inp)
     console.print(df.head(head).to_string())
     console.print(f"[{len(df)} строк x {len(df.columns)} столбцов]")
+    # not the file's own format: the conversion is written next to it under its name, over the file itself
+    own = Path(inp).suffix.lower().lstrip(".")
     to = Prompt.ask("[bold red]сконвертировать в (пусто — нет)[/]",
-                    choices=["", "parquet", "xlsx", "excel", "csv"], default="")
+                    choices=["", *(f for f in ("parquet", "xlsx", "excel", "csv")
+                                   if {"excel": "xlsx"}.get(f, f) != own)],
+                    default="")
     if to:
         out = save_table(df, Path(inp).with_suffix(""), to)
         console.print(f"[bold green]Сконвертировано:[/] {out}")
@@ -108,7 +109,7 @@ _TOOLS = [
 class ScraperAnalysisFunc(TelethonFunction):
     """Analyze scraped data"""
 
-    def execute(self, project=None):
+    def execute(self, project):
         for index, (label, _) in enumerate(_TOOLS):
             console.print(f"[bold white][{index + 1}] {label}[/]")
 

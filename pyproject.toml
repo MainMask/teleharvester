@@ -25,8 +25,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "ruff>=0.17,<0.18"]
 
 [tool.setuptools.packages.find]
 include = ["bot*", "functions*", "modules*", "scraper*"]
 exclude = ["tests*"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# real errors (undefined names, unused imports) and the line length; no other style
+select = ["F", "E501"]

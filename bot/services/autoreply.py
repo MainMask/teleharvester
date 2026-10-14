@@ -11,6 +11,7 @@ effect on the next round.
 """
 
 import asyncio
+import html
 import logging
 import os
 from collections import Counter
@@ -66,10 +67,23 @@ def _awaits_reply(dialog) -> bool:
 
 
 def _describe(user) -> str:
-    name = " ".join(part for part in (user.first_name, user.last_name) if part)
-    handle = f"@{user.username}" if user.username else f"id {user.id}"
+    """Who wrote (HTML): name, @username or the id in <code> (a tap copies it), phone."""
+    name = html.escape(" ".join(part for part in (user.first_name, user.last_name) if part))
+    handle = f"@{html.escape(user.username)}" if user.username else f"🆔 <code>{user.id}</code>"
     who = f"{name} ({handle})" if name else handle
     return f"{who}, 📱 +{user.phone}" if user.phone else who
+
+
+def _escaped(text: str, limit: int) -> str:
+    """`text` escaped for HTML within `limit` characters: cut before escaping, never inside an
+    entity (escaping may grow it fivefold, past a message's 4096)."""
+    text = text[:limit]  # escaped, it is never shorter
+    escaped = html.escape(text)
+    while len(escaped) > limit:
+        # a character escapes to 1-6 (&quot;): dropping a sixth of the excess never cuts too much
+        text = text[:len(text) - max(1, (len(escaped) - limit) // 6)]
+        escaped = html.escape(text)
+    return escaped
 
 
 def profile_url(user) -> str:
@@ -77,12 +91,13 @@ def profile_url(user) -> str:
 
 
 async def _unread_texts(client, dialog) -> str:
-    """The person's unread messages, oldest first ([медиа] for one without text)."""
+    """The person's unread messages, oldest first ([медиа] for one without text), escaped for the
+    HTML notification."""
     messages = await client.get_messages(dialog.entity, limit=min(dialog.unread_count, MAX_FORWARDED))
     texts = [message.message or "[медиа]" for message in reversed(messages) if not message.out]
     if dialog.unread_count > MAX_FORWARDED:
         texts.insert(0, f"…и ещё {dialog.unread_count - MAX_FORWARDED} раньше")
-    return "\n".join(texts)[:NOTIFY_TEXT_LIMIT]
+    return _escaped("\n".join(texts), NOTIFY_TEXT_LIMIT)
 
 
 async def _handle_dialog(client, dialog, path: str, label: str, text: str, replied: dict, notify) -> int:
@@ -119,14 +134,15 @@ async def _handle_dialog(client, dialog, path: str, label: str, text: str, repli
             raise
         except Exception as err:  # this person can't be written to (blocked, privacy, a flood limit):
             # the admins still get what they wrote; their next message is another try
-            header = f"⚠️ Ответ на рассылку — автоответ НЕ отправлен: {rich_message.refusal_reason(err) or err}"
+            header = ("⚠️ Ответ на рассылку — автоответ НЕ отправлен: "
+                      f"{html.escape(str(rich_message.refusal_reason(err) or err))}")
         else:
             replied[key] = datetime.now().strftime(TIME_FORMAT)
             save_replied(replied)  # before anything else can fail: never answer twice
             answered = 1
 
     # notify before the read mark: a dropped connection there must not lose it
-    delivered = await notify(f"{header}\nОт: {_describe(dialog.entity)}\nВоркер: {label}\n\n{incoming}",
+    delivered = await notify(f"{header}\nОт: {_describe(dialog.entity)}\nВоркер: {html.escape(label)}\n\n{incoming}",
                              profile_url(dialog.entity))
     if not delivered:  # no admin got it (the Bot API is down): left unread, the next round forwards it
         return answered
@@ -204,7 +220,7 @@ async def _send(bot, chat_id, message: str, markup=None):
     """send_message, waiting out the Bot API's flood limit a few times."""
     for attempt in range(NOTIFY_ATTEMPTS):
         try:
-            return await bot.send_message(chat_id, message, reply_markup=markup)
+            return await bot.send_message(chat_id, message, parse_mode="HTML", reply_markup=markup)
         except TelegramRetryAfter as err:
             if attempt == NOTIFY_ATTEMPTS - 1:
                 raise
@@ -213,7 +229,7 @@ async def _send(bot, chat_id, message: str, markup=None):
 
 def make_notify(bot, admins):
     async def notify(message: str, url: str) -> bool:
-        """True if at least one admin got it."""
+        """`message`: HTML (whatever came from Telegram escaped). True if at least one admin got it."""
         delivered = False
         markup = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="👤 Открыть профиль", url=url)]]

@@ -11,7 +11,7 @@ from rich.table import Table
 
 from functions.base import TelethonFunction
 from functions.base.base import SKIPPED, AccountLimited, console_report, pick_seconds
-from modules import contacts_ledger, json_file, parquet_db, rich_message, scraped_files
+from modules import contacts_ledger, json_file, parquet_db, rich_message
 from modules.account_limits import DailyCounter
 from modules.rich_message import RichContent
 
@@ -327,7 +327,8 @@ class PmMailingFunc(TelethonFunction):
             *own, (shared_sessions, shared) = queues
             self._shared_ids = {id(row) for row in shared if isinstance(row, dict)}
             for (worker,), queue in own:
-                if worker in self.on_hold:  # on hold (scraping, or left out of a CLI run): its people wait, as for a daily cap
+                # on hold (scraping, or left out of a CLI run): its people wait, as for a daily cap
+                if worker in self.on_hold:
                     waiting += len(queue)
                     await report(f"{len(queue)} получателей ждут своего воркера: он не участвует в этом запуске.")
                     self.progress_drop(len(queue))
@@ -385,12 +386,12 @@ class PmMailingFunc(TelethonFunction):
 
         console.print(table)
 
-    async def execute(self, bases=None):  # bases: a project's own (functions/projects.py)
+    async def execute(self, bases):  # bases: the project's own (functions/projects.py)
         self.ask_accounts_count()
 
         path = self.ask_file(
             "[bold red]файл с получателями[/]",
-            bases or scraped_files.participant_bases(),  # the scraped bases, newest first, as in the bot
+            bases,
             default=os.path.join("assets", "targets.txt"),
         )
 
@@ -441,12 +442,9 @@ class PmMailingFunc(TelethonFunction):
 
         text = console.input("[bold red]текст> [/]")
 
-        delay = Prompt.ask(
-            "[bold red]задержка[/]",
-            default="-".join(str(x) for x in self.settings.delay)
-        )
+        delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
 
         # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
-        await self.run(recipients, RichContent(text=text), self.parse_delay(delay), console_report)
+        await self.run(recipients, RichContent(text=text), delay, console_report)
 
         self.print_stats()

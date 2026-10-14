@@ -12,7 +12,7 @@ import pytest
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
-from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB
+from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB, NavCB
 from bot.config import BotConfig
 from bot.middlewares.auth import AuthMiddleware
 from bot.services.delegation import HostActionBlocked, WorkerPool
@@ -45,7 +45,10 @@ class TestCallbacks:
         assert (cb.scope, cb.value) == ("pm_mode", "phone")
 
     def test_menu_roundtrip(self):
-        assert MenuCB.unpack(MenuCB(action=MenuAction.WORKERS).pack()).action == MenuAction.WORKERS
+        assert MenuCB.unpack(MenuCB(action=MenuAction.LIST).pack()).action == MenuAction.LIST
+
+    def test_nav_roundtrip(self):
+        assert NavCB.unpack(NavCB(screen="🛠 Обслуживание").pack()).screen == "🛠 Обслуживание"
 
 
 # --- auth middleware (whitelist) -------------------------------------------

@@ -16,6 +16,8 @@ from telethon.errors import (
 
 from bot.services.registry import menu_path
 from modules import restricted_workers
+from modules.account_limits import AccountLimited  # here too: the functions import it from this module
+from modules.settings import parse_seconds
 
 
 _report_console = Console()
@@ -24,10 +26,6 @@ _report_console = Console()
 async def console_report(text: str) -> None:
     """Default progress reporter (CLI path): print plain text, no Rich markup parsing."""
     _report_console.print(text, markup=False, highlight=False)
-
-
-class AccountLimited(Exception):
-    """The account can no longer perform the action (rate limit / restriction / too long wait)."""
 
 
 def pick_seconds(pause) -> int:
@@ -92,10 +90,13 @@ class BaseFunction:
         return escape("" if value is None else str(value))
 
     @staticmethod
-    def parse_delay(string: str):
-        return list(
-            map(int, string.split("-"))
-        )
+    def ask_seconds(label: str, default: list | None = None) -> list:
+        """[sec] or [min, max] (5-10 / 7), asked again until it is one, as the bot takes it;
+        blank takes `default`."""
+        shown = None if default is None else "-".join(str(part) for part in default)
+        while (seconds := parse_seconds(Prompt.ask(label, default=shown))) is None:
+            _report_console.print("[bold red]Нужно число или диапазон, например 5-10 или 7.[/]")
+        return seconds
 
     @staticmethod
     def ask_int(label: str, default=None, min_value: int | None = None) -> int:
@@ -321,10 +322,11 @@ class BaseFunction:
 
         A person goes to one worker when
           1. `assigned` ({"<user_id>": worker id}, the contacts ledger) names a current worker;
-          2. else, without a username, to the base's owner: its access hashes are valid for
-             the account that scraped it only.
-        Everyone else is a shared queue for all workers, the owner last: it takes the shared
-        people only once the others ran out (or when it is the only free worker). If a worker
+          2. else, without a username, to the owner of their row: its access hash is valid for
+             the account that scraped it only (a members base collected again by another
+             account has rows of both, see scraper/members.py).
+        Everyone else is a shared queue for all workers, the owners last: they take the shared
+        people only once the others ran out (or when they are the only free workers). If a worker
         runs out (limit / restriction), its own people wait for it: nobody else takes them. A
         worker on hold keeps its people too: the caller holds its queue back.
         A plain list (.txt) has none of this: one queue for all workers.
@@ -334,22 +336,22 @@ class BaseFunction:
 
         by_id = {self.worker_id(s): s for s in self.sessions + self.on_hold}
         by_id.pop(None, None)
-        owner = by_id.get(rows[0].get("owner_id"))
+        owners = {id(by_id[row.get("owner_id")]) for row in rows if row.get("owner_id") in by_id}
         assigned = assigned or {}
 
         own, shared = {}, []
         for row in rows:
             worker = by_id.get(assigned.get(str(row["user_id"])))
-            if worker is None and owner is not None and not row.get("username"):
-                worker = owner
+            if worker is None and not row.get("username"):
+                worker = by_id.get(row.get("owner_id"))
             if worker is None:
                 shared.append(row)
             else:
                 own.setdefault(id(worker), (worker, []))[1].append(row)
 
         queues = [([worker], worker_rows) for worker, worker_rows in own.values()]
-        others = [s for s in self.sessions if s is not owner]
-        queues.append((others + [s for s in self.sessions if s is owner], shared))
+        others = [s for s in self.sessions if id(s) not in owners]
+        queues.append((others + [s for s in self.sessions if id(s) in owners], shared))
         return queues
 
     @staticmethod

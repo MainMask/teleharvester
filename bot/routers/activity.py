@@ -4,7 +4,8 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.routers._common import ensure_workers, require_text, resolve
+from bot.keyboards.common import cancel_kb
+from bot.routers._common import STALE_BUTTON, ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PollVote, Reactions
@@ -31,7 +32,7 @@ async def reactions_start(callback: CallbackQuery, state: FSMContext, pool: Work
         return
     await state.clear()
     await state.set_state(Reactions.link)
-    await callback.message.answer("Ссылка на сообщение/пост:")
+    await callback.message.answer("Ссылка на сообщение/пост:", reply_markup=cancel_kb(Reactions.link))
 
 
 @router.message(Reactions.link)
@@ -52,7 +53,7 @@ async def reactions_run(
     await callback.answer()
     # a stale reaction button: after the state was cleared, or in another flow that has a link of its own
     if await state.get_state() != Reactions.link.state or "link" not in data:
-        await callback.message.answer("Флоу устарел, начните заново.")
+        await callback.message.answer(STALE_BUTTON)
         return
     await state.clear()
 
@@ -74,7 +75,7 @@ async def poll_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
         return
     await state.clear()
     await state.set_state(PollVote.link)
-    await callback.message.answer("Ссылка на сообщение/пост с опросом:")
+    await callback.message.answer("Ссылка на сообщение/пост с опросом:", reply_markup=cancel_kb(PollVote.link))
 
 
 @router.message(PollVote.link)
@@ -84,7 +85,7 @@ async def poll_link(message: Message, state: FSMContext):
         return
     await state.update_data(link=link)
     await state.set_state(PollVote.option)
-    await message.answer("Номер варианта (напр. 1, 2):")
+    await message.answer("Номер варианта (напр. 1, 2):", reply_markup=cancel_kb(PollVote.option))
 
 
 @router.message(PollVote.option)

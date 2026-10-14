@@ -288,7 +288,7 @@ def test_phone_and_id_link_without_username():
     client = FakeClient([dialog(user(5, username=None, phone="79990001122"))])
     _, notes = run_poll(FakePool([client]))
     text, url = notes[0]
-    assert "Ann (id 5), 📱 +79990001122" in text and url == "tg://user?id=5"
+    assert "Ann (🆔 <code>5</code>), 📱 +79990001122" in text and url == "tg://user?id=5"
 
 
 class FakeBot:
@@ -297,7 +297,8 @@ class FakeBot:
         self.floods = floods
         self.sent = []
 
-    async def send_message(self, chat_id, text, reply_markup=None):
+    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
+        assert parse_mode == "HTML"  # the id in <code>, everything from Telegram escaped
         if self.floods:
             self.floods -= 1
             raise TelegramRetryAfter(method=None, message="Too Many Requests", retry_after=0)
@@ -409,7 +410,7 @@ def test_notify_reports_whether_any_admin_got_it():
         def __init__(self, fail):
             self.fail = fail
 
-        async def send_message(self, chat_id, text, reply_markup=None):
+        async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
             if self.fail:
                 raise RuntimeError("network down")
 
@@ -505,7 +506,7 @@ def test_loop_polls_only_while_on(monkeypatch, enabled, text, polled):
 
 import toml  # noqa: E402
 
-from bot.callbacks import MenuAction, MenuCB  # noqa: E402
+from bot.callbacks import MenuAction, MenuCB, NavCB  # noqa: E402
 from bot.keyboards.menu import screen_kb  # noqa: E402
 from bot.services.registry import SETTINGS  # noqa: E402
 from bot.routers import autoreply as screen  # noqa: E402
@@ -589,7 +590,7 @@ class _State:
 
 class _Msg:
     def __init__(self, text=None):
-        self.text = text
+        self.text, self.chat = text, pytypes.SimpleNamespace(id=1)
         self.answers, self.edits = [], []
 
     async def answer(self, text, **kwargs):
@@ -612,14 +613,22 @@ def _pool():
     return pytypes.SimpleNamespace(storage=pytypes.SimpleNamespace(usernames={"sessions/a.jsession": "worker_a"}))
 
 
-def test_settings_screen_has_the_autoreply_button_and_it_leads_back_there(tmp_path, monkeypatch):
+def test_the_settings_have_the_autoreply_button_and_it_leads_back_there(tmp_path, monkeypatch):
+    from bot.routers import menu, settings as settings_screen  # noqa: F401 — its view registered
+
     actions = [MenuCB.unpack(b.callback_data).action for row in screen_kb(SETTINGS).inline_keyboard
                for b in row if b.callback_data.startswith("menu:")]
     assert MenuAction.AUTOREPLY in actions
+    settings = settings_with(tmp_path, monkeypatch)
     callback = _Callback()
-    asyncio.run(screen.autoreply_screen(callback, _State(), settings_with(tmp_path, monkeypatch), _pool()))
+    asyncio.run(screen.autoreply_screen(callback, _State(), settings, _pool()))
     back = callback.message.edits[0][1].inline_keyboard[-1][0]
-    assert back.text == "⬅️ Назад" and MenuCB.unpack(back.callback_data).action == MenuAction.SETTINGS
+    assert back.text == "⬅️ Назад" and NavCB.unpack(back.callback_data).screen == SETTINGS
+
+    asyncio.run(menu.open_by_button(callback, NavCB(screen=SETTINGS), _State(), settings=settings))  # in place
+    text, markup = callback.message.edits[1]
+    assert text.startswith("⚙️ <b>Настройки</b>") and "автоответ <b>выключен</b>" in text
+    assert markup == screen_kb(SETTINGS)
 
 
 def test_a_very_long_text_still_fits_the_screen(tmp_path, monkeypatch):
@@ -736,11 +745,21 @@ def test_new_text_is_saved(tmp_path, monkeypatch):
     assert state.state == screen.SetAutoreplyText.input
 
     empty = _Msg(text=None)  # a sticker / photo
-    asyncio.run(screen.autoreply_text_apply(empty, state, settings))
+    asyncio.run(screen.autoreply_text_apply(empty, state, settings, _pool()))
     assert settings.autoreply_text == "" and state.state is not None
 
     msg = _Msg(text="  Пишите @MainMask  ")
-    asyncio.run(screen.autoreply_text_apply(msg, state, settings))
+    asyncio.run(screen.autoreply_text_apply(msg, state, settings, _pool()))
     assert settings.autoreply_text == "Пишите @MainMask" and state.state is None
     assert toml.load(tmp_path / "config.toml")["autoreply"]["text"] == "Пишите @MainMask"
-    assert "сохранён" in msg.answers[0]
+    # the screen again under the confirmation, with the new text
+    assert msg.answers[0].startswith("✅ Текст автоответа сохранён") and "💬 <b>Автоответ</b>" in msg.answers[0]
+    assert "<blockquote>Пишите @MainMask</blockquote>" in msg.answers[0]
+
+
+def test_the_notification_escapes_what_came_from_telegram_and_fits_after_escaping():
+    user = pytypes.SimpleNamespace(first_name="<Ann>", last_name=None, username=None, id=5, phone=None)
+    assert autoreply._describe(user) == "&lt;Ann&gt; (🆔 <code>5</code>)"  # a tap copies the id
+    text = autoreply._escaped("<b>" + "&" * 5000, autoreply.NOTIFY_TEXT_LIMIT)
+    assert text.startswith("&lt;b&gt;&amp;") and text.endswith("&amp;")  # never cut inside an entity
+    assert len(text) <= autoreply.NOTIFY_TEXT_LIMIT

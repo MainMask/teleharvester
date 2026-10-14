@@ -22,6 +22,9 @@ class Proxy:
             raise ValueError(f"неверный прокси: {line!r}")
         if parsed.scheme not in PROXY_SCHEMES:
             raise ValueError(f"неподдерживаемый тип прокси {parsed.scheme!r} (socks5/socks4/http): {line!r}")
+        # python_socks sends a login only with its password: without one the proxy would be used unauthorized
+        if parsed.username and not parsed.password:
+            raise ValueError(f"логин без пароля не поддерживается: {line!r}")
 
         return cls(
             parsed.scheme,

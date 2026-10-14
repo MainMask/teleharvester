@@ -3,6 +3,7 @@
 import asyncio
 import types
 
+from bot.keyboards.common import cancel_kb
 from bot.routers import broadcasts
 from bot.states import BroadcastOptions, ChatBroadcast, Comments
 
@@ -110,10 +111,10 @@ def test_count_keep_takes_the_current_setting():
     assert state.data["messages_count"] == 7 and state.state == ChatBroadcast.message
 
 
-def test_trigger_step_has_no_keep_button_when_empty():
+def test_trigger_step_has_no_keep_button_when_empty_only_cancel():
     state, msg = _State(), _Msg()
     asyncio.run(broadcasts._ask_trigger(msg, state, _Settings(trigger="")))
-    assert state.state == BroadcastOptions.trigger and msg.answers[-1][1] is None
+    assert state.state == BroadcastOptions.trigger and msg.answers[-1][1] == cancel_kb(BroadcastOptions.trigger)
 
     asyncio.run(broadcasts._ask_trigger(msg, state, _Settings(trigger="go")))
     assert "go" in msg.answers[-1][1].inline_keyboard[0][0].text
