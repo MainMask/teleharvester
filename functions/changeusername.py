@@ -35,11 +35,8 @@ class ChangeUsernameFunc(TelethonFunction):
 
     async def change(self, session, report, username=None, base=None, used=None):
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 return
 
             if base is not None:

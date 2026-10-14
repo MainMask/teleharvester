@@ -133,10 +133,10 @@ def test_contacts_button_launches_with_the_picked_base(tmp_path, monkeypatch):
             await job(ns(run=fake_run), None)
             runs.append(calls[0])
 
-    functions = {"AddContactsFunc": object()}
+    functions = {"AddContactsFunc": object}
     asyncio.run(audience.run_base(
         _Callback(), ChoiceCB(scope="contacts_base", value="0"), state,
-        ns(), functions, _Manager(), ns(delay=[1]),
+        ns(), functions, _Manager(),
     ))
     assert runs == [new]
     assert state.data == {}  # flow finished
@@ -364,25 +364,6 @@ def test_contacts_summary_counts_the_adds_not_the_total_line(tmp_path):
 
     assert "Готово. Добавлено контактов: 2" in msgs
     assert (progress.ok, progress.failed) == (2, 0)
-
-
-def test_contacts_ledger_is_not_kept_in_memory_after_a_run(tmp_path):
-    from functions.add_contacts import AddContactsFunc
-    from modules import contacts_ledger
-
-    w = _Session(1, "w")
-    path = tmp_path / "base.parquet"
-    pd.DataFrame([{"ID": 10, "Access Hash": 1, "Username": "a"}]).to_parquet(path)
-    fn = AddContactsFunc(_WorkerStorage([w]), ns(delay=[0], contacts_per_account_daily=0))
-    fn.sessions, fn.on_hold = [w], []
-
-    async def report(text):
-        pass
-
-    asyncio.run(fn.run(str(path), [0], report))
-
-    # the shared instance lives as long as the bot: the ledger is reloaded by every run
-    assert fn.ledger == {} and contacts_ledger.load() == {"10": 1}
 
 
 def test_contacts_of_a_removed_worker_are_added_again(tmp_path):
@@ -651,7 +632,7 @@ def test_verify_offers_posts_files(tmp_path, monkeypatch):
     _posts(tmp_path, "Other_posts_01.05.2022-27.09.2026.parquet", 2_000)  # another project's
     state, msg = _State(), _Msg()
 
-    asyncio.run(scraping_router.verify_project(msg, state, ns(name="Omni"), _deps()))
+    asyncio.run(scraping_router.verify.verify_project(msg, state, ns(name="Omni"), _deps()))
     _, markup = msg.answers[0]
     assert [b.text for b in _buttons(markup)] == ["📄 posts · 01.05.2022-27.09.2026 · 1", "✖️ Отмена"]
     assert state.data["files"] == [path]
@@ -660,7 +641,7 @@ def test_verify_offers_posts_files(tmp_path, monkeypatch):
 def test_verify_without_posts_files_explains(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     msg = _Msg()
-    asyncio.run(scraping_router.verify_project(msg, _State(), ns(name="Omni"), _deps()))
+    asyncio.run(scraping_router.verify.verify_project(msg, _State(), ns(name="Omni"), _deps()))
     text, markup = msg.answers[0]
     assert markup == cancel_kb(Verify.input) and "нет файлов с постами" in text
 
@@ -672,7 +653,7 @@ def _verify_calls(monkeypatch):
         calls.append(params)
 
     monkeypatch.setattr(scraping, "do_verify", do_verify)
-    monkeypatch.setattr(scraping_router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(scraping_router.verify, "build_credentials", lambda client: None)
     return calls
 
 
@@ -686,14 +667,14 @@ def test_verify_channel_button_runs_with_the_scrape_window(tmp_path, monkeypatch
     state = _State({"files": [path], "account": "sessions/w.jsession"})
 
     pick = _Callback()
-    asyncio.run(scraping_router.verify_base(pick, ChoiceCB(scope="verify_base", value="0"), state,
+    asyncio.run(scraping_router.verify.verify_base(pick, ChoiceCB(scope="verify_base", value="0"), state,
                                                 _one_account(), None))
     _, markup = pick.message.answers[0]
     assert [b.text for b in _buttons(markup)] == [
         "▶️ @omni · 01.05.2022–27.09.2026", "▶️ -100123 · 01.05.2022–27.09.2026", "✖️ Отмена"]
 
     run = _Callback()
-    asyncio.run(scraping_router.verify_channel_pick(
+    asyncio.run(scraping_router.verify.verify_channel_pick(
         run, ChoiceCB(scope="verify_channel", value="1"), state, _one_account(), None, JobManager()))
     [params] = calls
     assert (params.input, params.channel) == (path, "-100123")
@@ -708,11 +689,11 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
     state = _State()
 
     msg = _Msg()
-    asyncio.run(scraping_router._ask_channel(msg, state, _one_account(), None, path))
+    asyncio.run(scraping_router.verify._ask_channel(msg, state, _one_account(), None, path))
     assert [b.text for b in _buttons(msg.answers[0][1])] == ["📢 @omni", "✖️ Отмена"]
 
     pick = _Callback()
-    asyncio.run(scraping_router.verify_channel_pick(
+    asyncio.run(scraping_router.verify.verify_channel_pick(
         pick, ChoiceCB(scope="verify_channel", value="0"), state, _one_account(), None, None))
     assert pick.message.answers[0][0] == "Дата с:" and state.data["channel"] == "@omni"
     assert calls == []
@@ -729,14 +710,14 @@ def test_verify_channel_buttons_carry_the_channels_titles(tmp_path, monkeypatch)
         asked_on.append(client)
         return [ChatInfo("@omni", "«Omni»", None), ChatInfo("-100123", None, "нет доступа")]
 
-    monkeypatch.setattr(scraping_router, "_lookup", conftest.REAL_BOT_LOOKUP)
-    monkeypatch.setattr(scraping_router, "lookup_on", lookup_on)
-    monkeypatch.setattr(scraping_router, "borrow", _borrow_offline)
+    monkeypatch.setattr(scraping_router.common, "lookup", conftest.REAL_BOT_LOOKUP)
+    monkeypatch.setattr(scraping_router.common, "lookup_on", lookup_on)
+    monkeypatch.setattr(scraping_router.common, "borrow", _borrow_offline)
     path = _posts(tmp_path, "Omni_posts_x.parquet", 1_000, window=("2022-05-01", "2026-09-27"),
                   groups=("@omni", "@c123"))
     msg = _Msg()
     state = _State({"account": "sessions/w.jsession", "only_project": "Omni"})
-    asyncio.run(scraping_router._ask_channel(msg, state, pool, None, path))
+    asyncio.run(scraping_router.verify._ask_channel(msg, state, pool, None, path))
     assert asked_on == pool.workers  # the worker's own client, the one its jobs use: no second connection
     text, markup = msg.answers[-1]
     assert [b.text for b in _buttons(markup)] == [  # not found: as in the file, marked
@@ -746,12 +727,13 @@ def test_verify_channel_buttons_carry_the_channels_titles(tmp_path, monkeypatch)
 
 def test_verify_typed_path_that_can_t_be_read_asks_the_channel(tmp_path):
     msg, state = _Msg(), _State()
-    asyncio.run(scraping_router._ask_channel(msg, state, _one_account(), None, str(tmp_path / "missing.parquet")))
+    asyncio.run(scraping_router.verify._ask_channel(msg, state, _one_account(), None,
+                                                    str(tmp_path / "missing.parquet")))
     assert msg.answers == [("Канал (@name / t.me / числовой id):", cancel_kb(Verify.channel))]
 
     typo = _Msg()
     typo.text = "канал омни"  # never asked on an account: typed again
-    asyncio.run(scraping_router.verify_channel(typo, state, _one_account(), None))
+    asyncio.run(scraping_router.verify.verify_channel(typo, state, _one_account(), None))
     assert typo.answers[0][0].startswith("Не похоже на канал: «канал омни»") and "channel" not in state.data
 
 
@@ -766,7 +748,7 @@ def _analysis_run(monkeypatch):
     async def send_files(bot, chat_id, paths):
         sent.extend(paths)
 
-    monkeypatch.setattr(scraping_router, "_send_files", send_files)
+    monkeypatch.setattr(scraping_router.common, "send_files", send_files)
     return JobManager(), sent
 
 
@@ -777,7 +759,7 @@ def _project_analysis(name="Omni"):
 
 def test_analysis_menu_is_russian():
     msg, state = _Msg(), _State()
-    asyncio.run(scraping_router.analysis_project(msg, state, ns(name="Omni")))
+    asyncio.run(scraping_router.analysis.analysis_project(msg, state, ns(name="Omni")))
     text, markup = msg.answers[0]
     labels = [b.text for b in _buttons(markup)]
     assert labels == ["🔗 Ссылки на другие каналы", "🔎 Поиск постов по словам", "👀 Посмотреть файл", "➕ Ещё"]
@@ -785,7 +767,7 @@ def test_analysis_menu_is_russian():
 
     more = _Callback()
     token = state.data["analysis_token"]
-    asyncio.run(scraping_router.analysis_tool(more, ChoiceCB(scope="an_tool", value=f"more.{token}"), state))
+    asyncio.run(scraping_router.analysis.analysis_tool(more, ChoiceCB(scope="an_tool", value=f"more.{token}"), state))
     assert [b.text for b in _buttons(more.message.answers[0][1])] == [
         "🧩 Объединить файлы постов", "💬 Комментарии одной таблицей",
         "📊 Активность по месяцам", "🎲 Случайная выборка постов", "👥 Пересобрать базу участников"]
@@ -826,13 +808,13 @@ def test_analysis_links_by_button(tmp_path, monkeypatch):
     state, token = _project_analysis()
 
     tool = _Callback()
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"links.{token}"), state))
+    asyncio.run(scraping_router.analysis.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"links.{token}"), state))
     text, markup = tool.message.answers[0]
     assert "Ссылки на другие каналы" in text and [b.text for b in _buttons(markup)] == [
         "📄 posts · 01.05.2022-27.09.2026 · 1", "✖️ Отмена"]
 
     pick = _Callback()
-    asyncio.run(scraping_router.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
+    asyncio.run(scraping_router.analysis.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
     assert seen == [(path, str(tmp_path / "Omni_links_01.05.2022-27.09.2026"))]
     replies = [t for t, _ in pick.message.answers]
     assert any("5 — https://t.me/a" in r for r in replies)
@@ -847,8 +829,8 @@ def test_the_analysis_has_a_slot_of_its_own():
 
     import bot.app as app
 
-    for handler in (scraping_router.analysis_file_pick, scraping_router.analysis_file_text,
-                    scraping_router.analysis_keywords):
+    for handler in (scraping_router.analysis.analysis_file_pick, scraping_router.analysis.analysis_file_text,
+                    scraping_router.analysis.analysis_keywords):
         parameters = inspect.signature(handler).parameters
         assert "analyses" in parameters and "manager" not in parameters
     assert 'dp["analyses"] = JobManager()' in inspect.getsource(app.run_bot)
@@ -870,12 +852,12 @@ def test_analysis_filter_asks_for_words(tmp_path, monkeypatch):
     state = _State({"tool": "filter", "files": [path]})
 
     pick = _Callback()
-    asyncio.run(scraping_router.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
+    asyncio.run(scraping_router.analysis.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
     assert pick.message.answers[0][0].startswith("Слова через запятую")
 
     msg = _Msg()
     msg.text = "крипта, , биткоин"
-    asyncio.run(scraping_router.analysis_keywords(msg, state, manager))
+    asyncio.run(scraping_router.analysis.analysis_keywords(msg, state, manager))
     assert seen == [(str(tmp_path / "Omni_keywords"), ["крипта", "биткоин"])]
     assert sent == [str(tmp_path / "Omni_keywords_unique.xlsx")]
 
@@ -883,7 +865,7 @@ def test_analysis_filter_asks_for_words(tmp_path, monkeypatch):
 def test_analysis_read_offers_every_file_of_the_project(tmp_path, monkeypatch):
     _bases_dir(tmp_path, monkeypatch)
     (state, token), tool = _project_analysis("OmniBase"), _Callback()
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"read.{token}"), state))
+    asyncio.run(scraping_router.analysis.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"read.{token}"), state))
     labels = [b.text for b in _buttons(tool.message.answers[0][1])]
     # its posts and its base, not Old's
     assert labels == ["📄 posts · 01.05.2022-27.09.2026 · 5", "📄 participants · 01.05.2022-27.09.2026 · 1 234",
@@ -891,7 +873,7 @@ def test_analysis_read_offers_every_file_of_the_project(tmp_path, monkeypatch):
 
     manager, _ = _analysis_run(monkeypatch)
     pick = _Callback()
-    asyncio.run(scraping_router.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
+    asyncio.run(scraping_router.analysis.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
     assert any("<pre>" in t for t, _ in pick.message.answers)
 
 
@@ -908,10 +890,11 @@ def test_analysis_combine_all_posts_files(tmp_path, monkeypatch):
     manager, _ = _analysis_run(monkeypatch)
     (state, token), tool = _project_analysis("P"), _Callback()
 
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"combine.{token}"), state))
+    asyncio.run(scraping_router.analysis.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"combine.{token}"),
+                                                       state))
     assert [x.text for x in _buttons(tool.message.answers[0][1])] == ["🗂 Все файлы постов (2)", "✖️ Отмена"]
 
-    asyncio.run(scraping_router.analysis_file_pick(
+    asyncio.run(scraping_router.analysis.analysis_file_pick(
         _Callback(), ChoiceCB(scope="an_file", value="all"), state, manager))
     assert seen == [([b, a], str(tmp_path / "Combined_posts"))]
 
@@ -919,7 +902,7 @@ def test_analysis_combine_all_posts_files(tmp_path, monkeypatch):
 def test_analysis_without_posts_files_explains(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     (state, token), tool = _project_analysis(), _Callback()
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"links.{token}"), state))
+    asyncio.run(scraping_router.analysis.analysis_tool(tool, ChoiceCB(scope="an_tool", value=f"links.{token}"), state))
     text, markup = tool.message.answers[0]
     assert markup == cancel_kb(Analysis.file) and "нет файлов с постами" in text
 
@@ -929,7 +912,8 @@ def test_an_analysis_button_without_its_project_s_token_is_stale():
     from bot.routers._common import STALE_BUTTON
 
     tool = _Callback()
-    asyncio.run(scraping_router.analysis_tool(tool, ChoiceCB(scope="an_tool", value="links"), _project_analysis()[0]))
+    asyncio.run(scraping_router.analysis.analysis_tool(tool, ChoiceCB(scope="an_tool", value="links"),
+                                                       _project_analysis()[0]))
     assert tool.message.answers == [(STALE_BUTTON, None)]
 
 
@@ -1192,7 +1176,7 @@ def test_contacts_path_upload_does_not_launch_the_default_base():
     message = _Msg()
     message.text, message.document = None, ns(file_name="base.parquet")
     state = _State({"bases": []})
-    asyncio.run(audience.run(message, state, ns(), {"AddContactsFunc": object()}, _Manager(), ns(delay=[1])))
+    asyncio.run(audience.run(message, state, ns(), {"AddContactsFunc": object}, _Manager()))
     assert message.answers and state.data == {"bases": []}  # re-prompted, flow kept
 
 

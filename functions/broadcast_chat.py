@@ -9,7 +9,7 @@ class BroadcastChatFunc(TelethonFunction):
     def prepare(self, choice, mention_all, mention_mode, sticker_set, content):
         """Build a configured Broadcast over the delegated workers (for the bot)."""
         broadcast = Broadcast(self.storage, self.settings)
-        broadcast.configure(choice, mention_all, mention_mode, sticker_set, self.settings.delay, content)
+        broadcast.configure(choice, mention_all, mention_mode, sticker_set, content)
         broadcast.sessions = list(self.sessions)
         broadcast.progress = self.progress
         self.progress_total(None)  # a listener: how many triggers will come is unknown

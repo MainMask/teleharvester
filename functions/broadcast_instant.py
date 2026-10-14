@@ -14,7 +14,7 @@ class InstantBroadcastFunc(TelethonFunction):
 
     async def run(self, choice, mention_all, mention_mode, sticker_set, content, link, report):
         broadcast = Broadcast(self.storage, self.settings)
-        broadcast.configure(choice, mention_all, mention_mode, sticker_set, self.settings.delay, content)
+        broadcast.configure(choice, mention_all, mention_mode, sticker_set, content)
         broadcast.sessions = list(self.sessions)
         broadcast.progress = self.progress
         per_worker = self.settings.messages_count  # 0: unlimited, a counter only

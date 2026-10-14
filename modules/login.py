@@ -198,7 +198,7 @@ def added_text(login, me, role: str, workers_count: int) -> str:
     return (f"✅ Аккаунт добавлен.\n"
             f"📱 Номер: +{me.phone}\n"
             f"🔐 2FA: {'да' if login.password else 'нет'}\n"
-            f"🌐 Прокси: {f'{proxy.proxy_type}://{proxy.ip}:{proxy.port}' if proxy else 'без прокси'}\n"
+            f"🌐 Прокси: {proxy.label() if proxy else 'без прокси'}\n"
             f"🤖 Всего воркеров: {workers_count}")
 
 

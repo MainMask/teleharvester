@@ -3,8 +3,6 @@ import importlib.util
 import inspect
 import os
 
-from typing import List, Callable, Awaitable, Union
-
 from .sessions_storage import SessionsStorage
 from ..settings import Settings
 
@@ -28,7 +26,7 @@ class FunctionsStorage:
             self.loop = sessions_storage.loop or asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
 
-        self.functions: List[Union[Callable, Awaitable]] = []
+        self.functions: list[tuple[object, str | None]] = []  # (the *Func instance, its docstring)
 
         for file in os.listdir(directory):
             if file.endswith(".py"):
@@ -50,7 +48,7 @@ class FunctionsStorage:
     def register_function(self, module):
         # Discovery convention: a class is a menu entry iff its name ends in "Func",
         # and its docstring is the menu label. The bot keys the same classes by name
-        # in bot/services/registry.py (validated at bot startup). A helper base like
+        # in modules/registry.py (validated at bot startup). A helper base like
         # functions/broadcast.py's `Broadcast` is deliberately named without the suffix
         # so it is skipped here.
         for classname, classobj in inspect.getmembers(module, inspect.isclass):
@@ -61,7 +59,8 @@ class FunctionsStorage:
                 ))
 
     def run_instance(self, function_instance):
-        function = function_instance.execute()
+        """Run a menu item: a new instance of its class, so no run inherits another's state."""
+        function = type(function_instance)(self.storage, self.settings).execute()
 
         if inspect.isawaitable(function):
             # restore our loop in case a scraper function's asyncio.run() cleared it

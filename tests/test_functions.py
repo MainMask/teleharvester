@@ -48,14 +48,6 @@ class TestAskAccountsCount:
             fn.ask_accounts_count()
         assert fn.sessions == ["a", "b"]
 
-    def test_resets_to_full_list_each_run(self):
-        fn = _fn(["a", "b", "c"])
-        fn.sessions = ["a"]  # a previous run narrowed it
-        with patch.object(BaseFunction, "ask_int", return_value=3):
-            fn.ask_accounts_count()
-        assert fn.sessions == ["a", "b", "c"]
-
-
 class TestDelay:
     def _run_delay(self, fn):
         slept = []

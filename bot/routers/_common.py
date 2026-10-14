@@ -1,7 +1,8 @@
 from bot.keyboards.menu import main_menu
 from bot.services import login as logins
 from bot.services.capture import capture
-from bot.services.registry import BOT_FUNCTIONS_BY_KEY, menu_path
+from modules.registry import BOT_FUNCTIONS_BY_KEY, menu_path
+from functions.base.base import POST_LINK_HINT, BaseFunction
 
 # a stale tap: a button of an old message; a stale step: text sent to a step whose flow is gone
 STALE_BUTTON = "Кнопка устарела — откройте раздел заново."
@@ -34,13 +35,13 @@ async def build_content(message, album):
 
 
 def resolve(functions: dict, key: str):
-    """Return (instance, BotFunction) for a registry key.
+    """Return (a new instance, BotFunction) for a registry key: each run has its own.
 
     Every classname is checked against the discovered functions at bot startup
     (see bot/app.py), so the lookup here cannot miss.
     """
     bot_function = BOT_FUNCTIONS_BY_KEY[key]
-    return functions[bot_function.classname], bot_function
+    return functions[bot_function.classname](), bot_function
 
 
 async def ensure_workers(callback, pool) -> bool:
@@ -94,6 +95,16 @@ async def left_flow(callback, state, step) -> bool:
     await callback.answer()
     await callback.message.answer(STALE_BUTTON)
     return True
+
+
+async def require_post_link(message) -> str | None:
+    """A post's link of a text step (t.me/name/123, t.me/c/…/123); re-prompt and return None if it is
+    none, so the step stays instead of every worker failing on it."""
+    link = await require_text(message)
+    if link is not None and not BaseFunction.is_message_link(link):
+        await message.answer(f"{POST_LINK_HINT} Пришлите ещё раз:")
+        return None
+    return link
 
 
 async def require_text(message) -> str | None:

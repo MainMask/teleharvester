@@ -11,11 +11,8 @@ class PmBroadcastFunc(TelethonFunction):
 
     async def broadcast(self, session, peer, content, by_phone_number, report):
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 return
 
             if by_phone_number:
@@ -51,7 +48,7 @@ class PmBroadcastFunc(TelethonFunction):
         await self.run_sequential(
             lambda session, report: self.broadcast(session, peer, content, by_phone_number, report),
             report,
-            pause=self.settings.delay,
+            pause="delay",
         )
 
     async def execute(self):

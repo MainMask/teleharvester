@@ -8,7 +8,6 @@ from bot.routers._common import require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import AddContacts
-from modules.settings import Settings
 
 router = Router()
 
@@ -29,34 +28,32 @@ async def ask_base(message: Message, state: FSMContext, bases: list[tuple[str, s
     )
 
 
-async def _launch(message: Message, path: str, pool: WorkerPool, functions: dict, manager: JobManager,
-                  settings: Settings):
+async def _launch(message: Message, path: str, pool: WorkerPool, functions: dict, manager: JobManager):
     instance, bot_function = resolve(functions, "addcontacts")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(path, settings.delay, r),
+        lambda f, r: f.run(path, None, r),
         "Добавление в контакты…", "Готово ✅",
     )
 
 
 @router.callback_query(AddContacts.path, ChoiceCB.filter(F.scope == "contacts_base"))
 async def run_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool,
-                   functions: dict, manager: JobManager, settings: Settings):
+                   functions: dict, manager: JobManager):
     await callback.answer()
     bases = (await state.get_data()).get("bases", [])
     index = int(callback_data.value)
     if not 0 <= index < len(bases):
         return
     await state.clear()
-    await _launch(callback.message, bases[index], pool, functions, manager, settings)
+    await _launch(callback.message, bases[index], pool, functions, manager)
 
 
 @router.message(AddContacts.path)
-async def run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager,
-              settings: Settings):
+async def run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
     raw = await require_text(message)  # a file / photo must not fall back to the default base
     if raw is None:
         return
     await state.clear()
     path = DEFAULT_DB if raw == "-" else raw
-    await _launch(message, path, pool, functions, manager, settings)
+    await _launch(message, path, pool, functions, manager)

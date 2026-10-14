@@ -16,7 +16,7 @@ from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB, NavCB
 from bot.config import BotConfig
 from bot.middlewares.auth import AuthMiddleware
 from bot.services.delegation import HostActionBlocked, WorkerPool
-from bot.services.registry import BOT_FUNCTIONS_BY_KEY, RISKY, SAFE
+from modules.registry import BOT_FUNCTIONS_BY_KEY, RISKY, SAFE
 
 
 def _client():

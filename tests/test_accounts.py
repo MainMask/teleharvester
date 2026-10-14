@@ -7,6 +7,7 @@ import types
 
 from bot.routers import accounts
 from modules.storages.sessions_storage import SessionsStorage
+from modules.types.proxy import Proxy
 
 
 def ns(**kw):
@@ -498,7 +499,7 @@ def _workers_and_me(tmp_path):
     worker = _Client()
     worker.path = "sessions/w.jsession"
     stored = ns(account=ns(account=ns(first_name="Ann", last_name=None, username="ann", phone_number="79991234567",
-                                      user_id=7), proxy=ns(proxy_type="socks5", ip="1.2.3.4", port=1080)))
+                                      user_id=7), proxy=Proxy("socks5", "1.2.3.4", 1080)))
     storage = _Storage({worker.path: stored}, sessions=[worker])
     pool = _free_pool()
     pool.storage, pool._workers = storage, [worker]

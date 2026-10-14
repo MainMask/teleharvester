@@ -112,7 +112,6 @@ class JobManager:
             # which drops its temp files, never ran
             if not entered and cleanup is not None:
                 cleanup()
-            instance.progress = None  # the instance is reused by later runs
             for session in self._stop_sessions:
                 await release_client(session)  # memory stays bounded to one job's worth
             self._clear()

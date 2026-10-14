@@ -72,7 +72,7 @@ def card_lines(storage, account: ScrapeAccount, html: bool = False) -> list[str]
         number = str(js.account.account.phone_number).lstrip("+")
         lines.append(f"📱 {code('+' + number)} · 🆔 {code(js.account.account.user_id)}")
         proxy = js.account.proxy
-        lines.append(f"🌐 {esc(f'{proxy.proxy_type}://{proxy.ip}:{proxy.port}')}" if proxy else "🌐 без прокси")
+        lines.append(f"🌐 {esc(proxy.label())}" if proxy else "🌐 без прокси")
     if not account.personal:
         lines.append(esc(restricted_workers.classify(account.path, set(restricted_workers.load()),
                                                      restricted_workers.load_status())[1]))

@@ -2,9 +2,9 @@ import html
 from collections.abc import Awaitable, Callable
 
 from bot.keyboards.menu import screen_kb
-from bot.services.registry import RISK_NOTE, RISKY, SCREENS, by_category, card_rows, children, risk_marker
+from modules.registry import RISK_NOTE, RISKY, SCREENS, by_category, card_rows, children, risk_marker
 
-# How the bot shows the registry's screens (bot/services/registry.py): their messages, and how each
+# How the bot shows the registry's screens (modules/registry.py): their messages, and how each
 # is opened. bot/routers/menu.py opens every screen through open_screen — from the main menu as a new
 # message, by a button in that message's place — so a screen needs no handler of its own: one with
 # live values, or of a kind of its own, registers its view (view) from its router.

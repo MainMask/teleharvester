@@ -13,7 +13,7 @@ from scraper.datafiles import read_table
 from scraper.scrape import _channel_ref, group_channel
 
 BASES_DIR = "assets/databases"  # default scrape output; holds the <name>_participants bases
-# a bot scrape in progress, continued after a bot restart (bot/routers/scraping.py)
+# a bot scrape in progress, continued after a bot restart (bot/routers/scraping/scrape.py)
 SCRAPE_MARKER = os.path.join("stats", "bot_scrape.json")
 # what a scrape's file names are cut at (project_files, pending_resume)
 FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial", "_previous")

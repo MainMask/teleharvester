@@ -34,6 +34,10 @@ class Proxy:
             unquote(parsed.password) if parsed.password else None,
         )
 
+    def label(self) -> str:
+        """How lists and cards show it: no credentials."""
+        return f"{self.proxy_type}://{self.ip}:{self.port}"
+
     def as_telethon(self) -> tuple:
         if self.user and self.password:
             return (

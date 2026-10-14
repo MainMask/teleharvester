@@ -8,6 +8,7 @@ from dotenv import set_key
 from modules.console import console
 from typing import List, Tuple
 
+from modules import atomic_file
 from modules.config import load_toml
 
 
@@ -194,15 +195,8 @@ class Settings:
             config.setdefault(section, {})[key] = value
             updated = toml.dumps(config)
 
-        # atomic: the file also holds the bot's admin whitelist
-        tmp_path = path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as file:
-            file.write(updated)
-            file.flush()
-            os.fsync(file.fileno())  # on disk before the rename: a power cut must not leave it empty
-        shutil.copymode(path, tmp_path)  # the rename must not widen a locked-down file's mode
         shutil.copy2(path, path + ".bak")  # the previous file, to undo the write (copy2 keeps the mode too)
-        os.replace(tmp_path, path)
+        atomic_file.write(path, updated)  # whole or not at all: the file also holds the bot's admin whitelist
 
     def set_delay(self, delay: List[int], path: str = "config.toml"):
         """Change the delay between actions in config.toml and in this live object."""

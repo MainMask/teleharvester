@@ -28,6 +28,16 @@ class TelethonFunction(BaseFunction):
             raise AccountLimited("сессия мертва (бан или выход)")
         return me
 
+    async def poll_me(self, session, report):
+        """get_me() for a worker's run; None once it is reported as failed (an error in the job's
+        summary): the caller skips the worker, the others still run."""
+        try:
+            return await self.get_me(session)
+        except Exception as err:
+            self.progress_failed()
+            await report(f"не удалось опросить аккаунт: {err}")
+            return None
+
     async def resolve_chat(self, session, peer):
         """A private link's chat (PeerChannel: no username to look up) resolves only from the session's
         cache, empty in a fresh process and after each release: on a miss the dialogs are loaded once,
@@ -57,11 +67,8 @@ class TelethonFunction(BaseFunction):
         """One request on one worker, reported under its name: `done`, or `failed: <error>`;
         True if it went through."""
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 return False
 
             try:
@@ -102,8 +109,6 @@ class TelethonFunction(BaseFunction):
 
     def ask_workers(self):
         """CLI: which workers to run on; the ones this function has not changed yet by default."""
-        self.sessions = self.storage.sessions  # reset to full list (instance is reused across runs)
-        self.on_hold = []
         if not self.sessions:
             return  # nothing to choose from; functions guard the empty case themselves
 

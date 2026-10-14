@@ -122,8 +122,9 @@ class Broadcast(TelethonFunction):
 
         await rich_message.send(session, peer, content, self.safe_call, report=report, **kwargs)
 
-    def configure(self, choice, mention_all=False, mention_mode=None, sticker_set=None, delay=None, content=None):
-        """Set campaign parameters without prompting (used by the bot)."""
+    def configure(self, choice, mention_all=False, mention_mode=None, sticker_set=None, content=None):
+        """Set campaign parameters without prompting (used by the bot); the delay stays the live
+        settings.delay (see BaseFunction.delay), so one changed in ⚙️ applies to a running campaign."""
         self.choice = choice
         self.content = content
         self.mention_all = mention_all
@@ -132,8 +133,6 @@ class Broadcast(TelethonFunction):
         if sticker_set:
             self.sticker_set = sticker_set.replace("https://t.me/addstickers/", "")
 
-        self.delay_range = delay or self.settings.delay
-
     async def broadcast(self, session, peer, report, reply_to=None):
         users_ids = []
         admin_ids = []
@@ -141,11 +140,8 @@ class Broadcast(TelethonFunction):
         count = 0
         errors = 0
 
-        try:
-            me = await self.get_me(session)
-        except Exception as err:
-            self.progress_failed()
-            await report(f"не удалось опросить аккаунт: {err}")
+        me = await self.poll_me(session, report)
+        if me is None:
             self.progress_drop(self.settings.messages_count)
             return
 

@@ -14,7 +14,7 @@ from telethon.errors import (
     UserRestrictedError as AccountRestrictedError,
 )
 
-from bot.services.registry import menu_path
+from modules.registry import menu_path
 from modules import restricted_workers
 from modules.account_limits import AccountLimited  # here too: the functions import it from this module
 from modules.settings import parse_seconds
@@ -32,6 +32,8 @@ def pick_seconds(pause) -> int:
     """Seconds to wait for a [sec] or [min, max] setting (a reversed range, e.g. "5-2", tolerated)."""
     return pause[0] if len(pause) == 1 else random.randint(*sorted(pause[:2]))
 
+
+POST_LINK_HINT = "Нужна ссылка на пост: t.me/name/123 или t.me/c/…/123."
 
 _END = object()  # sentinel for "no more items" (so a real None item isn't mistaken for the end)
 SKIPPED = object()  # returned by a rotation action that skipped an item without any request
@@ -128,6 +130,23 @@ class BaseFunction:
         # the peer is the segment right after the host (a topic id may follow it)
         host = next((i for i, p in enumerate(parts) if p.endswith(("t.me", "telegram.me"))), None)
         return (parts[host + 1] if host is not None else parts[-2]), message_id
+
+    @classmethod
+    def is_message_link(cls, link: str) -> bool:
+        """The link points at a post (see parse_message_link): checked as it is typed, not when
+        every worker fails on it."""
+        try:
+            cls.parse_message_link(link)
+        except (ValueError, IndexError):
+            return False
+        return True
+
+    @classmethod
+    def ask_message_link(cls, label: str) -> str:
+        """CLI: a post's link, asked again until it is one, as the bot takes it."""
+        while not cls.is_message_link(link := _report_console.input(label)):
+            _report_console.print(POST_LINK_HINT, style="bold red", markup=False)
+        return link
 
     @staticmethod
     def comment_id(link) -> int | None:
@@ -231,10 +250,11 @@ class BaseFunction:
 
         return await asyncio.gather(*[one(i, s) for i, s in enumerate(sessions)])
 
-    async def run_sequential(self, work, report, sessions=None, pause=None):
+    async def run_sequential(self, work, report, sessions=None, pause="profile_pause"):
         """Run work(session, report) on each worker one at a time, pausing a random
-        `pause` ([min, max] or [sec], default settings.profile_pause) between accounts
-        (never before the first, nor after the last). Returns the results in worker order.
+        settings.<pause> ([min, max] or [sec]) between accounts (never before the first, nor
+        after the last), read before each pause: one changed in ⚙️ applies to the running job.
+        Returns the results in worker order.
 
         Firing the same action on every account within the same second (as gather_in_order
         does) marks the accounts as one operated cluster: profile-wide edits (name, bio,
@@ -242,13 +262,12 @@ class BaseFunction:
         the shorter settings.delay. Either way, spacing the actions out breaks the pattern.
         """
         sessions = self.sessions if sessions is None else sessions
-        pause = self.settings.profile_pause if pause is None else pause
         self.progress_total(len(sessions))
         results = []
 
         for index, session in enumerate(sessions):
             if index:
-                seconds = pick_seconds(pause)
+                seconds = pick_seconds(getattr(self.settings, pause))
                 await report(f"Пауза перед следующим аккаунтом: {seconds} с")
                 await asyncio.sleep(seconds)
             results.append(await work(session, report))
@@ -371,9 +390,6 @@ class BaseFunction:
                 return raw
 
     def ask_accounts_count(self):
-        self.sessions = self.storage.sessions  # reset to full list (instance is reused across runs)
-        self.on_hold = []
-
         if not self.sessions:
             return  # nothing to choose from; functions guard the empty case themselves
 

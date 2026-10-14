@@ -104,10 +104,17 @@ class TestCtrlCCancelsFunction:
         def _interrupt():
             raise KeyboardInterrupt
 
+        class _Listener:
+            def __init__(self, storage, settings):
+                pass
+
+            def execute(self):
+                return listener()
+
         fs = FunctionsStorage.__new__(FunctionsStorage)
         fs.loop = loop
-        fs.storage = ns(initialize=True, sessions=[client])
-        fs.functions = [(ns(execute=listener), "doc")]
+        fs.storage, fs.settings = ns(initialize=True, sessions=[client]), None
+        fs.functions = [(_Listener(None, None), "doc")]
 
         loop.call_later(0.01, _interrupt)  # Ctrl-C while the loop idles, not inside the task
         try:
@@ -839,7 +846,7 @@ class TestMailLimit:
 
 class TestReadPreview:
     def test_cut_never_splits_an_entity(self):
-        from bot.routers.scraping import read_preview
+        from modules.analysis_tools import read_preview
 
         df = pd.DataFrame({"c": ["&" * 400] * 10})
         out = read_preview(df)
@@ -1084,7 +1091,7 @@ class TestMailRunStats:
 
         instance = ns(load_recipients=lambda p: ["a"], load_stats=load_stats,
                       filter_unsent=lambda r: r)
-        functions = {"PmMailingFunc": instance}
+        functions = {"PmMailingFunc": lambda: instance}
         asyncio.run(broadcasts.mail_run(ns(answer=answer), _State(), None, None, functions,
                                         _Manager(), None))
         return replies
@@ -1095,12 +1102,6 @@ class TestMailRunStats:
 
         replies = self._run(False, broken)
         assert any("Статистика не прочитана" in r for r in replies)
-
-    def test_job_started_meanwhile_keeps_its_stats(self):
-        loaded = []
-        replies = self._run(True, lambda: loaded.append(1))
-        assert loaded == [] and any("Занят" in r for r in replies)
-
 
 # --- round 3 -----------------------------------------------------------------
 
@@ -1254,7 +1255,7 @@ class TestReportCancelDuringConnect:
 
         instance = ns(step=step)
         pool = ns(delegate=lambda inst: [_First()])
-        functions = {"ReportFunc": instance}
+        functions = {"ReportFunc": lambda: instance}
         msg = ns(text="-", chat=ns(id=7), answer=answer, bot=None)
         try:
             asyncio.run(moderation.rm_begin(msg, _State(), pool, functions, _Manager()))
@@ -1336,7 +1337,17 @@ class TestNewFilesOverwritten:
         f.write_text("old")
         before = dir_snapshot(str(tmp_path))
         os.utime(f, ns=(1, before["x_posts.parquet"] + 10**9))  # overwritten later
-        assert new_files(str(tmp_path), before) == [str(f)]
+        assert new_files(str(tmp_path), before, ("x_",)) == [str(f)]
+
+    def test_another_slot_s_file_is_not_the_job_s(self, tmp_path):
+        # the analysis and a scrape write to the same folder at once: each sends only its own files
+        from bot.services.scraping import dir_snapshot, new_files
+
+        before = dir_snapshot(str(tmp_path))
+        (tmp_path / "Green_posts_01.01.2024-31.01.2024.parquet").write_text("scrape")
+        (tmp_path / "Green_links_01.01.2024-31.01.2024.xlsx").write_text("analysis")
+        assert new_files(str(tmp_path), before, ("Green_posts", "Green_reactors", "Green_participants")) == \
+            [str(tmp_path / "Green_posts_01.01.2024-31.01.2024.parquet")]
 
 
 class TestExcelHeaderFormula:
@@ -1738,10 +1749,10 @@ class TestScrapeSnapshotBeforeSlot:
         manager = JobManager()  # the scraper's slot
         pool = ns(storage=ns(sessions=[object()], jsessions_paths={},
                              get_session_path=lambda c: "sessions/w.jsession"))
-        params = scraping._scrape_params({"out_dir": "/root/x", "channels": "@a", "name": "n",
+        params = scraping.scrape._scrape_params({"out_dir": "/root/x", "channels": "@a", "name": "n",
                                           "date_min": "01.01.2024", "date_max": "02.01.2024",
                                           "account": "sessions/w.jsession"})
-        asyncio.run(scraping._run_scrape(_Bot(), 1, manager, pool, None, params))
+        asyncio.run(scraping.scrape._run_scrape(_Bot(), 1, manager, pool, None, params))
 
         assert manager.active is False and any("недоступна" in r for r in replies)
 
@@ -1839,7 +1850,7 @@ class TestReporterLimits:
 
 class TestSendFilesErrors:
     def test_failed_upload_reported_and_rest_sent(self, tmp_path):
-        from bot.routers.scraping import _send_files
+        from bot.routers.scraping.common import send_files as _send_files
 
         a, b = tmp_path / "a.parquet", tmp_path / "b.parquet"
         a.write_text("a")
@@ -2259,7 +2270,7 @@ class TestSnapshotDanglingSymlink:
 
 class TestReadPreviewUtf16:
     def test_emoji_preview_fits(self):
-        from bot.routers.scraping import read_preview
+        from modules.analysis_tools import read_preview
 
         out = read_preview(pd.DataFrame({"c": ["😀" * 1000] * 10}))
         body = out[len("<pre>"):out.index("</pre>")]
@@ -2351,7 +2362,7 @@ class TestReportFlowHoldsItsWorkers:
         pool = ns(delegate=lambda inst: workers, in_job=[])
         msg = ns(text="-", chat=ns(id=7), answer=answer, bot=None)
         try:
-            asyncio.run(moderation.rm_begin(msg, _State(), pool, {"ReportFunc": ns(step=step)}, _Manager()))
+            asyncio.run(moderation.rm_begin(msg, _State(), pool, {"ReportFunc": lambda: ns(step=step)}, _Manager()))
             assert pool.in_job == workers  # the flow drives them: no scrape may start on them
             asyncio.run(moderation._abort(7, pool))  # /cancel or the inactivity timeout
             assert pool.in_job == []
@@ -2447,7 +2458,7 @@ def test_sticker_set_fetched_once_per_worker():
 
     session = _Chat(ns(id=1, first_name="w"))
     fn = Broadcast(_Storage([session]), ns(messages_count=3, delay=[0]))
-    fn.configure(4, sticker_set="https://t.me/addstickers/Pack", delay=[0], content=RichContent(text="hi"))
+    fn.configure(4, sticker_set="https://t.me/addstickers/Pack", content=RichContent(text="hi"))
     msgs, report = collect()
 
     asyncio.run(fn.broadcast(session, "chat", report))
@@ -2567,7 +2578,7 @@ def _clear(age):
 
     message = ns(date=datetime.datetime.now(datetime.timezone.utc) - age, chat=ns(id=1))
     callback = ns(message=message, answer=answer, bot=None)
-    functions = {"ClearDialogsFunc": object()}
+    functions = {"ClearDialogsFunc": object}
     asyncio.run(service.clear_run(callback, ChoiceCB(scope="clear_confirm", value="yes"),
                                   ns(), functions, _Manager()))
     return alerts, runs

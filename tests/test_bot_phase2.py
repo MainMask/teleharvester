@@ -10,7 +10,7 @@ from telethon import types as tl
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
-from bot.services.registry import (
+from modules.registry import (
     BOT_FUNCTIONS,
     BOT_FUNCTIONS_BY_KEY,
     RISKY,
@@ -77,7 +77,7 @@ class TestRegistry:
         assert len(BOT_FUNCTIONS_BY_KEY) == len(BOT_FUNCTIONS)
 
     def test_categories_cover_all(self):
-        from bot.services.registry import SCREENS
+        from modules.registry import SCREENS
 
         total = sum(len(by_category(c)) for c in SCREENS)
         assert total == len(BOT_FUNCTIONS)
@@ -85,7 +85,7 @@ class TestRegistry:
     def test_every_category_is_reachable_from_the_menu(self):
         # a category that is no screen, or a screen whose parents don't lead to the main menu,
         # would have no button leading to it
-        from bot.services.registry import MAIN_MENU, SCREENS, trail
+        from modules.registry import MAIN_MENU, SCREENS, trail
 
         assert {f.category for f in BOT_FUNCTIONS} <= set(SCREENS)
         assert all(trail(title)[0] in MAIN_MENU for title in SCREENS)
@@ -130,6 +130,106 @@ class TestRuns:
         msgs, report = collect()
         asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), [0], report))
         assert any("отправлено" in m for m in msgs)
+
+    def test_broadcast_comments_says_why_it_stopped(self):
+        # 5 failed sends in a row end the worker's run: the report says so, as the chat broadcast does
+        from functions.broadcast_comments import CommentsBroadcastFunc
+        from modules.rich_message import RichContent
+
+        class _Failing(_Session):
+            async def send_message(self, *a, **k):
+                raise RuntimeError("CHAT_WRITE_FORBIDDEN")
+
+        fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=0))
+        fn.sessions = [_Failing()]
+        msgs, report = collect()
+        asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), [0], report))
+        assert msgs[-1] == "[A] 5 ошибок подряд, остановка."
+
+
+# --- a delay changed in ⚙️ applies to a running job: Settings.set_delay replaces the list ---
+
+class TestLiveDelay:
+    def test_broadcast_reads_the_delay_at_each_pause(self, monkeypatch):
+        from functions import base
+        from functions.broadcast import Broadcast
+
+        slept = []
+
+        async def sleep(seconds):
+            slept.append(seconds)
+
+        monkeypatch.setattr(base.base.asyncio, "sleep", sleep)
+        settings = ns(delay=[7])
+        fn = Broadcast(_Storage(), settings)
+        fn.configure(0)
+        asyncio.run(fn.delay())
+        settings.delay = [3]  # what Settings.set_delay does: a new list
+        asyncio.run(fn.delay())
+        assert slept == [7, 3]
+
+    def test_sequential_pause_read_before_each_account(self, monkeypatch):
+        from functions import base
+        from functions.reactions import ReactionsFunc
+
+        slept = []
+        settings = ns(delay=[7])
+
+        async def sleep(seconds):
+            slept.append(seconds)
+            settings.delay = [3]  # changed in ⚙️ during the first pause
+
+        monkeypatch.setattr(base.base.asyncio, "sleep", sleep)
+        fn = ReactionsFunc(_Storage(), settings)
+        fn.sessions = [_Session("A"), _Session("B"), _Session("C")]
+        msgs, report = collect()
+        asyncio.run(fn.run("t.me/chan/5", "🔥", report))
+        assert slept == [7, 3]
+
+
+# --- a post's link is checked as it is typed, not when every worker fails on it ---
+
+class TestPostLink:
+    def test_forms(self):
+        from functions.base.base import BaseFunction
+        for link in ("t.me/chan/5", "https://t.me/chan/5?comment=7", "https://t.me/c/123/456",
+                     "t.me/forum/3/40", "https://telegram.me/chan/5"):
+            assert BaseFunction.is_message_link(link), link
+        for link in ("@chan", "t.me/chan", "https://t.me/chan/abc", "5", "просто текст"):
+            assert not BaseFunction.is_message_link(link), link
+
+    def test_bot_steps_ask_again(self):
+        from bot.routers import activity, broadcasts
+
+        class _Msg:
+            def __init__(self, text):
+                self.text, self.replies = text, []
+
+            async def answer(self, text, **kwargs):
+                self.replies.append(text)
+
+        class _State:
+            def __init__(self):
+                self.data = {}
+
+            async def update_data(self, **kwargs):
+                self.data.update(kwargs)
+
+            async def set_state(self, step):
+                self.data["step"] = step
+
+        for step in (activity.reactions_link, activity.poll_link):
+            m, state = _Msg("t.me/chan"), _State()
+            asyncio.run(step(m, state))
+            assert state.data == {} and "Нужна ссылка на пост" in m.replies[0]
+
+        m, state = _Msg("@chan"), _State()
+        asyncio.run(broadcasts.com_link(m, state, ns(messages_count=0)))
+        assert state.data == {} and "Нужна ссылка на пост" in m.replies[0]
+
+        m, state = _Msg("t.me/chan/5"), _State()
+        asyncio.run(activity.poll_link(m, state))
+        assert state.data["link"] == "t.me/chan/5"
 
     def test_statistics_one_code_several_countries(self):
         # +1 is the USA and Canada, +7 Russia and Kazakhstan: a row per country, not per code, the most first
@@ -821,7 +921,7 @@ class TestMailRunBusyGuard:
         m.acquire("Другая задача", timeout=0)  # something else holds the slot
         msg = _Msg()
 
-        asyncio.run(mail_run(msg, _State(), None, _Pool(), {"PmMailingFunc": inst},
+        asyncio.run(mail_run(msg, _State(), None, _Pool(), {"PmMailingFunc": lambda: inst},
                              m, ns(delay=[0])))
 
         assert any("Занят" in r for r in msg.replies)
@@ -998,9 +1098,120 @@ class TestBadDateHandled:
                 self.replies.append(text)
 
         m = _Msg()
-        asyncio.run(scraping.scrape_run(m, _State()))  # the date is checked before any slot
+        asyncio.run(scraping.scrape.scrape_run(m, _State()))  # the date is checked before any slot
 
         assert any("Неверные параметры" in r and "not-a-date" in r for r in m.replies)
+
+    class _FlowState:
+        """A chat's FSM: its step and data, as aiogram keeps them."""
+
+        def __init__(self, step, data):
+            self.step, self.data = step, dict(data)
+
+        async def get_data(self):
+            return dict(self.data)
+
+        async def update_data(self, **kwargs):
+            self.data.update(kwargs)
+
+        async def set_state(self, step):
+            self.step = step
+
+        async def get_state(self):
+            return self.step.state if self.step is not None else None
+
+        async def clear(self):
+            self.step, self.data = None, {}
+
+    class _TextMsg:
+        def __init__(self, text):
+            self.text = text
+            self.replies = []
+
+        async def answer(self, text, **kwargs):
+            self.replies.append(text)
+
+    def test_scrape_bad_start_date_asked_again(self):
+        # a typo in «Дата с» must not trap the flow at «Дата по», where no new date can fix it
+        from bot.routers import scraping
+        from bot.states import Scrape
+
+        state = self._FlowState(Scrape.date_min, {"channels": "@a", "name": "n", "account": "a"})
+        m = self._TextMsg("32.13.2024")
+        asyncio.run(scraping.scrape.scrape_dmin(m, state))
+
+        assert any("32.13.2024" in r for r in m.replies)
+        assert asyncio.run(state.get_state()) == Scrape.date_min.state
+        assert "date_min" not in state.data
+
+        asyncio.run(scraping.scrape.scrape_dmin(self._TextMsg("01.01.2024"), state))
+        assert asyncio.run(state.get_state()) == Scrape.date_max.state
+
+    def test_verify_bad_dates_asked_again(self):
+        # a typo must not end the verify flow: account, file and channel would be picked again
+        from bot.routers import scraping
+        from bot.states import Verify
+
+        state = self._FlowState(Verify.date_min, {"input": "f.parquet", "channel": "@x", "account": "a"})
+        m = self._TextMsg("not-a-date")
+        asyncio.run(scraping.verify.verify_dmin(m, state))
+        assert any("not-a-date" in r for r in m.replies)
+        assert asyncio.run(state.get_state()) == Verify.date_min.state
+
+        asyncio.run(scraping.verify.verify_dmin(self._TextMsg("01.01.2024"), state))
+        m = self._TextMsg("31.02.2024")
+        asyncio.run(scraping.verify.verify_run(m, state, None, None, JobManager()))
+        assert any("31.02.2024" in r for r in m.replies)
+        assert asyncio.run(state.get_state()) == Verify.date_max.state
+        assert state.data["account"] == "a"  # the flow's data is kept
+
+
+# --- members: a ⏹ is reported as one even if another scraper job starts during the upload ---
+
+class TestMembersStopLabel:
+    def test_stopped_label_survives_next_job(self, monkeypatch):
+        from bot.routers import scraping
+        from bot.services import scraping as svc
+
+        client = TelegramClient(StringSession(), 1, "x")
+        path = "sessions/a.jsession"
+        pool = WorkerPool(ns(sessions=[client], jsessions_paths={}, get_session_path=lambda c: path))
+
+        scrapes = JobManager()
+
+        async def stopped_members(creds, params):  # the operator pressed ⏹ mid-run
+            await scrapes.stop()
+            return "out/n_participants_members.parquet", []
+
+        async def upload_while_next_job_starts(bot, chat_id, paths):
+            # another scraper job takes the free slot meanwhile, with a ⏹ of its own
+            assert scrapes.acquire("next", cancelable=False, timeout=0)
+            scrapes.soft_stop()
+
+        monkeypatch.setattr(svc, "do_members", stopped_members)
+        monkeypatch.setattr(scraping.common, "send_files", upload_while_next_job_starts)
+
+        class _State:
+            async def get_data(self):
+                return {"account": path, "chats": "@g", "only_project": "n"}
+
+            async def clear(self):
+                return None
+
+        class _Msg:
+            chat = ns(id=1)
+            bot = _Bot()
+
+            def __init__(self):
+                self.replies = []
+
+            async def answer(self, text, **kwargs):
+                self.replies.append(text)
+
+        m = _Msg()
+        asyncio.run(scraping.members._members_go(m, _State(), "n", pool, None, scrapes))
+
+        assert "Остановлено" in m.replies[-1]
 
 
 # --- verify: a user-input error (str SystemExit) surfaces its message, not "прервана" ---
@@ -1041,7 +1252,7 @@ class TestVerifyBadInputReported:
             # one worker in the pool, as the scraper's account
             pool = WorkerPool(ns(sessions=[client], jsessions_paths={},
                                  get_session_path=lambda c: "sessions/a.jsession"))
-            asyncio.run(scraping.verify_run(m, _State(), pool, None, manager))
+            asyncio.run(scraping.verify.verify_run(m, _State(), pool, None, manager))
         finally:
             svc.do_verify = original
 
@@ -1082,7 +1293,7 @@ class TestTwoFaDeletesPassword:
                 return True
 
         m = _Msg()
-        asyncio.run(profile.twofa_run(m, _State(), ns(), {"SetPasswordFunc": object()}, _Manager()))
+        asyncio.run(profile.twofa_run(m, _State(), ns(), {"SetPasswordFunc": object}, _Manager()))
 
         assert m.deleted is True
         assert _Manager.started is True
@@ -1116,7 +1327,7 @@ class TestAnalysisBadInputReported:
 
         m = _Msg()
         manager = JobManager()
-        asyncio.run(scraping.analysis_file_text(m, _State(), manager))  # must not raise SystemExit
+        asyncio.run(scraping.analysis.analysis_file_text(m, _State(), manager))  # must not raise SystemExit
 
         assert any("Ошибка" in r and "Нет файлов по шаблону" in r for r in m.replies)
         assert manager.active is False  # slot released on the error path
@@ -1131,7 +1342,7 @@ class TestScraping:
 
     def test_read_preview_escapes_html(self):
         import pandas as pd
-        from bot.routers.scraping import read_preview
+        from modules.analysis_tools import read_preview
 
         df = pd.DataFrame({"Content": ["check <b>x</b> & http://y", "a < b"]})
         out = read_preview(df)
@@ -1143,7 +1354,7 @@ class TestScraping:
 
     def test_read_preview_truncates(self):
         import pandas as pd
-        from bot.routers.scraping import read_preview
+        from modules.analysis_tools import read_preview
 
         df = pd.DataFrame({"Content": ["x" * 10000]})
         out = read_preview(df)
@@ -1202,7 +1413,7 @@ class TestChangePhotoFromChat:
                 return True
 
         state = _State()
-        asyncio.run(profile.photo_upload(message, state, ns(), {"ChangeProfilePhotoFunc": object()}, _Manager()))
+        asyncio.run(profile.photo_upload(message, state, ns(), {"ChangeProfilePhotoFunc": object}, _Manager()))
         return state, _Manager
 
     def _msg(self, photo=None, document=None):

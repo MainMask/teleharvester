@@ -12,7 +12,7 @@ import pytest
 
 from bot.callbacks import ChoiceCB
 from bot.services.jobs import JobManager
-from bot.services.registry import RISK_NOTE
+from modules.registry import RISK_NOTE
 from modules import json_file, projects, scraped_files
 from test_scraper_menu import FakeSettings, FakeStorage, _PICKED, _answers
 from test_sync import _Msg, _SCallback, _SMsg, _State, _buttons, _pool, _scrapes
@@ -494,7 +494,7 @@ def test_bot_project_scrape_skips_name_and_channels_and_runs_on_them(monkeypatch
     from bot.states import Scrape
 
     router = _router()
-    monkeypatch.setattr(scraping, "DEFAULT_OUT", str(tmp_path))
+    monkeypatch.setattr(scraping.common, "DEFAULT_OUT", str(tmp_path))
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     calls = _scrapes(monkeypatch)
     projects.add("Green", ["@a", "t.me/b"])
@@ -507,9 +507,9 @@ def test_bot_project_scrape_skips_name_and_channels_and_runs_on_them(monkeypatch
     assert state.state == Scrape.date_min and go.message.answers[-1][0].startswith("Дата с")
     assert state.data["name"] == "Green" and state.data["out_dir"] == str(tmp_path)
 
-    asyncio.run(scraping.scrape_dmin(_Msg(text="01.01.2024"), state))
-    asyncio.run(scraping.scrape_run(_Msg(text="31.01.2024"), state))
-    asyncio.run(scraping.scrape_go(_SCallback(), ChoiceCB(scope="scrape_go", value="run"), state, _pool(), None,
+    asyncio.run(scraping.scrape.scrape_dmin(_Msg(text="01.01.2024"), state))
+    asyncio.run(scraping.scrape.scrape_run(_Msg(text="31.01.2024"), state))
+    asyncio.run(scraping.scrape.scrape_go(_SCallback(), ChoiceCB(scope="scrape_go", value="run"), state, _pool(), None,
                                    JobManager()))
     [params] = calls
     assert (params.name, params.channels, params.resume) == ("Green", ["@a", "t.me/b"], False)
@@ -520,7 +520,7 @@ def test_bot_project_scrape_offers_to_continue_and_fresh_keeps_the_channels(monk
     from bot.states import Scrape
 
     router = _router()
-    monkeypatch.setattr(scraping, "DEFAULT_OUT", str(tmp_path))
+    monkeypatch.setattr(scraping.common, "DEFAULT_OUT", str(tmp_path))
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     _checkpoint(tmp_path, "Green")
     projects.add("Green", ["@new"])
@@ -532,7 +532,7 @@ def test_bot_project_scrape_offers_to_continue_and_fresh_keeps_the_channels(monk
     assert state.state == Scrape.resume and "незавершённый скрап «Green»" in go.message.answers[0][0]
 
     fresh = _SCallback()
-    asyncio.run(scraping.scrape_resume(fresh, ChoiceCB(scope="scrape_resume", value="fresh"), state, _pool(),
+    asyncio.run(scraping.scrape.scrape_resume(fresh, ChoiceCB(scope="scrape_resume", value="fresh"), state, _pool(),
                                        None, JobManager()))
     assert state.state == Scrape.date_min and state.data["channels"] == "@new"  # not asked again
 
@@ -541,7 +541,7 @@ def test_bot_project_scrape_offers_to_continue_and_fresh_keeps_the_channels(monk
 
 def test_cli_menu_discovers_only_the_projects_function():
     from functions import projects as cli
-    from bot.services.registry import CLI_EXTRAS
+    from modules.registry import CLI_EXTRAS
 
     # the discovery takes every *Func class in the module: ScrapeFunc must not be one twice
     assert [name for name, _ in inspect.getmembers(cli, inspect.isclass) if name.endswith("Func")] == ["ProjectsFunc"]
@@ -758,7 +758,7 @@ def test_bot_top_up_goes_from_the_card_to_the_summary_and_runs_on_the_files_data
     from bot.states import Scrape
 
     router = _router()
-    monkeypatch.setattr(scraping, "DEFAULT_OUT", str(tmp_path))
+    monkeypatch.setattr(scraping.common, "DEFAULT_OUT", str(tmp_path))
     calls = _scrapes(monkeypatch)
     project = projects.add("Green", ["@new"])
     path = _scraped(tmp_path, "Green", channels=("@a",), keyword="war")
@@ -776,11 +776,11 @@ def test_bot_top_up_goes_from_the_card_to_the_summary_and_runs_on_the_files_data
     assert f"Дособор к {path.name}" in text and _buttons(markup) == ["▶️ Запустить", "⚙️ Дополнительно"]
 
     more = _SCallback()
-    asyncio.run(scraping.scrape_go(more, ChoiceCB(scope="scrape_go", value="more"), state, _pool(), None,
+    asyncio.run(scraping.scrape.scrape_go(more, ChoiceCB(scope="scrape_go", value="more"), state, _pool(), None,
                                    JobManager()))
     assert not any(b.startswith("🔎") for b in _buttons(more.message.answers[0][1]))  # the keyword is fixed
 
-    asyncio.run(scraping.scrape_option(_SCallback(), ChoiceCB(scope="scrape_opt", value="run"), state,
+    asyncio.run(scraping.scrape.scrape_option(_SCallback(), ChoiceCB(scope="scrape_opt", value="run"), state,
                                        _pool(), None, JobManager()))
     [params] = calls
     assert (params.name, params.channels, params.keyword, params.extend) == ("Green", ["@a"], "war", str(path))
@@ -860,6 +860,23 @@ class _AlertCallback(_SCallback):
         self.alerts.append((text, show_alert))
 
 
+def test_the_top_up_button_reads_the_posts_file_off_the_event_loop(tmp_path, monkeypatch):
+    # projects.topup reads the posts file's footer: a slow disk must not hold up the bot
+    import threading
+
+    projects.add("Green", ["@a"])
+    threads = []
+
+    def topup(project):
+        threads.append(threading.current_thread())
+        return None  # its posts file gone meanwhile
+
+    monkeypatch.setattr(projects, "topup", topup)
+    callback = _card_action("topup", _State({"project_name": "Green"}))
+    assert threads and threads[0] is not threading.main_thread()
+    assert callback.message.answers[-1][0] == "Дособирать не к чему: у проекта нет готового файла постов."
+
+
 def test_card_shows_every_function_and_says_what_to_collect_first(tmp_path):
     router = _router()
     project = projects.add("Green", ["@a"])
@@ -921,7 +938,7 @@ def test_card_contacts_offer_the_project_s_bases_only_and_need_workers(tmp_path,
     callback = _card_action("contacts", state)
     assert _buttons(callback.message.answers[0][1]) == ["📄 participants · 01.01.2024-31.01.2024 · 2", "✖️ Отмена"]
     asyncio.run(audience.run_base(_SCallback(), ChoiceCB(scope="contacts_base", value="0"), state, _pool(),
-                                  {}, None, None))
+                                  {}, None))
     assert launched == [str(tmp_path / "Green_participants_01.01.2024-31.01.2024.parquet")]
 
 
@@ -938,10 +955,10 @@ def test_card_analysis_offers_the_project_s_files_only(tmp_path):
     state = _State({"project_name": "Green"})
     menu = _card_action("analysis", state).message.answers[-1][1]
     links = _SCallback()
-    asyncio.run(scraping.analysis_tool(links, _tap(menu, "🔗 Ссылки на другие каналы"), state))
+    asyncio.run(scraping.analysis.analysis_tool(links, _tap(menu, "🔗 Ссылки на другие каналы"), state))
     assert _buttons(links.message.answers[0][1]) == ["📄 posts · 01.01.2024-31.01.2024 · 2", "✖️ Отмена"]
     read = _SCallback()
-    asyncio.run(scraping.analysis_tool(read, _tap(menu, "👀 Посмотреть файл"), state))
+    asyncio.run(scraping.analysis.analysis_tool(read, _tap(menu, "👀 Посмотреть файл"), state))
     assert sorted(_buttons(read.message.answers[0][1])[:-1]) == ["📄 participants · 01.01.2024-31.01.2024 · 2",
                                                                  "📄 posts · 01.01.2024-31.01.2024 · 2"]
 
@@ -963,17 +980,17 @@ def test_project_analysis_menu_keeps_its_project(tmp_path):
     menu = _card_action("analysis", state).message.answers[-1][1]
 
     read = _SCallback()  # a run: 👀 the project's posts file
-    asyncio.run(scraping.analysis_tool(read, _tap(menu, "👀 Посмотреть файл"), state))
-    asyncio.run(scraping.analysis_file_pick(read, ChoiceCB(scope="an_file", value="0"), state, JobManager()))
+    asyncio.run(scraping.analysis.analysis_tool(read, _tap(menu, "👀 Посмотреть файл"), state))
+    asyncio.run(scraping.analysis.analysis_file_pick(read, ChoiceCB(scope="an_file", value="0"), state, JobManager()))
     assert read.message.answers[-1][0] == "Готово ✅"
 
     links = _SCallback()  # the same menu after the run: still the project's files only
-    asyncio.run(scraping.analysis_tool(links, _tap(menu, "🔗 Ссылки на другие каналы"), state))
+    asyncio.run(scraping.analysis.analysis_tool(links, _tap(menu, "🔗 Ссылки на другие каналы"), state))
     assert _buttons(links.message.answers[0][1]) == ["📄 posts · 01.01.2024-31.01.2024 · 2", "✖️ Отмена"]
 
-    asyncio.run(scraping.analysis_project(_SCallback().message, state, other))  # Other's menu since
+    asyncio.run(scraping.analysis.analysis_project(_SCallback().message, state, other))  # Other's menu since
     stale = _SCallback()
-    asyncio.run(scraping.analysis_tool(stale, _tap(menu, "🔗 Ссылки на другие каналы"), state))
+    asyncio.run(scraping.analysis.analysis_tool(stale, _tap(menu, "🔗 Ссылки на другие каналы"), state))
     assert [text for text, _ in stale.message.answers] == [STALE_BUTTON]
 
 
@@ -1135,8 +1152,10 @@ def test_every_analysis_output_is_renamed_with_its_project():
     doesn't know would stay behind with the old name."""
     import re
 
-    suffixes = set()
-    for path in ("bot/routers/scraping.py", "functions/scraper_analysis.py"):
+    from modules import analysis_tools
+
+    suffixes = set(analysis_tools.MULTI_FILE.values())
+    for path in ("modules/analysis_tools.py", "functions/scraper_analysis.py"):
         suffixes |= set(re.findall(r'output_path\(\w+, "(\w+)"\)', open(path, encoding="utf-8").read()))
     assert suffixes and suffixes <= set(scraped_files.ANALYSIS_SUFFIXES) | {"participants"}
 
@@ -1220,13 +1239,13 @@ def test_the_bot_s_project_scrape_names_the_channels_on_its_card(monkeypatch, tm
     from bot.routers import scraping
 
     router = _router()
-    monkeypatch.setattr(scraping, "DEFAULT_OUT", str(tmp_path))
+    monkeypatch.setattr(scraping.common, "DEFAULT_OUT", str(tmp_path))
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
 
     async def lookup(message, pool, personal, path, chats):
         return [_info("@a", "«Канал А»", None, -1001, "a"), _info("t.me/b", "«Канал Б»", None, -1002)]
 
-    monkeypatch.setattr(scraping, "_lookup", lookup)
+    monkeypatch.setattr(scraping.common, "lookup", lookup)
     projects.add("Green", ["@a", "t.me/b"])
     state = _State({"project_name": "Green"})
     go = _SCallback()
@@ -1557,7 +1576,7 @@ def test_the_groups_of_members_get_named_on_the_project(monkeypatch):
     async def lookup(message, pool, personal, account, chats):
         return [ChatInfo("@grp", "«Группа»", None, -1005, "grp")]
 
-    monkeypatch.setattr(scraping, "_lookup", lookup)
+    monkeypatch.setattr(scraping.common, "lookup", lookup)
     projects.add("Green", [])
     state = _State({"only_project": "Green", "account": "sessions/w.jsession"})
     went = []
@@ -1565,6 +1584,6 @@ def test_the_groups_of_members_get_named_on_the_project(monkeypatch):
     async def ready(message, state, deps):
         went.append(True)
 
-    monkeypatch.setattr(scraping, "_members_ready", ready)
-    asyncio.run(scraping.members_chats(_SMsg(text="@grp"), state, _pool(), None, None))
+    monkeypatch.setattr(scraping.members, "_members_ready", ready)
+    asyncio.run(scraping.members.members_chats(_SMsg(text="@grp"), state, _pool(), None, None))
     assert went and projects.find("Green").chat("@grp").title == "«Группа»"

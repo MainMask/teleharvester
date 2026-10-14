@@ -10,11 +10,8 @@ class PollVoteFunc(TelethonFunction):
 
     async def vote(self, session, channel, post_id, option_number, report, comment=None):
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 return False
 
             try:
@@ -47,7 +44,7 @@ class PollVoteFunc(TelethonFunction):
         results = await self.run_sequential(
             lambda session, report: self.vote(session, channel, post_id, option_number, report, comment),
             report,
-            pause=self.settings.delay,
+            pause="delay",
         )
 
         # no ok/error keyword: the per-account lines above are what the job summary counts
@@ -56,7 +53,7 @@ class PollVoteFunc(TelethonFunction):
     async def execute(self):
         self.ask_accounts_count()
 
-        post_link = console.input("[bold red]ссылка на сообщение/пост> ")
+        post_link = self.ask_message_link("[bold red]ссылка на сообщение/пост> ")
         option_number = console.input("[bold red]номер варианта ответа (например 1, 2)> ")
 
         while not (option_number.isdigit() and int(option_number) >= 1):

@@ -46,13 +46,11 @@ def _isolated_projects(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _isolated_bot_scrape(monkeypatch, tmp_path):
     """No test may write the real stats/bot_scrape.json; the router's scrape state starts clean."""
-    from bot.routers import scraping
+    from bot.routers.scraping import common
     from modules import scraped_files
 
     monkeypatch.setattr(scraped_files, "SCRAPE_MARKER", str(tmp_path / "bot_scrape.json"))
-    monkeypatch.setattr(scraping, "_job_stop", None)
-    monkeypatch.setattr(scraping, "_user_stopped", False)
-    monkeypatch.setattr(scraping, "_shutting_down", False)
+    monkeypatch.setattr(common, "shutting_down", False)
 
 
 REAL_DO_ANALYSIS = None
@@ -64,13 +62,13 @@ def _analysis_in_process(monkeypatch):
     of scraper.analysis: the flow tests run it here. The child process itself is tested
     with REAL_DO_ANALYSIS."""
     global REAL_DO_ANALYSIS
-    from bot.routers import scraping as router
     from bot.services import scraping
+    from modules import analysis_tools
 
     REAL_DO_ANALYSIS = REAL_DO_ANALYSIS or scraping.do_analysis
 
     async def in_process(tool, path, data):
-        return router.run_tool(tool, path, data)
+        return analysis_tools.run(tool, path, data)
 
     monkeypatch.setattr(scraping, "do_analysis", in_process)
 
@@ -128,14 +126,14 @@ def _no_chat_lookup(monkeypatch):
     """Stub accounts can't resolve chats: the flows go on with the input as typed, as when a
     lookup can't be made. Tests of the lookup restore REAL_BOT_LOOKUP / REAL_CLI_LOOKUP."""
     global REAL_BOT_LOOKUP, REAL_CLI_LOOKUP
-    from bot.routers import scraping as router
+    from bot.routers.scraping import common
     from functions import scraper
 
-    REAL_BOT_LOOKUP = REAL_BOT_LOOKUP or router._lookup
+    REAL_BOT_LOOKUP = REAL_BOT_LOOKUP or common.lookup
     REAL_CLI_LOOKUP = REAL_CLI_LOOKUP or scraper._lookup
 
     async def no_lookup(message, pool, personal, path, chats):
         return None
 
-    monkeypatch.setattr(router, "_lookup", no_lookup)
+    monkeypatch.setattr(common, "lookup", no_lookup)
     monkeypatch.setattr(scraper, "_lookup", lambda account, chats: None)

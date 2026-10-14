@@ -8,7 +8,6 @@ list, are visible to admins only.
 """
 import asyncio
 import string
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +19,7 @@ from telethon.tl.types import InputPeerUser
 from scraper.config import Credentials
 from scraper.datafiles import save_table
 from scraper.scrape import (
-    _channel_ref, _entity_name, _user_access_hash, _warm_channel, chat_problem, connect, watch_stop,
+    StopSignal, _channel_ref, _entity_name, _user_access_hash, _warm_channel, chat_problem, connect, watch_stop,
 )
 
 # name searches that reach the members a plain listing leaves out
@@ -36,8 +35,8 @@ class MembersParams:
     on_progress: Callable[[int, int], None] | None = None
     # set by the run: the account that listed; its access hashes are the only valid ones
     owner_id: int | None = None
-    # set from another thread to stop: what is listed so far is saved, the rest skipped
-    stop: threading.Event | None = None
+    # set from outside the run (the bot's ⏹) to stop it: what is listed so far is saved, the rest skipped
+    stop: StopSignal | None = None
 
 
 async def _collect(client, entity, group: str, members: dict, params: MembersParams) -> tuple[int, int]:

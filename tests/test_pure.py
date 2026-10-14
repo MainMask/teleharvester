@@ -160,8 +160,7 @@ class AccountSettingsRoundTripTest(unittest.TestCase):
         # must leave the previous file intact, not a truncated one
         settings = AccountSettings.from_dict(self._base_dict(None))
 
-        def dump_then_crash(obj, fileobj, **kwargs):
-            fileobj.write("{")
+        def crash(fd):  # the new file is written, then the disk fails before it takes the old one's place
             raise OSError("disk full")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,7 +168,7 @@ class AccountSettingsRoundTripTest(unittest.TestCase):
             with open(path, "w") as fileobj:
                 fileobj.write("ORIGINAL")
 
-            with mock.patch("modules.types.account_settings.json.dump", dump_then_crash):
+            with mock.patch("modules.atomic_file.os.fsync", crash):
                 with self.assertRaises(OSError):
                     settings.save(path)
 

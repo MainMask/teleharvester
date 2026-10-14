@@ -6,7 +6,7 @@ from bot.callbacks import MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb
 from bot.keyboards.menu import screen_kb
 from bot.services import screens
-from bot.services.registry import SETTINGS
+from modules.registry import SETTINGS
 from bot.states import SetDelay, SetProfilePause
 from modules.settings import Settings, parse_seconds, seconds_text
 

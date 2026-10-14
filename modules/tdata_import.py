@@ -17,7 +17,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.account import UpdatePersonalChannelRequest
 from telethon.tl.types import InputChannelEmpty
 
-from modules import scraper_creds
+from modules import atomic_file, scraper_creds
 from modules.console import console
 from modules.types.account_settings import AccountSettings
 from modules.types.proxy import ACCOUNTS_PER_PROXY, Proxy, parse_proxies
@@ -27,8 +27,7 @@ PROXIES_FILE = "assets/proxies.txt"  # the proxy pool, one `scheme://[user:pass@
 
 def save_proxies(text: str) -> None:
     """Make `text` (one proxy per line) the pool: the phone login and the tdata import take theirs from it."""
-    with open(PROXIES_FILE, "w", encoding="utf-8") as fileobj:
-        fileobj.write("\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n")
+    atomic_file.write(PROXIES_FILE, "\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n")
 
 
 def load_proxies(path: str = PROXIES_FILE) -> list[Proxy]:
@@ -123,12 +122,7 @@ def write_2fa_password(phone: str, password: str, workers_dir: str = "tdata_impo
         with open(path, encoding="utf-8") as fileobj:
             label = fileobj.read().strip().partition(":")[0].strip() or label
 
-    tmp_path = path + ".tmp"
-    with os.fdopen(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fileobj:
-        fileobj.write(f"{label}: {password}\n")
-        fileobj.flush()
-        os.fsync(fileobj.fileno())  # on disk before the rename: a power cut must not leave it empty
-    os.replace(tmp_path, path)
+    atomic_file.write(path, f"{label}: {password}\n", mode=0o600)
 
 
 def _personal_user_ids() -> set[int]:

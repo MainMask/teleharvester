@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from modules import analysis_tools
 from scraper.members import MembersParams, run as members_run
 from scraper.scrape import ScrapeParams, run as scrape_run
 from scraper.verify import VerifyParams, run as verify_run
@@ -28,9 +29,12 @@ def dir_snapshot(path) -> dict:
     return snapshot
 
 
-def new_files(path, before: dict) -> list[str]:
+def new_files(path, before: dict, prefixes: tuple[str, ...]) -> list[str]:
+    """The files in `path` named with one of `prefixes` that are new or rewritten since `before`: a job's
+    own outputs, not those another slot (the analysis, a scrape) writes to the same folder meanwhile."""
     after = dir_snapshot(path)
-    paths = (os.path.join(path, name) for name, mtime in after.items() if before.get(name) != mtime)
+    paths = (os.path.join(path, name) for name, mtime in after.items()
+             if before.get(name) != mtime and name.startswith(prefixes))
     return sorted(p for p in paths if os.path.isfile(p))  # skip dirs (e.g. <name>_partial)
 
 
@@ -152,9 +156,7 @@ class AnalysisJob:
 
 
 def _analysis(credentials, job: AnalysisJob):
-    from bot.routers.scraping import run_tool  # in the child: the bot's tool table
-
-    return run_tool(job.tool, job.path, job.data)
+    return analysis_tools.run(job.tool, job.path, job.data)
 
 
 async def do_analysis(tool: str, path, data: dict):

@@ -8,7 +8,6 @@ un-scraped post can be told apart from an ordinary deletion.
 
 import asyncio
 import itertools
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -24,6 +23,7 @@ from scraper.scrape import (
     NET_ERRORS,
     RETRYABLE_RPC,
     SEP,
+    StopSignal,
     _channel_ref,
     _resolve_topic,
     _topic_id,
@@ -45,8 +45,8 @@ class VerifyParams:
     date_max: datetime
     output: str = ""
     comment_sample: int = 0
-    # set from another thread to stop the run (it ends as interrupted)
-    stop: threading.Event | None = None
+    # set from outside the run (the bot's ⏹) to stop it (it ends as interrupted)
+    stop: StopSignal | None = None
     # called with (checked, total) after each batch of the absent-id probe: the bot's 📊 button
     on_progress: Callable[[int, int], None] | None = None
 

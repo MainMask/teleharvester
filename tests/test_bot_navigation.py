@@ -6,7 +6,7 @@ import types
 from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB, NavCB
 from bot.keyboards.menu import main_menu, screen_kb
 from bot.routers import accounts, menu
-from bot.services.registry import ACCOUNTS, ACTIVITY, PROJECTS, SCREENS, SERVICE, SETTINGS, TASKS, by_category
+from modules.registry import ACCOUNTS, ACTIVITY, PROJECTS, SCREENS, SERVICE, SETTINGS, TASKS, by_category
 from bot.services.screens import screen_text
 
 
@@ -68,7 +68,7 @@ def test_main_menu_has_the_work_then_the_accounts_and_settings_then_the_jobs():
 
 
 def test_every_function_has_one_place_and_the_work_on_a_base_is_a_project_s():
-    from bot.services.registry import BOT_FUNCTIONS_BY_KEY
+    from modules.registry import BOT_FUNCTIONS_BY_KEY
 
     # a project's card: a group's members as its base, the contacts first — a mailing then writes from
     # that worker — then the check of the scrape's files
@@ -88,7 +88,7 @@ def test_screen_kb_lists_its_functions_in_order_then_the_way_back():
 
 
 def test_sections_explain_their_groups():
-    from bot.services.registry import IN_CHATS, ONE_TARGET, REPORTS
+    from modules.registry import IN_CHATS, ONE_TARGET, REPORTS
 
     activity = screen_text(ACTIVITY)
     assert activity.index(f"<i>{ONE_TARGET}</i>") < activity.index("✉️ ЛС человеку") \
@@ -184,7 +184,7 @@ def test_the_bot_s_commands_are_set_and_a_failure_does_not_stop_the_start():
 
 def test_no_workers_names_where_to_add_them():
     from bot.routers._common import ensure_workers
-    from bot.services.registry import menu_path
+    from modules.registry import menu_path
 
     callback = _Callback()
     assert asyncio.run(ensure_workers(callback, ns(count=lambda: 0))) is False
@@ -423,14 +423,14 @@ def test_accounts_screen_with_no_workers_explains_how_to_add():
     asyncio.run(menu.open_from_menu(msg, _State(), pool=ns(count=lambda: 0)))
 
     text, markup = msg.answers[0]
-    from bot.services.registry import menu_path
+    from modules.registry import menu_path
 
     assert "подключено: <b>0</b>" in text and menu_path("add") in text  # the button there is, not a gone one
     assert markup == screen_kb(ACCOUNTS)  # import stays reachable with zero workers
 
 
 def test_every_function_is_explained_in_its_section():
-    from bot.services.registry import BOT_FUNCTIONS, RISK_NOTE
+    from modules.registry import BOT_FUNCTIONS, RISK_NOTE
 
     assert all(function.hint for function in BOT_FUNCTIONS)
     for category in SCREENS:
@@ -487,7 +487,7 @@ def test_a_saved_setting_brings_back_the_settings_screen_with_the_new_value():
 
 
 def test_start_names_every_main_menu_button():
-    from bot.services.registry import MAIN_MENU
+    from modules.registry import MAIN_MENU
 
     text = menu.welcome("Ann", 2)
     assert MAIN_MENU == (PROJECTS, ACTIVITY, ACCOUNTS, SETTINGS, TASKS)

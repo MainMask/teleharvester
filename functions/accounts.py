@@ -28,7 +28,7 @@ class AccountsFunc(TelethonFunction):
         """Name, username, phone, proxy, status; stored data when the account didn't answer."""
         js = self.storage.jsessions_paths.get(self.storage.get_session_path(client))
         proxy = js.account.proxy if js is not None else None
-        proxy = f"{proxy.proxy_type}://{proxy.ip}:{proxy.port}" if proxy else "—"
+        proxy = proxy.label() if proxy else "—"
 
         if me is not None:
             name = escape(" ".join(filter(None, [me.first_name, me.last_name]))) or "—"  # a cell is markup

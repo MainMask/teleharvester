@@ -5,7 +5,7 @@ from rich.prompt import Prompt
 
 from functions.base import TelethonFunction
 
-from modules import scraped_files
+from modules import analysis_tools, scraped_files
 from modules.scraped_files import output_path
 from scraper import analysis
 from scraper.datafiles import read_table, save_table
@@ -92,26 +92,20 @@ def _read(project):
         console.print(f"[bold green]Сконвертировано:[/] {out}")
 
 
-# the bot's order and words (bot/routers/scraping.py ANALYSIS), plus the participants rebuild
-_TOOLS = [
-    ("🔗 Ссылки на другие каналы — найдёт в постах ссылки на Telegram-каналы и посчитает, "
-     "сколько раз упоминался каждый", _links),
-    ("🔎 Поиск постов по словам — оставит только посты, где есть хотя бы одно из ваших слов", _filter),
-    ("👀 Посмотреть файл — первые строки любого файла, можно сконвертировать в xlsx/csv", _read),
-    ("🧩 Объединить файлы постов — склеит несколько файлов постов в один и уберёт повторы", _combine),
-    ("💬 Комментарии одной таблицей — одна строка на комментарий", _comments),
-    ("📊 Активность по месяцам — сколько постов и комментариев было в каждом канале", _summary),
-    ("🎲 Случайная выборка постов — пропорционально по каналам, для ручного просмотра", _sample),
-    ("👥 Пересобрать базу участников — из файла постов; Owner ID сохраняется", _participants),
-]
+# the tool table's (modules/analysis_tools.py) tools, in the bot's order and words; the terminal asks
+# each one's own settings
+_ASK = {"links": _links, "filter": _filter, "read": _read, "combine": _combine, "comments": _comments,
+        "summary": _summary, "sample": _sample, "participants": _participants}
+_TOOLS = [*analysis_tools.MAIN_TOOLS, *analysis_tools.MORE_TOOLS]
 
 
 class ScraperAnalysisFunc(TelethonFunction):
     """Analyze scraped data"""
 
     def execute(self, project):
-        for index, (label, _) in enumerate(_TOOLS):
-            console.print(f"[bold white][{index + 1}] {label}[/]")
+        for index, tool in enumerate(_TOOLS):
+            label, hint, *_ = analysis_tools.TOOLS[tool]
+            console.print(f"[{index + 1}] {label} — {hint}", style="bold white", markup=False, highlight=False)
 
         choice = Prompt.ask("[bold magenta]инструмент[/]")
         if not choice.isdigit():
@@ -122,6 +116,6 @@ class ScraperAnalysisFunc(TelethonFunction):
             return
 
         try:
-            _TOOLS[choice][1](project)
+            _ASK[_TOOLS[choice]](project)
         except SystemExit as err:
             console.print(f"[bold red]Ошибка:[/] {err}")

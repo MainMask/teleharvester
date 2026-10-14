@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb, choice_kb, yes_no_kb
 from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, build_content, ensure_workers, left_flow,
-                                 require_text, resolve)
+                                 require_post_link, require_text, resolve)
 from bot.services.delegation import WorkerPool
 from functions.broadcast import MENTION_ADMINS, MENTION_USERS
 from bot.services.jobs import JobManager
@@ -122,7 +122,7 @@ async def mail_run(
     message: Message, state: FSMContext, album, pool: WorkerPool, functions: dict,
     manager: JobManager, settings: Settings,
 ):
-    # bail before touching the (shared, singleton) function instance if a job is running
+    # bail before reading the recipients if a job is running: it couldn't start anyway
     if manager.active:
         await message.answer(f"⛔ Занят: {manager.label}. Остановите текущую задачу.")
         await state.clear()
@@ -149,18 +149,12 @@ async def mail_run(
             return
 
     if data.get("skip"):
-        # re-check after the await above: a mailing started meanwhile owns instance.stats
-        # (its run() loaded it), and reloading here would drop its unsaved records
-        if manager.active:
-            await message.answer(f"⛔ Занят: {manager.label}. Остановите текущую задачу.")
-            return
         try:
             instance.load_stats()
         except Exception as err:
             await message.answer(f"Статистика не прочитана: {err}")
             return
         recipients = instance.filter_unsent(recipients)
-        instance.stats = {}  # run() reloads it; the singleton must not keep the ledger if the job never starts
 
     if data.get("limit"):
         recipients = recipients[: data["limit"]]
@@ -175,12 +169,9 @@ async def mail_run(
 
     async def job(func, reporter):
         try:
-            await func.run(recipients, content, settings.delay, reporter)
+            await func.run(recipients, content, None, reporter)
         finally:
             content.cleanup()
-            # every run (and "skip already sent") reloads the ledger from its file: the shared
-            # instance must not hold everyone ever messaged in memory between mailings
-            func.stats = {}
 
     started = await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function, job,
@@ -205,7 +196,7 @@ async def com_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool
 
 @router.message(Comments.link)
 async def com_link(message: Message, state: FSMContext, settings: Settings):
-    link = await require_text(message)
+    link = await require_post_link(message)
     if link is None:
         return
     await state.update_data(link=link)
@@ -234,7 +225,7 @@ async def com_run(
 
     async def job(func, reporter):
         try:
-            await func.run(data["link"], content, settings.delay, reporter)
+            await func.run(data["link"], content, None, reporter)
         finally:
             content.cleanup()
 

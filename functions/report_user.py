@@ -24,11 +24,8 @@ class ReportUserFunc(TelethonFunction):
 
     async def report_one(self, session, link, reason_type, comment, report):
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 return
             try:
                 await session(
@@ -49,7 +46,7 @@ class ReportUserFunc(TelethonFunction):
         await self.run_sequential(
             lambda session, report: self.report_one(session, link, reason_type, comment, report),
             report,
-            pause=self.settings.delay,
+            pause="delay",
         )
 
     async def execute(self):

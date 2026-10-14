@@ -13,11 +13,8 @@ class CommentsBroadcastFunc(TelethonFunction):
 
     async def broadcast(self, session, channel, post_id, content, report):
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 self.progress_drop(self.settings.messages_count)
                 return
 
@@ -50,6 +47,7 @@ class CommentsBroadcastFunc(TelethonFunction):
                     errors += 1
 
                     if errors >= 5:
+                        await report(f"[{me.first_name}] 5 ошибок подряд, остановка.")
                         break
                 else:
                     errors = 0
@@ -80,7 +78,7 @@ class CommentsBroadcastFunc(TelethonFunction):
     async def execute(self):
         self.ask_accounts_count()
 
-        link = console.input("[bold red]ссылка на пост> [/]")
+        link = self.ask_message_link("[bold red]ссылка на пост> [/]")
 
         delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
 

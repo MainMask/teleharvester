@@ -312,5 +312,4 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: Worke
         except Exception:
             pass
     finally:
-        instance.progress = None  # the instance is reused by later runs
         _free(manager, pool)

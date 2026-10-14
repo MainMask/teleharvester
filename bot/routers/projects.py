@@ -15,7 +15,7 @@ from bot.routers._common import ensure_workers, left_flow, menu_answer, read_tex
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services import screens
-from bot.services.registry import MAIN_MENU, PROJECT_CARD, PROJECT_MANAGE, PROJECTS, RISK_NOTE, card_rows
+from modules.registry import MAIN_MENU, PROJECT_CARD, PROJECT_MANAGE, PROJECTS, RISK_NOTE, card_rows
 from bot.states import Projects
 from modules import projects, scraped_files
 from scraper.scrape import bad_channels, bad_channels_text, parse_channels
@@ -262,7 +262,7 @@ async def project_action(callback: CallbackQuery, callback_data: ChoiceCB, state
         await scraping.scrape_project(callback.message, state, project,
                                       dict(pool=pool, personal=personal, scrapes=scrapes))
     elif action == "topup":
-        plan = projects.topup(project)
+        plan = await asyncio.to_thread(projects.topup, project)  # reads the posts file's footer
         if plan is None:  # its posts file gone meanwhile
             await callback.message.answer("Дособирать не к чему: у проекта нет готового файла постов.")
             return

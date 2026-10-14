@@ -19,7 +19,7 @@ from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services import screens
-from bot.services.registry import ACCOUNTS, MAIN_MENU, menu_path
+from modules.registry import ACCOUNTS, MAIN_MENU, menu_path
 from bot.states import ImportTdata, SetProxy
 from modules import login as sign_in, phone_countries, restricted_workers, scraped_files, tdata_import
 from modules.scraper_creds import card_lines, find_account, scrape_accounts
@@ -494,8 +494,7 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
 
         # read back from the file: if it was already on disk, convert() kept its settings
         saved = session.account
-        proxy_note = (f"{saved.proxy.proxy_type}://{saved.proxy.ip}:{saved.proxy.port}"
-                      if saved.proxy else "без прокси")
+        proxy_note = saved.proxy.label() if saved.proxy else "без прокси"
         await message.answer(
             f"✅ Аккаунт импортирован.\n"
             f"📱 Номер: +{phone}\n"

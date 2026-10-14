@@ -4,7 +4,7 @@ from aiogram.filters.callback_data import CallbackData
 
 
 class MenuAction(str, Enum):
-    # the screens' actions (bot/services/registry.py SCREENS)
+    # the screens' actions (modules/registry.py SCREENS)
     LIST = "list"              # poll and list the worker accounts
     PROXY = "proxy"            # open proxy setup on the workers screen
     ADD = "add"                # add an account: by phone number + code, or from tdata

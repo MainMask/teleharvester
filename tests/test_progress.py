@@ -184,7 +184,7 @@ class TestHandler:
 
         fn_progress, manager_progress = seen[0]
         assert isinstance(fn_progress, Progress) and fn_progress is manager_progress
-        assert instance.progress is None and manager.progress is None
+        assert manager.progress is None
 
 
 class TestCounterAndDrop:
@@ -448,7 +448,7 @@ class TestMoreJobs:
 
         assert seen == [(3, 1, 1)]  # the first account's report is done and counted
         assert sent[0].inline_keyboard[0][0].text == "📊 Прогресс"
-        assert instance.progress is None and manager.progress is None and not manager.active
+        assert manager.progress is None and not manager.active
 
     def test_report_user_steps_per_worker(self):
         from functions.report_user import ReportUserFunc
@@ -468,7 +468,7 @@ class TestMoreJobs:
 
 
 def test_drop_button_removes_the_markup_and_ignores_errors():
-    from bot.routers.scraping import _drop_button
+    from bot.routers.scraping.common import drop_button as _drop_button
 
     edits = []
 

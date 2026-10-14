@@ -11,11 +11,8 @@ class ClearDialogsFunc(TelethonFunction):
 
     async def clear(self, session: TelegramClient, report):
         async with self.storage.ainitialize_session(session):
-            try:
-                await self.get_me(session)  # a worker that can't connect is skipped here, the others still run
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            # a worker that can't connect is skipped here, the others still run
+            if await self.poll_me(session, report) is None:
                 return
 
             try:

@@ -12,7 +12,7 @@ from bot.routers._common import STALE_BUTTON, leave_form
 from bot.services import screens
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.services.registry import MAIN_MENU, SCREENS, TASKS
+from modules.registry import MAIN_MENU, SCREENS, TASKS
 
 router = Router()
 

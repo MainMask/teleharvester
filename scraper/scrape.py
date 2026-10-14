@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Protocol
 
 import pandas as pd
 import pyarrow as pa
@@ -31,6 +31,7 @@ from telethon.tl.types import (
     MessageService, PeerChannel, PeerChat, PeerUser, User,
 )
 
+from modules import atomic_file
 from scraper.config import Credentials
 from scraper.datafiles import clean_xml_text, format_duration, read_attrs
 
@@ -85,8 +86,15 @@ class _EntityCacheSession(SQLiteSession):
             self._auth_key = key
 
 
-def watch_stop(stop: threading.Event | None) -> asyncio.Task | None:
-    """Cancel the current task once `stop` is set from another thread (the bot's ⏹) - even
+class StopSignal(Protocol):
+    """What stops a run from outside it: the bot's ⏹ (its slot's asyncio.Event, a
+    multiprocessing.Event in the job's child process); watch_stop polls is_set()."""
+
+    def is_set(self) -> bool: ...
+
+
+def watch_stop(stop: StopSignal | None) -> asyncio.Task | None:
+    """Cancel the current task once `stop` is set from outside the run (the bot's ⏹) - even
     mid-sleep, e.g. a long flood wait, unlike a flag checked between requests. The caller
     cancels the returned watcher when its run ends."""
     if stop is None:
@@ -170,13 +178,7 @@ def _atomic_parquet(df: pd.DataFrame, dest: Path) -> None:
     half-written shard behind."""
     tmp = dest.with_name(dest.name + ".tmp")
     df.to_parquet(tmp, index=False)
-    tmp.replace(dest)
-
-
-def _atomic_write_text(dest: Path, text: str) -> None:
-    tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(dest)
+    atomic_file.commit(tmp, dest)
 
 
 def _shard_paths(ckpt_dir: Path, base: str) -> list[Path]:
@@ -241,7 +243,7 @@ def _write_snapshot(ckpt_dir: Path, start: int, dest: Path) -> None:
         for p in _shard_paths(ckpt_dir, "posts"):
             if _shard_num(p) >= start:
                 writer.write_table(_post_table(p).replace_schema_metadata(schema.metadata))
-    tmp.replace(dest)
+    atomic_file.commit(tmp, dest)
 
 
 def _write_posts(ckpt_dir: Path, out_dir: Path, name: str, attrs: dict) -> tuple[Path, int, str]:
@@ -294,7 +296,7 @@ def _stream_posts(frames, out_dir: Path, name: str, attrs: dict, finish=lambda d
             rows += len(df)
     span = f"_{first:%d.%m.%Y}-{last:%d.%m.%Y}" if rows else ""
     dest = out_dir / f"{name}_posts{span}.parquet"
-    tmp.replace(dest)  # atomic: no half-written output if this step is killed
+    atomic_file.commit(tmp, dest)  # no half-written output if this step is killed
     return dest, rows, span
 
 
@@ -339,7 +341,7 @@ def _consolidate_reactors(sources: list[Path], dest: Path) -> tuple[Path | None,
             writer.close()
     if writer is None:
         return None, 0
-    tmp.replace(dest)  # atomic: no half-written final file if this step is killed
+    atomic_file.commit(tmp, dest)  # no half-written final file if this step is killed
     return dest, total
 
 
@@ -390,8 +392,8 @@ class ScrapeParams:
     # a top-up (see modules/projects.topup): the previous run's posts file; the new posts, reactors
     # and the participants base are merged with its files, which move to <out_dir>/<name>_previous
     extend: str = ""
-    # set from another thread to stop the run: it checkpoints and exits like a Ctrl-C
-    stop: threading.Event | None = None
+    # set from outside the run (the bot's ⏹) to stop it: it checkpoints and exits like a Ctrl-C
+    stop: StopSignal | None = None
     # set by the run: the account that scraped; its access hashes are the only valid ones
     owner_id: int | None = None
     # called with (overall fraction, ETA seconds or None, posts so far) on each post: the bot's 📊 button
@@ -1032,7 +1034,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
             wrote = True
         if wrote:
             shard_index += 1
-        _atomic_write_text(ckpt_dir / "resume.json", json.dumps({
+        atomic_file.write(ckpt_dir / "resume.json", json.dumps({
             "name": params.name,
             "channels": params.channels,
             "keyword": params.keyword,

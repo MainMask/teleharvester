@@ -9,7 +9,6 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Join
 from functions.joiner import CAPTCHA_WAIT
-from modules.settings import Settings
 
 router = Router()
 
@@ -67,7 +66,6 @@ async def got_link(
     pool: WorkerPool,
     functions: dict,
     manager: JobManager,
-    settings: Settings,
 ):
     link = await require_text(message)
     if link is None:
@@ -83,6 +81,6 @@ async def got_link(
     instance, bot_function = resolve(functions, "join")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(data["mode"], link, settings.delay, r, captcha=data.get("captcha", False)),
+        lambda f, r: f.run(data["mode"], link, None, r, captcha=data.get("captcha", False)),
         "Вступление…", "Вступление завершено ✅",
     )

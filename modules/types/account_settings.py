@@ -1,10 +1,9 @@
 import dataclasses
 import datetime
 import json
-import os
-import shutil
 from dataclasses import dataclass
 
+from modules import atomic_file
 from modules.types.account import Account
 from modules.types.application import Application
 from modules.types.proxy import Proxy
@@ -60,17 +59,6 @@ class AccountSettings:
         )
 
     def save(self, path: str):
-        """Write these settings to a `.jsession` file at `path`.
-
-        Via a temp file + rename: the file holds the account's only auth key, so a
-        write that dies midway must not leave it truncated."""
-        tmp_path = path + ".tmp"
-        # 0o600 from creation: the file holds the auth key and the 2FA password
-        with os.fdopen(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fileobj:
-            json.dump(dataclasses.asdict(self), fileobj, ensure_ascii=True, indent=4)
-            fileobj.flush()
-            os.fsync(fileobj.fileno())  # on disk before the rename: a power cut must not lose the key
-
-        if os.path.exists(path):  # the rename must not widen a locked-down file's mode
-            shutil.copymode(path, tmp_path)
-        os.replace(tmp_path, path)
+        """Write these settings to a `.jsession` file at `path`: whole or not at all (the account's
+        only auth key), owner-only (the key and the 2FA password)."""
+        atomic_file.write(path, json.dumps(dataclasses.asdict(self), ensure_ascii=True, indent=4), mode=0o600)

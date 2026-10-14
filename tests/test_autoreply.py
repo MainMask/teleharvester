@@ -387,9 +387,9 @@ def test_take_slot_refuses_the_worker_autoreply_polls():
         told.append(text)
 
     account = pytypes.SimpleNamespace(personal=False, path="sessions/a.jsession")
-    progress = asyncio.run(scraping._take_slot(JobManager(), pool, account, "Скрап", menu, menu))
+    progress = asyncio.run(scraping.common.take_slot(JobManager(), pool, account, "Скрап", menu, menu))
 
-    assert progress is None and told == [scraping.WORKER_BUSY] and pool.scraping is None
+    assert progress is None and told == [scraping.common.WORKER_BUSY] and pool.scraping is None
 
 
 def test_undelivered_notice_leaves_the_chat_unread():
@@ -508,7 +508,7 @@ import toml  # noqa: E402
 
 from bot.callbacks import MenuAction, MenuCB, NavCB  # noqa: E402
 from bot.keyboards.menu import screen_kb  # noqa: E402
-from bot.services.registry import SETTINGS  # noqa: E402
+from modules.registry import SETTINGS  # noqa: E402
 from bot.routers import autoreply as screen  # noqa: E402
 
 

@@ -11,8 +11,8 @@ from bot.callbacks import MenuAction
 from bot.keyboards.common import yes_no_kb
 from bot.keyboards.menu import main_menu, screen_kb
 from bot.routers import broadcasts
-from bot.routers.scraping import ANALYSIS
-from bot.services.registry import (
+from modules.analysis_tools import TOOLS as ANALYSIS
+from modules.registry import (
     ACCOUNTS, BOT_FUNCTIONS, BOT_FUNCTIONS_BY_KEY, CLI_EXTRAS, MAIN_MENU, NOT_MENU_ITEMS, PROJECT_CARD, PROJECT_MANAGE,
     SCREENS, children, menu_path,
 )
@@ -55,7 +55,7 @@ def test_every_screen_is_described_and_the_main_menu_is_the_screens_without_a_pa
 
 
 def test_every_screen_button_is_described_on_its_screen_and_does_something():
-    from bot.services.registry import PROJECTS
+    from modules.registry import PROJECTS
 
     actions = {action.value for action in MenuAction}
     for title, screen in SCREENS.items():
@@ -140,7 +140,7 @@ def test_every_screen_of_the_main_menu_starts_with_an_emoji(monkeypatch, tmp_pat
     import asyncio
 
     from bot.routers import menu, scraping
-    from bot.services.registry import ACTIVITY, PROJECTS, SETTINGS
+    from modules.registry import ACTIVITY, PROJECTS, SETTINGS
     from modules import projects
 
     deps = dict(pool=types.SimpleNamespace(count=lambda: 1), settings=types.SimpleNamespace(
@@ -155,7 +155,8 @@ def test_every_screen_of_the_main_menu_starts_with_an_emoji(monkeypatch, tmp_pat
     projects.add("Green", ["@a"])
     texts += opened(PROJECTS) + opened(ACCOUNTS) + opened(SETTINGS)  # another when not
     callback = _Screen()
-    asyncio.run(scraping.analysis_project(callback, _Clean(), types.SimpleNamespace(name="P")))  # a screen of tools too
+    # a screen of tools too
+    asyncio.run(scraping.analysis.analysis_project(callback, _Clean(), types.SimpleNamespace(name="P")))
     texts += callback.answers
 
     assert len(texts) == 6

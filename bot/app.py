@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import os
 import shutil
@@ -21,7 +22,7 @@ from bot.services.album import AlbumMiddleware
 from bot.services.capture import clear_orphan_temp
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.services.registry import missing_classes
+from modules.registry import missing_classes
 from bot.routers import (
     accounts,
     activity,
@@ -141,8 +142,10 @@ async def run_bot():
     storage = SessionsStorage("sessions", settings.api_id, settings.api_hash, initialize=False)
     functions_storage = FunctionsStorage("functions", storage, settings)
 
-    # reuse the CLI's auto-discovery: map class name -> ready function instance
-    functions = {type(instance).__name__: instance for instance, _doc in functions_storage.functions}
+    # reuse the CLI's auto-discovery: class name -> a new instance for each run (resolve), so no run
+    # inherits another's state
+    functions = {type(instance).__name__: functools.partial(type(instance), storage, settings)
+                 for instance, _doc in functions_storage.functions}
 
     # fail fast with a clear message if the registry references a class that
     # auto-discovery didn't find (e.g. a renamed class), instead of a KeyError
@@ -150,7 +153,7 @@ async def run_bot():
     absent = missing_classes(functions)
     if absent:
         raise RuntimeError(
-            "bot/services/registry.py lists function classes not found in functions/: "
+            "modules/registry.py lists function classes not found in functions/: "
             + ", ".join(absent)
             + ". Rename them back or update BOT_FUNCTIONS."
         )

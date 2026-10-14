@@ -202,14 +202,14 @@ def test_bot_flow_runs_with_progress_and_sends_the_base(monkeypatch, tmp_path):
         return base, [("@chan", "the member list is hidden or admins-only")]
 
     monkeypatch.setattr(scraping, "do_members", do_members)
-    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(router.members, "build_credentials", lambda client: None)
     pool = WorkerPool(types.SimpleNamespace(  # one worker: the account
         sessions=[object()], jsessions_paths={}, get_session_path=lambda c: "sessions/w.jsession"))
 
     bot, state = _Bot(), _State()
     state.data.update(account="sessions/w.jsession", only_project="grp")
     msg = _Msg("@grp, @chan", bot)
-    asyncio.run(router.members_chats(msg, state, pool, None, manager))  # manager: the scraper slot
+    asyncio.run(router.members.members_chats(msg, state, pool, None, manager))  # manager: the scraper slot
 
     [(chats, name, popup)] = seen
     assert chats == ["@grp", "@chan"] and name == "grp" and "1 / 2" in popup
@@ -237,20 +237,20 @@ def test_a_project_s_members_are_its_base(monkeypatch, tmp_path):
         return base, []
 
     monkeypatch.setattr(scraping, "do_members", do_members)
-    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(router.members, "build_credentials", lambda client: None)
     pool = WorkerPool(types.SimpleNamespace(  # one worker: the account, taken at once
         sessions=[object()], jsessions_paths={}, get_session_path=lambda c: "sessions/w.jsession"))
 
     bot, state = _Bot(), _State()
     card = _Msg("", bot)
     project = types.SimpleNamespace(name="Green")
-    asyncio.run(router.members_project(card, state, project, dict(pool=pool, personal=None, scrapes=manager)))
+    asyncio.run(router.members.members_project(card, state, project, dict(pool=pool, personal=None, scrapes=manager)))
     # collected before: the new members are added to it
     assert "База ляжет в проект «Green» — новые участники добавятся к его базе, повторы не дублируются." \
         in card.answers[-1][0]
 
     msg = _Msg("@grp", bot)
-    asyncio.run(router.members_chats(msg, state, pool, None, manager))
+    asyncio.run(router.members.members_chats(msg, state, pool, None, manager))
     assert seen == ["Green"]  # no name asked: the project's
     assert "База — в проекте «Green»" in msg.answers[-1][0]
 
@@ -264,11 +264,11 @@ def test_bot_rejects_an_empty_group_list():
     state = _State()
     state.state = Members.chats
     msg = _Msg(" , ", None)
-    asyncio.run(router.members_chats(msg, state, None, None, None))
+    asyncio.run(router.members.members_chats(msg, state, None, None, None))
     assert state.state == Members.chats and "Не вижу ни одной группы" in msg.answers[0][0]
 
     junk = _Msg("@grp, —", None)  # never asked on an account: typed again
-    asyncio.run(router.members_chats(junk, state, None, None, None))
+    asyncio.run(router.members.members_chats(junk, state, None, None, None))
     assert junk.answers[0][0].startswith("Не похоже на канал: «—»") and "chats" not in state.data
 
 
@@ -311,24 +311,26 @@ def test_bot_members_stop_says_the_base_is_saved(monkeypatch, tmp_path):
     base = tmp_path / "grp_participants_members.parquet"
     base.write_bytes(b"x")
 
+    scrapes = JobManager()
+
     async def do_members(creds, params):
-        await router.scrape_stop(types.SimpleNamespace(answer=_noop))  # the operator's ⏹
+        await router.common.scrape_stop(types.SimpleNamespace(answer=_noop), scrapes)  # the operator's ⏹
         assert params.stop.is_set()
         return base, [("@grp", "остановлено — собранные участники сохранены")]
 
     monkeypatch.setattr(scraping, "do_members", do_members)
-    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(router.members, "build_credentials", lambda client: None)
     pool = WorkerPool(types.SimpleNamespace(
         sessions=[object()], jsessions_paths={}, get_session_path=lambda c: "sessions/w.jsession"))
     bot, state = _Bot(), _State()
     state.data.update(account="sessions/w.jsession", chats="@grp")
     msg = _Msg("grp", bot)
     state.data["only_project"] = "grp"
-    asyncio.run(router._members_go(msg, state, "grp", pool, None, JobManager()))
+    asyncio.run(router.members._members_go(msg, state, "grp", pool, None, scrapes))
 
     assert _buttons_of(msg.answers[0][1]) == ["📊 Прогресс", "⏹ Стоп"]
     assert bot.documents == [str(base)] and msg.answers[-1][0].startswith("⏹ Остановлено")
-    assert router._job_stop is None
+    assert not scrapes.active  # the slot (and its ⏹) is free
 
 
 async def _noop(*a, **k):
@@ -352,17 +354,17 @@ def test_bot_members_on_a_logged_out_account_reports_instead_of_exiting(monkeypa
         raise SystemExit("the worker's session is no longer authorized - re-add the account")
 
     monkeypatch.setattr(scraping, "do_members", do_members)
-    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(router.members, "build_credentials", lambda client: None)
     pool = WorkerPool(types.SimpleNamespace(
         sessions=[object()], jsessions_paths={}, get_session_path=lambda c: "sessions/w.jsession"))
     bot, state, manager = _Bot(), _State(), JobManager()
     state.data.update(account="sessions/w.jsession", chats="@grp")
     msg = _Msg("grp", bot)
     state.data["only_project"] = "grp"
-    asyncio.run(router._members_go(msg, state, "grp", pool, None, manager))
+    asyncio.run(router.members._members_go(msg, state, "grp", pool, None, manager))
 
     assert "no longer authorized" in msg.answers[-1][0]
-    assert not manager.active and router._job_stop is None
+    assert not manager.active
 
 
 def test_bot_members_wont_run_on_a_worker_in_a_bot_job(monkeypatch):
@@ -379,7 +381,7 @@ def test_bot_members_wont_run_on_a_worker_in_a_bot_job(monkeypatch):
         return None, []
 
     monkeypatch.setattr(scraping, "do_members", do_members)
-    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(router.members, "build_credentials", lambda client: None)
     pool = WorkerPool(types.SimpleNamespace(
         sessions=[object()], jsessions_paths={}, get_session_path=lambda c: "sessions/w.jsession"))
     pool.in_job = pool.workers  # a mailing runs on it
@@ -387,9 +389,9 @@ def test_bot_members_wont_run_on_a_worker_in_a_bot_job(monkeypatch):
     state.data.update(account="sessions/w.jsession", chats="@grp")
     msg = _Msg("grp", bot)
     state.data["only_project"] = "grp"
-    asyncio.run(router._members_go(msg, state, "grp", pool, None, scrapes))
+    asyncio.run(router.members._members_go(msg, state, "grp", pool, None, scrapes))
 
-    assert calls == [] and msg.answers[-1][0] == router.WORKER_BUSY and not scrapes.active
+    assert calls == [] and msg.answers[-1][0] == router.common.WORKER_BUSY and not scrapes.active
 
 
 def test_private_chat_has_no_member_list(fake, tmp_path, monkeypatch):
@@ -441,7 +443,7 @@ def test_bot_report_names_the_chats_by_their_titles(monkeypatch, tmp_path):
         return base, [("@chan", "список участников скрыт")]
 
     monkeypatch.setattr(scraping, "do_members", do_members)
-    monkeypatch.setattr(router, "build_credentials", lambda client: None)
+    monkeypatch.setattr(router.members, "build_credentials", lambda client: None)
     pool = WorkerPool(types.SimpleNamespace(
         sessions=[object()], jsessions_paths={}, get_session_path=lambda c: "sessions/w.jsession"))
     from modules import projects
@@ -452,7 +454,7 @@ def test_bot_report_names_the_chats_by_their_titles(monkeypatch, tmp_path):
     state = _State()
     state.data.update(account="sessions/w.jsession", chats="@grp, @chan", only_project="grp")
     msg = _Msg("grp", _Bot())
-    asyncio.run(router._members_go(msg, state, "grp", pool, None, JobManager()))
+    asyncio.run(router.members._members_go(msg, state, "grp", pool, None, JobManager()))
     # one block each, as on the project's card, with why
     assert ("Не всё удалось собрать:\n\n1. «Канал»\n👤 @chan · 🆔 <code>-1007</code>\n⚠️ список участников скрыт"
             in [t for t, _ in msg.answers])

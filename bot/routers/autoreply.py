@@ -17,7 +17,7 @@ from bot.keyboards.common import cancel_kb
 from bot.routers._common import leave_form, require_text, send_chunked
 from bot.services import autoreply
 from bot.services.delegation import WorkerPool
-from bot.services.registry import SETTINGS
+from modules.registry import SETTINGS
 from bot.states import SetAutoreplyText
 from modules.settings import Settings
 

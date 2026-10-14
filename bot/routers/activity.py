@@ -5,7 +5,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb
-from bot.routers._common import STALE_BUTTON, ensure_workers, require_text, resolve
+from bot.routers._common import STALE_BUTTON, ensure_workers, require_post_link, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PollVote, Reactions
@@ -37,7 +37,7 @@ async def reactions_start(callback: CallbackQuery, state: FSMContext, pool: Work
 
 @router.message(Reactions.link)
 async def reactions_link(message: Message, state: FSMContext):
-    link = await require_text(message)
+    link = await require_post_link(message)
     if link is None:
         return
     await state.update_data(link=link)
@@ -80,7 +80,7 @@ async def poll_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
 
 @router.message(PollVote.link)
 async def poll_link(message: Message, state: FSMContext):
-    link = await require_text(message)
+    link = await require_post_link(message)
     if link is None:
         return
     await state.update_data(link=link)

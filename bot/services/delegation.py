@@ -5,7 +5,7 @@ from telethon import TelegramClient
 
 from modules.storages.sessions_storage import connect_client, release_client
 
-from .registry import RISKY, BotFunction
+from modules.registry import RISKY, BotFunction
 
 
 async def borrow(pool, client, path: str, work, timeout: float):
@@ -42,7 +42,7 @@ class WorkerPool:
 
     def __init__(self, sessions_storage):
         self.storage = sessions_storage
-        # the ScrapeAccount (a worker or a personal one) the scraper runs on (bot/routers/scraping.py):
+        # the ScrapeAccount (a worker or a personal one) the scraper runs on (bot/routers/scraping/):
         # new jobs run without it, so one account never scrapes and mails at once
         self.scraping = None
         self.in_job: list = []  # the workers of the job run() is running: no scrape starts on them

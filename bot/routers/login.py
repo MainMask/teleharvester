@@ -15,7 +15,7 @@ from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import main_menu
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
-from bot.services.registry import menu_path
+from modules.registry import menu_path
 from bot.states import AddByPhone
 from modules import login as sign_in
 

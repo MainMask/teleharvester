@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import FunctionCB, MenuAction, MenuCB, NavCB
 from bot.keyboards.common import choice_kb
-from bot.services.registry import MAIN_MENU, SCREENS, button_title, by_category, children, risk_marker
+from modules.registry import MAIN_MENU, SCREENS, button_title, by_category, children, risk_marker
 
 
 def main_menu() -> ReplyKeyboardMarkup:

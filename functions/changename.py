@@ -34,11 +34,8 @@ class ChangeNameFunc(TelethonFunction):
             taken.append(" ".join(p for p in (first_name, last_name) if p))
 
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 return
 
             full_name = (me.first_name or "") + (" " + me.last_name if me.last_name else "")

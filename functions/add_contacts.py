@@ -138,7 +138,6 @@ class AddContactsFunc(TelethonFunction):
                 self.progress_drop(len(queue) - done)  # its accounts ran out: the rest is skipped
         finally:
             self.flush_ledger()  # persist the tail on any exit (success, error, cancel)
-            self.ledger = {}  # every run reloads it: the shared instance must not hold it between runs
 
         await report(f"Готово. Добавлено контактов: {self.added}")
         if already:

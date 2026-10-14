@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
-from modules import json_file, scraped_files
+from modules import atomic_file, json_file, scraped_files
 from scraper.datafiles import read_attrs
 from scraper.scrape import ChatInfo, chat_block, pending_resume
 
@@ -230,9 +230,7 @@ def add_to_list(name: str, lines: list[str]) -> tuple[int, int, int]:
             added.append(recipient)
     if added:  # whole or not at all: a mailing may read it meanwhile
         path.parent.mkdir(parents=True, exist_ok=True)
-        part = path.with_name(path.name + ".part")
-        part.write_text("".join(f"{recipient}\n" for recipient in current + added), encoding="utf-8")
-        os.replace(part, path)
+        atomic_file.write(path, "".join(f"{recipient}\n" for recipient in current + added))
     return len(added), len(current) + len(added), skipped
 
 

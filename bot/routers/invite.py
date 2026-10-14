@@ -8,7 +8,6 @@ from bot.routers._common import ensure_workers, require_text, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Invite
-from modules.settings import Settings
 
 router = Router()
 
@@ -44,7 +43,6 @@ async def got_destination(
     pool: WorkerPool,
     functions: dict,
     manager: JobManager,
-    settings: Settings,
 ):
     destination = await require_text(message)
     if destination is None:
@@ -56,6 +54,6 @@ async def got_destination(
     instance, bot_function = resolve(functions, "invite")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(data["source"], destination, settings.delay, r),
+        lambda f, r: f.run(data["source"], destination, None, r),
         "Инвайтинг…", "Инвайтинг завершён ✅",
     )

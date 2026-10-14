@@ -1,87 +1,35 @@
 # teleharvester
 
-A console tool for managing many Telegram accounts at once (Telethon):
-bulk DM broadcasts with per-recipient stats, chat/comment broadcast campaigns,
-joining and inviting, reactions, poll voting, content moderation reports, profile
-and session management.
+A tool for operating a pool of Telegram accounts (Telethon): DM mailings with per-recipient
+statistics, chat and comment campaigns, joining and inviting, reactions, poll votes, moderation
+reports, profile and session management, and a channel/group scraper with offline analysis.
+It is controlled from a terminal menu or a Telegram control bot.
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 
-> **Disclaimer.** This project is provided for educational purposes and for use on
-> accounts and chats you own or are authorized to act on. Bulk messaging, broadcast
-> campaigns and content moderation reports may violate Telegram's Terms of Service
-> and local laws. You are solely responsible for how you use it.
+> **Disclaimer.** For educational use and for accounts and chats you own or are authorized to act
+> on. Bulk messaging, campaigns and moderation reports may violate Telegram's Terms of Service and
+> local law. You are solely responsible for how you use it.
 
 ## Features
 
-Functions are auto-discovered from [`functions/`](functions/) and shown as a numbered
-menu on startup, grouped into the same sections as the control bot, with the same Russian
-titles and a one-line description under each; the prompts and messages are in Russian too:
+The terminal menu and the bot share one menu (Russian labels); functions are discovered from
+[`functions/`](functions/). Media, albums and formatted text are sent through the bot only; the
+terminal sends plain text. ⚠️ marks actions that may get a worker limited by Telegram.
 
-- **Mailing to PM (with stats)** — broadcast a message (text or media) to a list of
-  recipients and keep persistent per-recipient success counts with dates. Each person in a
-  scraped base goes to the worker that has them in contacts; workers are checked with
-  @SpamBot first (see [*Workers*](#workers-contacts-restrictions-and-order)).
-- **Broadcast to PM** — send a message to a single user by username or phone number.
-- **Broadcast to chat** — trigger-based campaigns: text, media, reply, or stickers.
-- **Instant broadcast (no trigger)** — broadcast to a chat immediately, without a trigger.
-- **Broadcast to channel comments** — post to the comment section of a post.
-- **Join chat** — join channels/groups, optionally solving captchas and broadcasting.
-- **Invite users from supergroup** — parse members of one chat and invite them to another.
-- **Add users to contacts from a .parquet database** — bulk-add users by `user_id` +
-  `access_hash`, with per-account rotation when an account hits a limit. Who was added by
-  which worker is recorded, so the mailing later writes to each person from that worker.
-- **Set reactions to message/post** — put reactions on a post.
-- **Vote in poll** — vote in a poll from multiple accounts.
-- **Moderation report (message/post)** and **Moderation report (user)** — submit
-  reports from multiple accounts.
-  Reactions, poll votes and reports go one account at a time with a pause between them (the
-  `delay` setting), so they don't all land on the same post within the same second.
-- **Change names**, **Change usernames**, **Change bio**, **Change profile photo** — bulk profile edits,
-  run one account at a time with a pause between them (`profile_pause`) so identical edits don't land
-  on every account at once: one name for all or a random one from a list; a base username with a random
-  suffix per account or one per account from a list; one bio for all or a random one from a list; one
-  photo for all (a file path) or a random one per account from `assets/photos/`.
-- **Set two-step verification password to accounts** — bulk 2FA setup.
-- **Clear all dialogs** — wipe dialogs / leave channels.
-- **Terminate other authorized sessions** — reset other logins on each account.
-- **Check accounts status** — check each account against @SpamBot: permanently restricted
-  workers are left out of mailing/contacts until they are clean again, ones restricted until a
-  date sit each run out (their people wait for them), dead sessions are moved to
-  `sessions/inactive/`. The report is grouped (clean first) and quotes each distinct @SpamBot
-  reply of the restricted ones. A restriction with a date is told by the year in the reply, so
-  it is recognized in any language the session uses.
-- **Accounts list** — name, username, phone, proxy and status of every worker, and its last
-  @SpamBot check; by username, the restricted ones last.
-- **Set proxies** — distribute the proxies from a file across all accounts (3 per proxy) and
-  reconnect them through the new proxies; a list from another file is saved to
-  `assets/proxies.txt`, as the bot does, for the later phone logins and tdata imports.
-- **Statistics (phone numbers)** — breakdown of accounts by country (one code can be several:
-  +1 is the USA and Canada, +7 Russia and Kazakhstan).
-- **Projects** — the first button of the bot's menu: saved sets of channels and all the work on
-  their bases — scrape and top-up, mailing, contacts, verify, analysis — from the project's card
-  (see [*Projects*](#projects)).
-- **Scrape** (from a project's card) — collect messages, their authors, comments, reactions and
-  participants from channels and groups into `.parquet` (see below).
-- **Group members** — a group's whole member list, the silent members too, as a mailing base.
-- **Verify scrape against live channel** — cross-check a scrape for posts it missed; the
-  channel and the scrape's date window are filled in from the posts file.
-- **Analyze scraped data** — offline tools over scraped files: t.me links, keyword search,
-  view a file, combine, comments, monthly activity, sample, rebuild participants.
-
-These functions can also be driven from Telegram through a control bot instead of the terminal
-menu (see [*Control bot*](#control-bot-telegram) below). Rich broadcast content — media, albums,
-custom emoji and text formatting — is supplied through the control bot; the terminal menu sends
-plain text.
-
-## Requirements
-
-- Python **3.11+** (some features rely on a recent Telethon; the scraper uses `X | None` syntax).
-- Dependencies from [`requirements.txt`](requirements.txt): Telethon, aiogram (for the
-  control bot), Rich, toml, phonenumbers, GitPython, python-socks, pyarrow, and — for
-  scraping/analysis — pandas, numpy, tqdm, openpyxl and python-dotenv.
+| Section | Functions |
+|---|---|
+| **📁 Проекты** | Saved audiences (channels to scrape, or a members base / list) and all work on their bases: scrape, top-up, group members, list upload, verification, analysis, add to contacts, DM mailing — see [Projects](#projects). |
+| **💬 Активность** | Every worker on one target: DM to one recipient, post comments, instant and trigger-based chat broadcasts; join chat, reactions, poll vote, inviting members of one chat to another; report a post or a user. |
+| **🤖 Аккаунты** | Account list and cards (login codes, removal of personal accounts), adding accounts, proxies, @SpamBot status check. |
+| **👤 Профиль** | Name, username, bio, photo, hide last seen, remove profile channel — applied one account at a time with `profile_pause`. |
+| **🛠 Обслуживание** | Set 2FA password, terminate other sessions, clear dialogs. |
+| **⚙️ Настройки** | Action delay, profile pause, auto-reply — written back to `config.toml`. |
+| **📊 Задачи** | Running jobs with progress and stop (bot only; same as `/status`). |
 
 ## Installation
+
+Requires Python **3.11+**.
 
 ```bash
 git clone https://github.com/MainMask/teleharvester.git
@@ -91,338 +39,148 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Settings are split in two git-ignored files:
+| File | Contents |
+|---|---|
+| `.env` | Secrets: `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN`. See [`.env.example`](.env.example). Environment variables take precedence. Keep it private (`chmod 600`). |
+| `config.toml` | Behaviour. See [`config.toml.example`](config.toml.example). Created on first run, which also asks for the API ID/hash (from <https://my.telegram.org>) if `.env` lacks them. |
 
-- **`.env` — secrets**: `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN`. See [`.env.example`](.env.example).
-  Real environment variables override the file. It holds secrets — keep it private
-  (`chmod 600 .env`, readable only by the user that runs the bot).
-- **`config.toml` — behaviour**: `[broadcast]`, `[limits]` and `[bot] admins`. See
-  [`config.toml.example`](config.toml.example).
+Key `config.toml` settings:
 
-On the first run the app creates `config.toml` and asks for:
+| Key | Default | Meaning |
+|---|---|---|
+| `[broadcast] delay` | — | Pause between a worker's actions, `[min, max]` s. |
+| `[broadcast] trigger`, `messages_count` | — | Trigger phrase and per-chat message cap for chat/comment campaigns (`0` = until stopped). |
+| `[limits] per_account_daily` | `30` | DM mailing messages per account per day (`0` = unlimited). |
+| `[limits] account_pause` | `[30, 60]` | Pause when the mailing switches accounts. |
+| `[limits] profile_pause` | `[60, 180]` | Pause between accounts for profile changes. |
+| `[limits] invite_per_account_daily`, `contacts_per_account_daily` | `0` | Daily invite / contact-add caps. Contacts: the next account continues. Invites: each worker gets its own share of the members, and a worker at its cap skips the rest of its share for that run. |
+| `[autoreply] enabled`, `text`, `interval` | `true`, `""`, `900` | Bot only: replies once to people who answer a mailing and forwards their messages to the admins. Interval ≥ 60 s; empty text disables it. |
+| `[bot] admins` | `[]` | Telegram user IDs allowed to use the bot (`BOT_ADMINS` overrides). |
 
-- **API ID** and **API hash** (only if they are not in `.env` yet; they are saved to `.env`) —
-  get them at <https://my.telegram.org> → *API development tools*.
-- **Broadcast messages**, **delay** (e.g. `1-3`) and a **trigger** phrase used by the
-  trigger-based broadcast functions. The delay between a worker's actions can later be changed
-  from the bot or the terminal menu (**⚙️ Настройки → ⏱ Задержка**); it is written back to `config.toml`, and the
-  terminal menu offers it as the default. The trigger and `messages_count` (how many messages
-  each worker sends per chat / post, `0` = until stopped) are asked in the bot's chat, instant
-  and comments broadcasts, with the current value one tap away; the chosen value is written
-  back to `config.toml` when the job starts.
+Every write from the app keeps the previous file as `config.toml.bak`. Legacy configs with
+`[sessions]` or `[bot] token` are rejected at startup; move those values to `.env`.
 
-Every value the bot writes back to `config.toml` leaves the previous file in `config.toml.bak`
-(git-ignored, with the same file mode), so a write can be undone by copying it back.
+## Accounts
 
-Older configs with a `[sessions]` section or `[bot] token` are rejected at startup with a
-message to move those values into `.env`.
+- **Workers** — `sessions/`: `.session` (Telethon `StringSession`) or `.jsession` (JSON with
+  account, app and proxy metadata).
+- **Personal accounts** — `personal_sessions/`: same format, used for scraping only, never as workers.
 
-The optional `[limits]` section throttles the **Mailing to PM** function: `per_account_daily`
-caps how many messages each account sends per day (`0` = unlimited; rotating to the next account when reached),
-and `account_pause` (`[min, max]` seconds) is the pause taken when switching accounts.
-`profile_pause` (`[min, max]` seconds) is the pause between accounts for profile-wide changes
-(name, bio, username, 2FA, photo, channel, last seen) — they run one account at a time so the
-same edit doesn't land on every account at once. `invite_per_account_daily` and
-`contacts_per_account_daily` cap how many invites / contact-adds each account makes per day
-(`0` = unlimited; when reached, the person is handed to the next account). If the section is
-missing, defaults (`30`, `[30, 60]`, `[60, 180]`, `0`, `0`) apply.
-
-`profile_pause` can also be changed from the bot or the terminal menu (**⚙️ Настройки → ⏳ Пауза
-профиля**), like the delay; it is written back to `config.toml`.
-
-The optional `[autoreply]` section is for the bot only: every `interval` seconds (default
-`900`, 15 min; at least `60`) it checks each worker's unread private chats, answers once anyone who replies to a
-worker that wrote to them first with `text` (e.g. "for further contact write to @MainMask"),
-marks the chat read and forwards what they wrote to the admins (name, username, phone if known,
-the worker, and an "open profile" button). What an answered person writes later is forwarded
-too, without another reply. `enabled = false`, an empty `text` or no section turns it off.
-On/off and the text can be changed from the bot (**⚙️ Настройки → 📬 Автоответ**, written back
-to `config.toml`, effective from the next check); the same screen shows how many people
-replied — in all, in the last day / week and per worker.
-
-The Telegram control bot (see [*Control bot*](#control-bot-telegram)) needs `BOT_TOKEN` in
-`.env` (from [@BotFather](https://t.me/BotFather)) and `admins` in the `[bot]` section of
-`config.toml` (a list of Telegram user IDs allowed to control it). The first-run setup does not
-create either — add them yourself. The `BOT_ADMINS` environment variable overrides `admins`.
-
-## Adding accounts
-
-Put session files into the `sessions/` folder. Two formats are supported:
-
-- `.session` — a Telethon `StringSession` (a 353-character auth key).
-- `.jsession` — a JSON session with account/app/proxy metadata.
-
-Accounts are added by phone in the control bot or in the terminal, by the same rules
-(`modules/login.py`). In the terminal menu (`python main.py`), the **🤖 Аккаунты** section has
-**➕ Добавить** (by phone, or the `tdata_import/` folders) and **📋 Список**: type an account's number for its
-card — **🔑 Код входа**, and **🗑 Убрать** for a personal one; the same without the menu:
+Adding accounts (bot: **🤖 Аккаунты → ➕ Добавить**; terminal: the same menu item, or the scripts):
 
 ```bash
-cd sessions
-python add_session.py                    # «➕ Добавить»: a worker or a personal account by phone, or tdata
-python login.py [file.jsession]          # «Код входа»: the codes of the last 15 minutes (no file: pick one)
+python sessions/add_session.py           # worker or personal account by phone, or tdata
+python sessions/login.py [file.jsession] # login codes received in the last 15 minutes
+python sessions/import_tdata.py          # import tdata_import/<name>/tdata folders
 ```
 
-Neither runs while the bot or the menu does (the same sessions from two processes). In the
-terminal the code is typed whole and the 2FA password is asked without echo.
-
-The control bot: **🤖 Аккаунты → ➕ Добавить** (🤖 a worker or 👤 a personal account by phone,
-or 📥 a worker from `tdata` — see below; by phone: the phone, then the code — typed with spaces, `1 2 3 4 5`, as
-Telegram expires a code sent through Telegram whole — and the 2FA password if set; a worker gets a
-proxy from `assets/proxies.txt` and joins the pool live, a personal account is saved to
-`personal_sessions/` without a proxy and without its 2FA password, for scraping only) and
-**🤖 Аккаунты → 📋 Список**: the workers and the personal accounts (these from their files, never
-connected for it), and under them a button for each account's card — what is stored (number, proxy,
-the last @SpamBot check), opened at once. **🔑 Код входа** there shows the login codes from the last
-15 minutes in the card's place, spaced, with 🔄 to refresh and ⬅️ back to the card; a personal
-account's card has **🗑 Убрать**: the bot ends
-the authorization stored in the file (the phone stays signed in; a file converted from a Telegram
-Desktop `tdata` shares its key with that Desktop, which is signed out too) and deletes the file — refused while that account scrapes or has an unfinished scrape (the bot's, or a checkpoint in
-`assets/databases`): a scrape continues on the account it was started on only.
-
-### Importing Telegram Desktop `tdata`
-
-Drop each account into `tdata_import/<name>/` as a Telegram Desktop `tdata` folder:
-
-```
-tdata_import/
-  account1/
-    tdata/
-    Пароль 2фа dark.txt   # optional: `<label>: <password>` — the account's 2FA password
-```
-
-On startup `main.py` (and its menu's **🤖 Аккаунты → ➕ Добавить → [3]**, without a restart: the
-new workers join the menu at once) converts every new folder to `sessions/<phone>.jsession`
-(authorizing over the network, so the account's proxy must be reachable) and marks
-the folder with a `.imported` file so it is not converted again. An account that is already a
-worker (matched offline by its user id against `sessions/*.jsession`) is not connected at all — its
-key must not show up from another proxy — and its file is left untouched (its stored 2FA password
-and proxy are kept). Run it
-manually (from any directory) with:
-
-```bash
-python sessions/import_tdata.py
-```
-
-Proxies are assigned from `assets/proxies.txt` (one per line), shared by up to 3 accounts
-each. If that file exists but has fewer proxies than needed for that ratio, the import
-stops. With no `proxies.txt`, accounts are imported without a proxy. The 2FA
-password is stored in the `.jsession`, which lets **Set two-step verification password**
-change it later even when a password is already set.
-
-## Assets
-
-- `assets/databases/` — scraped files (`<name>_posts_…`, `<name>_participants_…`, …); the
-  default scrape output. The menu and the bot offer the files here to pick from.
-- `assets/names.txt` — pool of names for **Change names** (one per line, `First Last`); the bot
-  also takes such a list as a `.txt` sent to it.
-- `assets/usernames.txt` — usernames for **Change usernames** file mode (one per account); same
-  in the bot. Without a list, a base is suffixed with a random 2-4 digit number per account
-  (e.g. `CitadelCurator24`).
-- `assets/bios.txt` — pool of bio variants for **Change bio** (one per line); each account gets a
-  random one. The bot also takes such a list as a `.txt`; both also take a single bio typed in.
-- `assets/targets.txt` — recipients for **Mailing to PM** (one username/phone per line).
-- `assets/contacts.parquet` — users database for **Add users to contacts**
-  (columns `user_id`, `access_hash`; optional `first_name`, `last_name`, `phone`).
-- `assets/photos/` — images for **Change profile photo**.
-- `assets/proxies.txt` — proxies for tdata import (one per line, shared by up to 3 accounts
-  each), `scheme://[user:pass@]ip:port` where `scheme` is `socks5`, `socks4` or `http` (git-ignored).
-- `stats/pm_mailing.json` — mailing stats, created at runtime (git-ignored).
-- `stats/account_limits.json` — per-account daily send counts for **Mailing to PM**'s
-  `per_account_daily` cap, created at runtime (git-ignored).
-- `stats/contacts.json` — which worker added whom to contacts (`{user_id: worker id}`),
-  written by **Add users to contacts** and read by the mailing (git-ignored).
-- `stats/restricted.json` — session files the last @SpamBot check found permanently
-  restricted; rewritten on every check (git-ignored).
-- `stats/spambot_status.json` — the last @SpamBot check of the other workers
-  (`{session file: "active" | date}`), shown in the accounts list (bot and CLI); rewritten on every
-  check (git-ignored).
-- `stats/released.json` — permanently restricted workers whose contacts the admin gave to the
-  other workers (the **Передать контакты** button); a worker clean again leaves it (git-ignored).
-- `stats/auto_replies.json` — who the `[autoreply]` already answered (per worker), so no
-  one is answered twice (git-ignored).
-- `stats/projects.json` — the [projects](#projects) (`[{"name", "channels", "chats"}]`; `chats`: the
-  channels' names from the last check), written by the bot and the menu; each change of a project
-  first copies the previous file to `stats/projects.json.bak` (the names a check writes don't, so the
-  `.bak` stays the undo of your last change) (git-ignored). No file means no projects.
+- **tdata import.** Place each Telegram Desktop `tdata` folder in `tdata_import/<name>/`
+  (optionally with a `Пароль 2фа*.txt` file containing `<label>: <password>` for 2FA). Each folder is converted to
+  `sessions/<phone>.jsession` and marked `.imported`; an account that is already a worker is left
+  untouched. The bot accepts a ZIP of one `tdata` folder (≤ 10 MB, ≤ 100 MB unpacked).
+- **Proxies.** `assets/proxies.txt`, one per line, `scheme://[user:pass@]ip:port`
+  (`socks5`, `socks4`, `http`), up to 3 accounts per proxy. Personal accounts use no proxy.
+- Worker session files are read at startup; restart after adding or removing them manually.
 
 ## Usage
 
 ```bash
-python main.py
+python main.py   # terminal menu
+python -m bot    # Telegram control bot (needs BOT_TOKEN and [bot] admins)
 ```
 
-Choose whether to initialize sessions, then pick a function by its number. The menu lists
-the sections (📁 Проекты, 💬 Активность, 🤖 Аккаунты, 👤 Профиль, 🛠 Обслуживание,
-⚙️ Настройки) with a description of every item, under the
-same subheadings as the bot's sections; ⚠️ marks the actions Telegram may answer by limiting the worker —
-once on a section's title when all of it is such, else on each such item. On startup
-the tool checks for updates via git and can pull them automatically (only when run from a git
-checkout; otherwise the check is skipped). A remote that doesn't answer within 30 s is skipped too,
-so an unreachable GitHub never holds the start.
+- **Terminal menu.** Pick a function by number. On startup it checks git for updates (30 s timeout).
+- **Control bot.** The bot only orchestrates; all MTProto actions are performed by the workers.
+  Access is limited to `[bot] admins`. Commands: `/start`, `/status`, `/cancel`.
+- **Jobs.** One account-based job runs at a time; scraper jobs and analysis have their own slots,
+  and an account is never used by two jobs at once. Long jobs show **📊 Прогресс** and **⏹ Стоп**;
+  each job ends with a summary (workers, successes, errors, elapsed time).
+- Only one teleharvester process runs per folder (lock in `tmp/`); stop the service before using
+  the terminal menu.
 
-## Control bot (Telegram)
+## Worker rules
 
-As an alternative to the terminal menu, teleharvester can be driven from Telegram through an
-[aiogram](https://docs.aiogram.dev) 3.x bot. The CLI (`python main.py`) keeps working
-unchanged; the bot is a separate entry point.
+Applied identically in the bot and the terminal.
 
-```bash
-# .env → BOT_TOKEN=...   config.toml → [bot] admins = [<your_user_id>]
-python -m bot
-```
+- **Contacts ledger.** *Add to contacts* records which worker added each person
+  (`stats/contacts.json`); the mailing writes to that person only from that worker. People without
+  a username go to the account whose scrape listed them (access hashes are per account).
+- **@SpamBot check** before every mailing and contact run: dead sessions move to
+  `sessions/inactive/` and their people are reassigned; permanently restricted workers are excluded
+  and their people wait until the admin releases them (**Передать контакты**); temporarily
+  restricted ones sit the run out.
+- **Mid-run failures.** A dead worker's remaining people go to other workers in the same run; a
+  restriction or daily cap defers them to the next run.
+- **Order.** Workers are ordered by username in the pool and in reports.
 
-**Host / worker model (anti-ban).** The bot itself is the **host**: being a Bot API account it
-cannot (and never does) perform the risky MTProto actions. Every task is **delegated to the
-worker accounts** in `sessions/` — the bot only orchestrates them. Access is restricted to the
-Telegram user IDs in `[bot].admins` (everyone else is ignored).
+## Projects
 
-Send `/start` and pick from the keyboard, built by what the work is on: **📁 Проекты** (your
-audiences and all the work on them) and **💬 Активность** (every worker on one target) on top,
-**🤖 Аккаунты** (the workers and the personal accounts) and **⚙️ Настройки** (the delays and the
-auto-reply) under them, **📊 Задачи** (what runs now) last. Every
-function has one place in the menu. Every screen lists its buttons with a one-line description of
-what each does — its actions, its functions under subheadings, the screens opened from it; two short
-buttons share a row, ⚠️ marks the risky ones (once, on the title, on a screen where all are) and
-**›** marks a button that opens another screen. A list of accounts to pick from (the cards under
-**📋 Список**, the account of a scrape) goes 20 a page with ⬅️ · 📄 · ➡️ — Telegram takes at most 100
-buttons under a message; an id (🆔) is monospace everywhere, a job's progress report too, so a tap
-copies it. A main-menu
-button tapped in the middle of a step (a name, a link, a text) leaves it and opens its screen;
-a prompt waiting for a text or a file has **✖️ Отмена** as its last button, under its own buttons
-if it has some (as `/cancel`; on an old prompt, once the chat is at another step, it changes nothing). `/start`, `/status` and `/cancel` are also in the chat's «Меню»
-button. A button of an old message that leads
-nowhere any more answers «Кнопка устарела — откройте раздел заново» (text sent to a step whose flow
-is gone: «Действие устарело — …»; a stale list names where to open it again), and a message sent outside any
-step gets «Выберите раздел в меню ниже 👇» with the menu's keyboard (in a step that waits for a
-button: «Нажмите кнопку выше — или /cancel, чтобы выйти»).
-The screens opened from 🤖 Аккаунты, ⚙️ Настройки and 📁 Проекты, the projects' cards and «⬅️ Назад»
-replace each other in one message instead of adding new ones. The whole menu is one tree of screens
-(each with its parent, its actions and its functions) described in one place,
-`bot/services/registry.py`: the keyboards, the screens' texts, «⬅️ Назад», the terminal menu and the
-menu paths in the bot's messages are built from it. The bot shows it through
-`bot/services/screens.py`: one handler (`bot/routers/menu.py`) opens every screen, and a screen with
-live values or a view of its own (📁 Проекты, 🤖 Аккаунты, ⚙️ Настройки, 📊 Задачи) registers that
-view from its router — a new screen is an entry in the registry, not a new handler.
+A project is a named audience: a set of channels, or none when its base comes from group members or
+an uploaded list. Its files live in `assets/databases/` as `<name>_posts_…`, `<name>_reactors_…`
+and `<name>_participants_…`; the list is stored in `stats/projects.json` (backup in
+`stats/projects.json.bak`). Project names may not contain `/`, `\` or the file markers
+(`_posts`, `_reactors`, `_participants`, `_partial`, `_previous`).
 
-- **📁 Проекты** — the projects as buttons (⏸ marks one with an unfinished scrape),
-  **➕ Новый проект** and **📥 Из готового скрапа**; a project's card has, in the order of the work,
-  **▶️ Скрап проекта**, **🔄 Дособрать**, **👥 Участники чата**, **📥 Загрузить список**, **✅ Верификация**,
-  **📈 Анализ**, **⚠️ 📇 В контакты**, **⚠️ 📨 ЛС по базе**, then **⚙️ Управление проектом** (in the card's
-  place, each with what it does: **✏️ Каналы**, **🏷 Переименовать**, **🧹 Очистить базу**, **🗑 Удалить**; the CLI lists them on the
-  card's second line; both built from `PROJECT_CARD` / `PROJECT_MANAGE` in the registry; see
-  [*Projects*](#projects)). All the work on a base is
-  a project's: to scrape a few channels once, or to mail a list, make a project of them (one without
-  channels too). On the card:
-  - **👥 Участники чата** — a group's whole member list, added to the project's base for the mailing.
-  - **📥 Загрузить список** — a `.txt` or a pasted list (@username, t.me link or number, one a line)
-    kept as the project's list for the mailing.
-  - **📇 В контакты** first (the mailing then writes to each person from the worker that added them),
-    **📨 ЛС по базе** (with stats). They offer the project's bases (the mailing: its list too) as
-    buttons, or take an uploaded `.txt`, a pasted list (one per line) or a file path.
-  - **✅ Верификация** offers the project's posts files as buttons; a channel button runs it at once
-    over the scrape's own date window (stored in the file). Older files ask for the dates.
-  - **📈 Анализ** — 🔗 t.me links (top list in chat + table), 🔎 keyword search, 👀 view a
-    file, and under ➕ Ещё: combine posts files, comments as a table, monthly activity, sample.
-    The project's file is picked by button; results are named automatically next to it and sent back.
-- **💬 Активность** — *write* (every worker writes): PM to one recipient, post comments, instant and
-  trigger-based chat broadcasts; *actions in chats*: join chat, reactions, poll vote, invite the
-  members of one chat to another (**🤝 Инвайтинг**); *reports*: report a post, report a user.
-- **🤖 Аккаунты** — the workers and the personal accounts: **📋 Список** (name, `@username`, ID, polled live, by username;
-  the countries of the numbers; the personal accounts below; a card for each — 🔑 Код входа, 🗑 Убрать
-  for a personal one), **➕ Добавить** — 🤖 a worker or 👤 a personal
-  account by phone (see [*Adding accounts*](#adding-accounts)), or 📥 a worker from `tdata` (a ZIP of
-  one Telegram Desktop `tdata` folder, up to 10 MB and 100 MB unpacked; its 2FA password is asked in
-  chat, the message with it is deleted, and the account is imported live),
-  **🌐 Прокси** (a `.txt` or pasted list, one proxy per 3 accounts, applied live and saved to
-  `assets/proxies.txt`); **🛡 Проверка статуса (SpamBot)** right on the screen; and two screens of
-  functions: **👤 Профиль ›** (name, username, bio, photo, hide last seen, remove the profile channel —
-  names and usernames can come from a `.txt`), **🛠 Обслуживание ›** (2FA, terminate other sessions,
-  clear dialogs).
-- **⚙️ Настройки** — what is kept in `config.toml`, with the current values on the screen:
-  **⏱ Задержка** (the delay between a worker's actions), **⏳ Пауза профиля** (between accounts for
-  profile changes), **📬 Автоответ** — the auto-reply to those who answered a PM mailing (see
-  [*Configuration*](#configuration)).
-- **📊 Задачи** — what runs now, each job with its 📊 progress and ⏹ stop, as `/status`; tapped in
-  the middle of a step, it leaves the step where it is (it only shows).
+| Card action | Description |
+|---|---|
+| **▶️ Скрап проекта** | Scrapes all project channels; resumes an unfinished scrape. |
+| **🔄 Дособрать** | Updates the newest scrape from one week before its end to today and merges the result into the project files; replaced files go to `<name>_previous/`. Must run on the account that made the scrape. |
+| **👥 Участники чата** | Adds a group's full member list to `<name>_participants_members.parquet`. |
+| **📥 Загрузить список** | Adds usernames/phones to `<name>_participants_list.txt` (mailing only). |
+| **✅ Верификация** | Checks a scrape against the live channel for missed posts. |
+| **📈 Анализ** | t.me links, keyword search, file view, combine, comments table, monthly activity, sample. |
+| **📇 В контакты** / **📨 ЛС по базе** | Add the base to workers' contacts, then mail it. With «skip those already messaged» (asked before each mailing), each person is mailed once across all projects. |
+| **⚙️ Управление проектом** | Edit channels, rename (files are renamed too), clear the members base or list (moved to `<name>_previous/`), delete (files are kept). |
 
-Scraper jobs (scrape, group members, verify) run in **a separate process** and **their own job
-slot**, so even a multi-day scrape doesn't hold up mailings or the other functions. One account never
-does both at once: while a worker scrapes, new bot jobs run without it (and say so), and a scrape
-won't start on a worker a running bot job uses — pick another account or wait. In the mailing and
-adding to contacts, the people of a worker busy scraping wait for it instead of going to other workers. The memory a big
-scrape's final step takes goes back to the system when it ends, and running out of memory ends only
-that job (what a scrape checkpointed is kept), never the bot. Their status messages have
-**📊 Прогресс** and **⏹ Стоп** — a scrape stops at a checkpoint (continued later), *group members*
-saves the members listed so far. A bot restart (e.g.
-`systemctl restart`) checkpoints the running scrape and **continues it automatically** on the next
-start; after a long flood ban press the project's **▶️ Скрап проекта** again
-and the bot offers to **continue** it (the terminal menu does the same). Prompts with a default take
-`-` for it.
+## Scraping & analysis
 
-Risky functions are marked ⚠️ and refuse to run with no workers. Only **one task runs at a time**
-(the worker pool is shared; the scraper's jobs have a slot of their own, see above, and so does the
-analysis, which uses no account); long or looping jobs — and the trigger-based chat listener — show a
-**⏹ Стоп** button, and `/cancel` aborts an in-progress dialog. `/status` shows what runs now — each job
-with its progress and its **📊 Прогресс** / **⏹ Стоп**, as under its start message — and leaves a step
-under way as it is. When a task ends (done, stopped
-or error) the bot sends a **summary report** — task name, workers used, success/error counts and
-elapsed time — and returns the main menu. Scrape/verify/analyse send their result files, then the menu.
+- **Sources:** `@name`, `t.me/name`, `t.me/+hash`, numeric IDs, forum topic links
+  (`t.me/name/42`). Private sources are read only if the account is a member. Sources are
+  validated on the chosen account before the scrape starts.
+- **Dates:** `DD.MM.YYYY` or `YYYY-MM-DD`, inclusive.
+- **Output:** Parquet in `assets/databases/` (the analysis tools can also export Excel): posts, reactors (slow: one call per
+  reacted message) and a participants base that feeds *Add to contacts* and the mailing. Options:
+  comments, reactors, participants, keyword filter, post limit.
+- **Access hashes** are valid only for the account that scraped them; scrape with a worker for a
+  base fully usable by the mailing.
+- **Resilience.** `FLOOD_WAIT` is waited out; connection drops are retried. An interrupted run keeps
+  a checkpoint in `<name>_partial/` and resumes on the same account (automatically after a bot
+  restart). Memory use is bounded regardless of scrape size.
+- **Group members** lists up to ~10,000 members directly, the rest via name search; hidden member
+  lists and channel subscribers require admin rights.
+- **Verification** requires a full (non-keyword) scrape.
 
-Broadcast content is taken from the message you send the bot — text, media or an album, with
-any formatting and custom emoji; it is captured and re-sent as-is by the workers (Bot API caps
-each download at ~20 MB). **🖼 Фото** takes a photo sent to the bot (one for every
-account) or picks a random one per account from the local `assets/photos/` folder.
+Output columns: `Type, Group, Topic ID, Author ID, Author Username, Author Access Hash, Author Name, Content,
+Date, Message ID, Author, Views, Reactions, Shares, Media, Url, Comments List` (+ `Comments` count).
 
-## Workers: contacts, restrictions and order
+Scraping more than ~150–200 communities in one block may trigger a 24-hour soft ban.
 
-The same rules apply in the terminal menu and in the bot.
+## Files
 
-- **Contacts ledger.** *Add users to contacts* records which worker added each person
-  (`stats/contacts.json`). The mailing then writes to that person only from that worker — to its
-  own contact, not to a stranger, which is what keeps it out of the spam filter. People without a
-  username in a scraped base go to the account that scraped it (only its access hashes are valid,
-  see `Owner ID` below); everyone else is a shared queue for all workers. In the terminal menu,
-  the workers left out by *сколько аккаунтов использовать?* keep their people too: those wait for them,
-  they don't go to the workers picked for the run (*Add users to contacts* doesn't re-add them either).
-- **@SpamBot check before every run.** The mailing and *Add users to contacts* first ask @SpamBot
-  about their workers (a few seconds). A dead session (banned or logged out) is moved to
-  `sessions/inactive/`; a permanently restricted one is left out (`stats/restricted.json`). The
-  people of a dead worker become shared: other workers take them in the mailing, and the next
-  *Add users to contacts* re-adds them to live workers. A permanently restricted worker's people
-  wait instead, until the admin releases them: after **Check accounts status** the bot sends a
-  message with the worker's contact count and a **Передать контакты** button (the terminal menu
-  asks the same), so a misread @SpamBot reply never hands them to strangers. Each check rewrites
-  the list, so a worker that is clean again is back in the next run (and a release is forgotten).
-  **Check accounts status** does the same on demand.
-- **Mid-run.** If a worker stops during a mailing, it is asked about at once: dead → its
-  remaining people are handed to the other workers in the same run; a restriction (permanent
-  ones until released), a daily cap or a temporary limit → they wait for it until the next run
-  (another worker would be writing to a stranger).
-- **Dead workers in other functions.** A worker whose session is dead is skipped with
-  `не удалось опросить аккаунт: сессия мертва (бан или выход)`; the other workers go on.
-- **Order.** Workers are ordered by username (`name1, name2 … name10`), in the pool and in every
-  report; workers running at once still report in that order. The username is remembered in the
-  `.jsession` the first time it is seen (a status check, a run, the account list).
+| Path | Purpose |
+|---|---|
+| `assets/databases/` | Scraped bases (default output). |
+| `assets/names.txt`, `usernames.txt`, `bios.txt`, `photos/` | Pools for profile changes. |
+| `assets/targets.txt` | Mailing recipients (username/phone per line). |
+| `assets/contacts.parquet` | Base for *Add to contacts* (`user_id`, `access_hash`). |
+| `assets/proxies.txt` | Proxy pool. |
+| `stats/pm_mailing.json`, `account_limits.json` | Mailing statistics and daily counters. |
+| `stats/invite_limits.json`, `contacts_limits.json` | Daily invite / contact-add counters. |
+| `stats/contacts.json`, `released.json` | Contacts ledger and released workers. |
+| `stats/restricted.json`, `spambot_status.json` | Results of the last @SpamBot check. |
+| `stats/auto_replies.json` | People already auto-replied to. |
+| `stats/projects.json` | Projects. |
+| `stats/profile_done.json` | Which profile function last changed which worker (the pickers tick the rest). |
+| `stats/bot_scrape.json`, `bot_running` | The bot's scrape to continue after a restart; a marker telling a crash from a clean stop. |
+
+Git-ignored: `.env`, `config.toml`, session files, `stats/` and everything in `assets/` except
+`names.txt`.
 
 ## Running under systemd
 
-For long-lived server use (the control bot as a daemon), the unit file is in [`deploy/`](deploy/). It assumes the repo at `/opt/teleharvester` with a venv in `.venv/` and a
-`teleharvester` user — edit the `User=`, `WorkingDirectory=` and `ExecStart=` lines to match your install.
-
-**Control bot** — `deploy/teleharvester-bot.service` runs `python -m bot` with `Restart=on-failure`
-(so it survives crashes) and logs to journald. Five failed starts within 5 minutes (e.g. a config
-error) leave the unit failed instead of restarting forever: fix it, then
-`systemctl reset-failed teleharvester-bot`. aiogram already retries transient polling errors and
-stops gracefully on SIGTERM. A hang is restarted too: the bot pings systemd's watchdog from its
-event loop (`WatchdogSec=120`), so a loop stuck for 2 minutes gets the process killed and restarted
-like a crash. Every start is announced to the admins in the bot ("🔄 Бот запущен"),
-and a start after a crash or an out-of-memory kill says so ("⚠️ … после сбоя"), so a silent restart
-or a crash loop doesn't go unnoticed. The worker accounts in `sessions/` are read once at startup, so after
-adding or removing a session file restart the service (`systemctl restart teleharvester-bot`) for the
-change to take effect. Only one teleharvester process runs per folder (a lock in `tmp/`): the
-terminal menu or a second bot refuses to start while the service runs, as they would use the same
-worker sessions and overwrite each other's `stats/`; stop the service first.
+The unit file is [`deploy/teleharvester-bot.service`](deploy/teleharvester-bot.service). It assumes
+`/opt/teleharvester`, a venv in `.venv/` and a `teleharvester` user; adjust `User=`,
+`WorkingDirectory=` and `ExecStart=` as needed.
 
 ```bash
 sudo cp deploy/teleharvester-bot.service /etc/systemd/system/
@@ -431,192 +189,7 @@ sudo systemctl enable --now teleharvester-bot
 journalctl -u teleharvester-bot -f
 ```
 
-## Projects
-
-A project is an audience under a name: the channels to scrape, or none — then its base comes from a
-group's members or a list. All the work on a base runs from a project's card. The name is the one
-its scrapes run under, so a project's files are the `<name>_posts_…`, `<name>_reactors_…` and
-`<name>_participants_…` files in `assets/databases/` — the bases folder stays flat, and the
-mailing, contacts, verify and analysis pick the files as before. Older files under a project's name
-are in it at once.
-
-In the bot (**📁 Проекты**, the first button of the menu) and in the terminal menu (**Проекты**):
-
-- **➕ Новый проект** — a name (not `/`, `\`, nor the file markers `_posts`, `_reactors`,
-  `_participants`, `_partial`, `_previous`) and the channels, comma-separated, as in a scrape — or
-  **📭 Без каналов** under the prompt (Enter in the CLI) for a project whose base comes from a group's
-  members or a list. It is listed as «📁 Name · без каналов», its **⚙️ Управление проектом** has **➕ Добавить
-  каналы** in place of **✏️ Каналы**, and its **▶️ Скрап проекта** says to add them. What can't be a channel — a dash, a word in
-  Cyrillic, a stray sign — is caught as it is typed (here, in **✏️ Каналы**, in **👥 Участники чата**'s
-  groups, a scrape's corrected list and the verify's channel; bot and CLI) and asked for again; whether
-  the channel exists is told by the check on an account that follows.
-- **📥 Из готового скрапа** — a project from finished files: their name (the newest 30 names in
-  `assets/databases/`, a group members' base too; those with a project already are left out) and
-  the channels the newest posts file of that name stored — none without one.
-- **The card** — the channels, listed like the accounts: a channel's title, `@username` and id, as
-  the last check of the channels on an account found them (a project's scrape and verify check
-  them, the names are kept in `stats/projects.json`; one never checked shows as typed), then an
-  unfinished scrape (how many posts so far) and the project's files with their row counts. Every
-  other list of chats in the project's work shows them the same way, by the names its checks found
-  (the groups of **👥 Участники чата**, a list corrected for one scrape and a verify's channel are
-  kept too): the check before a scrape, **✏️ Каналы** (with the list as text to copy under it), the
-  offer to continue an unfinished scrape, the summary before a scrape starts, a top-up's channels on
-  the card, what **👥** could not collect, and the CLI's.
-- **▶️ Скрап проекта** — the scrape with the project's name and channels filled in: the account,
-  then (if there is one) the offer to continue the unfinished scrape, the channels named on that
-  account (a corrected list goes for this run only), the dates and **⚙️ Дополнительно**, as in a
-  scrape. One scrape covers all of the project's channels; **⏹** stops it.
-- **🔄 Дособрать** — brings a scraped project up to date without scraping it all again. It
-  continues the project's newest posts file as that scrape was made — its channels, its keyword
-  filter, and from a week before the end of its date window to today (the card shows the dates).
-  The week is read again, so late comments and reactions under those posts come in too; under older
-  posts nothing new is picked up. The new posts, reactors and the rebuilt participants base are
-  merged into the project's files (a post read twice keeps its fresh copy), so the project keeps one
-  file of each; the files they replace move to `assets/databases/<name>_previous/` (one version
-  back; a later top-up replaces it; with the base turned off the old base stays in place). The
-  merge streams the files, never loading them whole. Run it on the account that made the scrape:
-  the base's access hashes are valid for it only, and another account is stopped as soon as it
-  connects. A top-up interrupted by the network or a bot restart is continued like any scrape.
-  A channel added to the project since needs its whole history: **▶️ Скрап проекта**.
-- **👥 Участники чата** (bot and CLI, `[3]`) — a group's members as one of the project's bases:
-  `<name>_participants_members.parquet`. Collected again (another group, or later), the new members
-  are added to it — a person in both is kept once, as listed now, with the access hash of the account
-  that listed them (Owner ID, per row) — and the result says how many are new. Groups only — not
-  stored in the project.
-- **📥 Загрузить список** (bot and CLI, `[4]`) — a `.txt` or a pasted list into
-  `<name>_participants_list.txt`: an @username or a t.me link becomes `@username`, a number
-  `+digits`; a line that is neither (or a username shorter than 4) is skipped and counted, one already
-  in the list is not added again, and a later upload is added to it. A list has no user IDs, so it
-  goes to **📨 ЛС по базе** only, never to **📇 В контакты** (which, for a project with only a list,
-  says so).
-- **🧹 Очистить базу** (bot: **⚙️ Управление проектом**, CLI `[11]`; shown once there is one of them) — the group members' base or
-  the list, which are only ever added to, leave the project: the file moves to
-  `assets/databases/<name>_previous/` (one cleared before under the same name is replaced there) and
-  can be moved back by hand until the next **🔄 Дособрать** empties that folder. The bot asks first,
-  each with its count, in ⚙️'s place (an older confirmation's button changes nothing), and
-  refuses while a members list or a scrape runs. A scrape's own participants base is never cleared:
-  it is rebuilt from the posts.
-- **📇 В контакты**, **📨 ЛС по базе**, **✅ Верификация**, **📈 Анализ** (bot and CLI) — on the
-  project's files: their lists offer only this project's bases / posts files (the file is still picked by button or number, so the base that goes to work is seen;
-  the analysis' combine takes all the project's posts files when left blank in the CLI). The card
-  always shows them, files or not, so every function is in sight: one with nothing to work on yet — no
-  base (📨: nor a list), no posts file — runs nothing and says what to collect first (a pop-up over the
-  card in the bot). Only **🔄 Дособрать** and **🧹 Очистить базу** show when there is something to do. The
-  «already sent» record of the mailing is shared by all projects: a person in two of them gets one
-  message.
-- **🏷 Переименовать** (bot and CLI) — the project gets a new name and its files on disk follow it:
-  the posts, reactors and participants files (the group members' base and the uploaded list too), a verify's `_missed` file,
-  the analysis outputs, the `<name>_partial/` folder of an unfinished scrape (its checkpoint is
-  updated, so it continues under the new name) and `<name>_previous/`. A file belongs to the project
-  only when a marker follows its name at once, so `Green_x`'s files, or a one-off scrape named
-  `Green_links`, stay with their names when `Green` is renamed. Nothing is changed if a file with
-  the new name is already on disk, or while the bot scrapes the project (or will continue its
-  scrape after a restart); a move that fails midway is undone.
-- **✏️ Каналы** replaces the list (**📭 Убрать все каналы** / Enter in the CLI: none); **🗑 Удалить**
-  removes the project, never its files.
-
-The projects live in `stats/projects.json`; each change of a project first copies the previous file
-to `stats/projects.json.bak` (not the channels' names a check stores). Without the file there are no projects; a scrape needs one (an unfinished
-scrape made before under another name continues once a project of that name is made). A file that
-can't be read is reported and never overwritten.
-
-## Scraping & analysis
-
-teleharvester includes a full Telegram scraper and analyser: scraping Telegram channels,
-groups and chats (message content, authors, reactions, views, shares, comments) and
-analysing the result, stored as **Apache Parquet** (`.parquet`) or **Excel** (`.xlsx`).
-
-Everything runs from the terminal menu or the control bot — from a project's card — on an
-account you pick: a worker from `sessions/` or a **personal account from `personal_sessions/`**
-(the same `.jsession` format, put there by hand or added in the bot with **➕ Добавить →
-👤 Личный — по номеру**; personal accounts are never workers — mailings and the other functions don't see them —
-but the scraper only reads, so it may run on one). Each runs with that
-account's own API credentials, proxy and device — no separate login. A scrape is continued on the
-account it was started on: the scraped access hashes are valid for that account only. For the same
-reason a base scraped by a personal account reaches, through the workers' mailing, only the people
-with a username (the rest are skipped as *another account's base*) — the bot and the menu say so
-when a personal account is picked; scrape with a worker for a full base. The output is parquet in `assets/databases/`, so a `_participants`
-base flows straight into *Add to contacts* and the mailing; files are picked by number, verify
-fills in the channel and the scrape window, and the analysis tools suggest an output name next to
-the input.
-
-- **Скрап** (a project's **▶️ Скрап проекта**) — messages, their authors, comments and reactions of channels and groups
-  over a date window. A source may be a channel, a supergroup (forum topics included) or a basic
-  group, given as `@name`, `t.me/name`, a full `https://t.me/name` URL, a `t.me/+hash` invite link,
-  or a **numeric ID** such as `-1001629147115` (a basic group's is `-123456`). A private source
-  (an invite link, `t.me/c/…`, a numeric ID) is read only if the account is already a member. Dates are `DD.MM.YYYY` or ISO `YYYY-MM-DD`, both inclusive.
-  The name (here and in *Участники чата*) becomes the files' prefix, so one with `/` or `\` or the
-  file markers `_posts`, `_reactors`, `_participants`, `_partial`, `_previous` is asked again. In a group the
-  people are the message authors, so they go into the participants base too (bots and deleted
-  accounts never do); a basic group's
-  messages have no links, so their `Url` is empty. In a forum every post gets its `Topic ID`
-  (1 = General); a topic link (`t.me/name/42`, `t.me/c/<id>/42`) scrapes that topic alone into the
-  group `@name-topic42` (verify then checks just that topic). A private chat is given as
-  `@username`; its messages have no links either. The files are named after the scrape with the
-  post-date span appended: `<name>_posts_<from>-<to>`, `<name>_participants_…` and
-  `<name>_reactors_…` (reactors are slow — one API call per reacted message). `FLOOD_WAIT` rate
-  limits are waited out automatically. In the bot, *⚙️ Дополнительно* toggles comments, reactors
-  and the participants base, and sets a keyword filter and a post limit.
-
-  **The sources are checked as soon as they are typed** (bot and CLI): each is looked up on the
-  chosen account and listed by its title (a forum topic's too, a private chat's by the person's
-  name). One that can't be read is marked ⚠️ with the reason — no such username, a private chat
-  the account is not in, an expired invite; an invite the account has not joined yet still shows
-  its chat's title. Then the bot offers **▶️ Продолжить всё равно**, or takes a corrected list
-  (the CLI asks the same). The groups of *Участники чата* and verify's channel (its file buttons
-  too) are checked the same way, and an interrupted scrape is offered with the titles it started
-  with. When the lookup can't be made — the account is busy with another job, the network is
-  down, or it takes over a minute — the flow goes on with the input as typed.
-- **Участники чата** — a group's whole member list, the silent members too, into
-  `<name>_participants_members.parquet` (the same columns as a participants base). Telegram lists
-  up to ~10,000 members; past that the rest is reached by searching names letter by letter. A
-  channel's subscribers, or a group with a hidden member list, are visible to admins only
-  (reported, then skipped), and a private chat has no member list. A topic link lists the whole
-  group: a forum's members are shared by its topics.
-- **Верификация скрапа** — the scrape walks a channel with `iter_messages`; verify cross-checks with
-  `get_messages(ids=…)` and lists any real message inside the date window the scrape missed. It
-  needs a full scrape: a keyword scrape is refused, as every non-matching post would come back as missed.
-- **Анализ данных** — combine posts files, flatten comments, rebuild participants, monthly
-  summaries, samples, keyword filters, `t.me` links (all of them in the menu and in the bot).
-
-**Interruptions.** A dropped connection is retried for hours. If a run still stops (a long outage,
-a flood ban, a restart, `Ctrl-C`, ⏹), it keeps a checkpoint in `<name>_partial/`: start the same
-scrape again — the same name — and it offers to continue from there with the
-interrupted run's account, channels, dates and settings.
-
-**Giant runs.** The scrape is memory-bounded: it checkpoints and frees its buffers as it goes, and
-Telethon's cache of every user/chat it meets lives in a SQLite file in the checkpoint folder
-(`entities.session`, removed on a clean finish) instead of RAM — on millions of scraped reactors an
-in-memory cache would grow without bound. The file holds the cache only, never the account's login.
-The outputs are built from the checkpoint shards one shard at a time — the `_posts` and
-`_reactors` files, the per-channel `_until_` snapshots and the participants base (one entry per
-person, the posts file read in batches) — so a scrape's memory doesn't grow with its size. The
-posts in `_posts` go channel by channel, newest first within each.
-
-`Access Hash` (and `Comment Author Access Hash`, `Author Access Hash`) is the user's Telegram
-`access_hash`: with the `ID` it forms an `InputPeerUser`, so the user can be addressed without
-resolving them again (only from the account that scraped it). This is exactly what *Add to
-contacts* and the mailing consume.
-
-The posts file also stores, in its parquet metadata, the scrape's own date window and the
-account that scraped it. *Verify* uses the window as its default dates (the saved posts' span
-would hide a scrape cut short), and rebuilding the participants from the posts file keeps the
-`Owner ID` column — without it the mailing can't tell which worker may write to people without
-a username.
-
-### Output columns
-
-`Type, Group, Author ID, Author Username, Author Access Hash, Author Name, Content, Date,
-Message ID, Author, Views, Reactions, Shares, Media, Url, Comments List` (plus a `Comments`
-count added on write).
-
-### Notes
-
-- **Telegram soft ban:** scraping more than ~150–200 communities in one block can trigger a
-  24-hour soft ban. There is no practical limit on the number of messages from fewer communities.
-- Respect Telegram's Terms of Service and applicable data-protection law.
-
-### Citation
-
-If you use the scraper in research, please cite the original work:
-
+- `Restart=on-failure`; five failed starts within 5 minutes stop retries
+  (`systemctl reset-failed teleharvester-bot` after fixing the cause).
+- Watchdog (`WatchdogSec=120`) restarts a hung process.
+- Each start is reported to the admins, including restarts after a crash or OOM kill.

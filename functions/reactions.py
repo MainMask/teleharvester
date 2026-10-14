@@ -18,11 +18,8 @@ class ReactionsFunc(TelethonFunction):
         reaction = reaction.replace("\ufe0f", "")
 
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 return
 
             try:
@@ -50,13 +47,13 @@ class ReactionsFunc(TelethonFunction):
             lambda session, report: self.set_reaction(session, peer, message_id, report,
                                                       reaction=reaction, comment=comment),
             report,
-            pause=self.settings.delay,
+            pause="delay",
         )
 
     async def execute(self):
         self.ask_accounts_count()
 
-        link_to_message = console.input("[bold red]ссылка на сообщение/пост> [/]")
+        link_to_message = self.ask_message_link("[bold red]ссылка на сообщение/пост> [/]")
 
         reaction = console.input(
             "[bold red]реакция ({reactions}), пусто — случайная> [/]"

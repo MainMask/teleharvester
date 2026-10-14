@@ -110,11 +110,8 @@ class ReportFunc(TelethonFunction):
             if stop is not None and stop.is_set():  # checked after the wait: a ⏹ during it counts
                 return True
             async with self.storage.ainitialize_session(session):
-                try:
-                    me = await self.get_me(session)
-                except Exception as err:
-                    self.progress_failed()
-                    await report(f"не удалось опросить аккаунт: {err}")
+                me = await self.poll_me(session, report)
+                if me is None:
                     self.progress_step()
                     continue
                 try:

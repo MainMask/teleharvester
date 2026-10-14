@@ -4,7 +4,7 @@ from rich.prompt import Confirm, Prompt
 # the modules, not their *Func classes: an imported *Func would be a second menu entry
 from functions import add_contacts, pmmailing, scraper, scraper_analysis
 from functions.base import TelethonFunction
-from bot.services.registry import PROJECT_CARD, PROJECT_MANAGE, card_rows
+from modules.registry import PROJECT_CARD, PROJECT_MANAGE, card_rows
 from modules import projects, scraped_files
 from scraper.scrape import bad_channels, bad_channels_text, parse_channels
 

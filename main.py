@@ -5,7 +5,7 @@ import sys
 from modules.console import console
 from rich.markup import escape
 
-from bot.services.registry import NOT_MENU_ITEMS, RISK_NOTE, RISKY, cli_menu
+from modules.registry import NOT_MENU_ITEMS, RISK_NOTE, RISKY, cli_menu
 
 from modules import instance_lock, updater
 from modules.config import load_env
@@ -101,7 +101,7 @@ def main() -> None:
         if imported:
             console.print(f"[bold green]Импортировано аккаунтов из tdata_import/: {imported}[/]")
     except Exception as err:
-        console.print(f"[bold yellow]ВНИМАНИЕ:[/] импорт tdata не удался: {err}")
+        console.print(f"[bold yellow]ВНИМАНИЕ:[/] импорт tdata не удался: {escape(str(err))}")
 
     initialize = console.input("Подключить сессии сейчас? (y/n) ") == "y"
 
@@ -151,7 +151,7 @@ def main() -> None:
         except KeyboardInterrupt:
             pass
         except Exception as err:
-            console.print(f"[bold red]Ошибка:[/] {err}")
+            console.print(f"[bold red]Ошибка:[/] {escape(str(err))}")
 
 
 if __name__ == "__main__":

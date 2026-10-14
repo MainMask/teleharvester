@@ -12,11 +12,8 @@ class SetPasswordFunc(TelethonFunction):
 
     async def edit_2fa(self, session: TelegramClient, password: str, report):
         async with self.storage.ainitialize_session(session):
-            try:
-                me = await self.get_me(session)
-            except Exception as err:
-                self.progress_failed()
-                await report(f"не удалось опросить аккаунт: {err}")
+            me = await self.poll_me(session, report)
+            if me is None:
                 return
 
             path = self.storage.get_session_path(session)

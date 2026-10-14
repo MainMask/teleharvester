@@ -7,9 +7,9 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import cancel_kb, choice_kb
+from bot.keyboards.common import PAGE_SIZE, cancel_kb, choice_kb
 from bot.routers._common import STALE_BUTTON, ensure_workers, read_text_document, require_text, resolve
-from bot.services.registry import BOT_FUNCTIONS_BY_KEY
+from modules.registry import BOT_FUNCTIONS_BY_KEY
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import ChangeBio, ChangeName, ChangePhoto, ChangeUsername, PickWorkers, SetPassword
@@ -56,9 +56,6 @@ async def _sent_lines(message: Message) -> list[str] | None:
 
 
 # --- worker picker: a function's first step, so workers done earlier can be left out ---
-
-PAGE_SIZE = 20  # workers per page of the picker
-
 
 def _workers_text(picked: list[int], total: int, new: list[int]) -> str:
     text = (f"На каких воркерах? Отмечено: {len(picked)} из {total}\n"
