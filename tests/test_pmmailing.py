@@ -86,6 +86,44 @@ class TestFilterUnsent:
         ]
         assert fn.filter_unsent(recipients) == [{"user_id": 2, "access_hash": 6, "username": ""}]
 
+    def test_a_person_mailed_from_a_list_is_not_mailed_again_from_a_base(self):
+        fn = _fn()
+        fn.stats = {"@Alice": {"count": 1}}  # a project's uploaded list
+        recipients = [
+            {"user_id": 1, "access_hash": 5, "username": "alice"},  # the same person, any case
+            {"user_id": 2, "access_hash": 6, "username": "bob"},
+        ]
+        assert fn.filter_unsent(recipients) == [{"user_id": 2, "access_hash": 6, "username": "bob"}]
+
+    def test_a_person_mailed_from_a_base_is_not_mailed_again_from_a_list(self):
+        fn = _fn()
+        fn._unsaved = 0
+        fn.stats = {}
+        fn.record_success({"user_id": 1, "access_hash": 5, "username": "Alice"})
+        assert fn.stats == {"1": {"count": 1, "last_date": fn.stats["1"]["last_date"], "username": "Alice"}}
+        assert fn.filter_unsent(["@alice", "@bob"]) == ["@bob"]
+
+    def test_phones_and_ids_are_not_taken_for_usernames(self):
+        fn = _fn()
+        fn.stats = {"123": {"count": 1}, "+79991234567": {"count": 1}}
+        assert fn.filter_unsent(["123", "+79991234567", "+79990000000"]) == ["+79990000000"]
+        assert fn.filter_unsent([{"user_id": 5, "access_hash": 1, "username": ""}]) == \
+            [{"user_id": 5, "access_hash": 1, "username": ""}]
+
+    def test_a_list_s_links_are_matched_with_a_base_s_usernames(self, tmp_path):
+        # a pasted list and a .txt are read as a project's list is: a t.me link is its @username
+        lines = ["https://t.me/alice", "  bobby ", "", "+7 999 123-45-67", "Иван"]
+        assert pm.PmMailingFunc.parse_list(lines) == ["@alice", "@bobby", "+7 999 123-45-67", "Иван"]
+        path = tmp_path / "list.txt"
+        path.write_text("\n".join(lines), encoding="utf-8")
+        assert _fn().load_recipients(str(path)) == ["@alice", "@bobby", "+7 999 123-45-67", "Иван"]
+
+        fn = _fn()
+        fn._unsaved = 0
+        fn.stats = {}
+        fn.record_success({"user_id": 1, "access_hash": 5, "username": "alice"})  # mailed from a base
+        assert fn.filter_unsent(pm.PmMailingFunc.parse_list(lines)) == ["@bobby", "+7 999 123-45-67", "Иван"]
+
 
 class TestResolvePeer:
     def test_dict_becomes_input_peer_user(self):
@@ -325,3 +363,36 @@ class TestPremiumHandoff:
 
         assert owner.sent == [] and premium.sent == [] and stats == {}
         assert "[A] пропущено: 5 — пишут только контакты и Premium" in reports
+
+
+class TestCachedMe:
+    """TelethonFunction.cached_me: the mailing and adding to contacts poll each worker once per run."""
+
+    def test_polled_once_and_a_failure_is_account_limited(self):
+        from modules.account_limits import AccountLimited
+
+        calls = []
+
+        async def get_me():
+            calls.append(1)
+            return types.SimpleNamespace(id=7)
+
+        async def broken():
+            raise ConnectionError("proxy down")
+
+        async def dead():
+            return None  # Telethon's answer for a banned / logged-out account
+
+        fn = _fn()
+        fn._me_cache = {}
+        good = types.SimpleNamespace(get_me=get_me)
+        assert asyncio.run(fn.cached_me(good)).id == 7
+        assert asyncio.run(fn.cached_me(good)).id == 7 and len(calls) == 1
+        for session, why in ((types.SimpleNamespace(get_me=broken), "не удалось опросить аккаунт: proxy down"),
+                             (types.SimpleNamespace(get_me=dead), "сессия мертва")):
+            try:
+                asyncio.run(fn.cached_me(session))
+            except AccountLimited as err:
+                assert why in str(err)
+            else:
+                raise AssertionError("must raise AccountLimited")

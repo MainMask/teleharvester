@@ -37,8 +37,12 @@ class InvitingFunc(TelethonFunction):
         return "@" + channel_slug(link)
 
     @staticmethod
-    def chunkify(lst, n):  # split list
-        return [lst[i::n] for i in range(n)]
+    def chunkify(lst, n):
+        """n runs of the list, as even as can be: a worker's share is one stretch of the listing,
+        so its own listing of the source (see invite) can stop once past it."""
+        size, extra = divmod(len(lst), n)
+        bounds = [i * size + min(i, extra) for i in range(n + 1)]
+        return [lst[bounds[i]:bounds[i + 1]] for i in range(n)]
 
     @staticmethod
     def joined_chat(result):
@@ -99,7 +103,14 @@ class InvitingFunc(TelethonFunction):
 
             try:
                 async for user in session.iter_participants(source):
-                    if user.id not in wanted or user.bot or user.deleted or user.is_self:
+                    if user.id not in wanted:
+                        continue
+                    # seen: each worker lists the source itself (access hashes are per account),
+                    # never past its whole share
+                    wanted.discard(user.id)
+                    if user.bot or user.deleted or user.is_self:
+                        if not wanted:
+                            break
                         continue
 
                     if self._limits.reached(aid):
@@ -136,6 +147,8 @@ class InvitingFunc(TelethonFunction):
 
                     tried += 1
                     self.progress_step()
+                    if not wanted:  # the share's last: no trailing wait
+                        break
                     await self.delay()
             except Exception as err:
                 self.progress_failed()

@@ -56,11 +56,10 @@ TOOLS = {
     ),
     "combine": (
         "🧩 Объединить файлы постов",
-        "Склеит несколько файлов постов в один и уберёт повторы. Результат, Combined_posts, "
-        "можно выбрать в «Верификации» и в других инструментах.",
+        "Склеит несколько файлов постов в один и уберёт повторы. Результат — файл проекта "
+        "<имя>_posts_combined: его можно выбрать в «Верификации» и в других инструментах проекта.",
         "combine",
-        lambda p, d: (None, analysis.combine(
-            p, str(Path(scraped_files.BASES_DIR) / "Combined_posts"), ["Group", "Message ID"])),
+        lambda p, d: (None, analysis.combine(p, scraped_files.combined_output(d["project"]), ["Group", "Message ID"])),
     ),
     "comments": (
         "💬 Комментарии одной таблицей",

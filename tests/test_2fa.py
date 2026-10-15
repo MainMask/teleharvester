@@ -104,7 +104,7 @@ def test_the_new_password_is_hidden_never_empty_and_typed_twice(monkeypatch):
 
     module = importlib.import_module("functions.2fa")
     asked = []
-    answers = iter(["", "pw", "typo", "pw", "pw"])  # empty; a mistyped repeat; then the same twice
+    answers = iter(["", "   ", "pw", "typo", "pw", "pw"])  # empty; blank; a mistyped repeat; then the same twice
     monkeypatch.setattr(module.console, "input", lambda *a, **k: asked.append(k) or next(answers))
     monkeypatch.setattr(module.console, "print", lambda *a, **k: None)
     func = SetPasswordFunc.__new__(SetPasswordFunc)
@@ -117,4 +117,4 @@ def test_the_new_password_is_hidden_never_empty_and_typed_twice(monkeypatch):
     func.run = run
     asyncio.run(func.execute())
     # an empty password would remove the 2FA of every account: never sent
-    assert asked == [{"password": True}] * 5 and ran == ["pw"]
+    assert asked == [{"password": True}] * 6 and ran == ["pw"]

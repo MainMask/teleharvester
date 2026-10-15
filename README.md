@@ -119,16 +119,16 @@ A project is a named audience: a set of channels, or none when its base comes fr
 an uploaded list. Its files live in `assets/databases/` as `<name>_posts_…`, `<name>_reactors_…`
 and `<name>_participants_…`; the list is stored in `stats/projects.json` (backup in
 `stats/projects.json.bak`). Project names may not contain `/`, `\` or the file markers
-(`_posts`, `_reactors`, `_participants`, `_partial`, `_previous`).
+(`_posts`, `_reactors`, `_participants`, `_partial`, `_previous`, `_combined`).
 
 | Card action | Description |
 |---|---|
 | **▶️ Скрап проекта** | Scrapes all project channels; resumes an unfinished scrape. |
 | **🔄 Дособрать** | Updates the newest scrape from one week before its end to today and merges the result into the project files; replaced files go to `<name>_previous/`. Must run on the account that made the scrape. |
-| **👥 Участники чата** | Adds a group's full member list to `<name>_participants_members.parquet`. |
+| **👥 Участники чата** | Adds a group's full member list to `<name>_participants_members.parquet`; a previous base that can't be read is moved to `<name>_previous/`, not overwritten. |
 | **📥 Загрузить список** | Adds usernames/phones to `<name>_participants_list.txt` (mailing only). |
 | **✅ Верификация** | Checks a scrape against the live channel for missed posts. |
-| **📈 Анализ** | t.me links, keyword search, file view, combine, comments table, monthly activity, sample. |
+| **📈 Анализ** | t.me links, keyword search, file view, combine, comments table, monthly activity, sample. Combine merges the project's scrapes into `<name>_posts_combined.parquet`, offered on the card like its other posts files (🔄 still continues the newest scrape). |
 | **📇 В контакты** / **📨 ЛС по базе** | Add the base to workers' contacts, then mail it. With «skip those already messaged» (asked before each mailing), each person is mailed once across all projects. |
 | **⚙️ Управление проектом** | Edit channels, rename (files are renamed too), clear the members base or list (moved to `<name>_previous/`), delete (files are kept). |
 

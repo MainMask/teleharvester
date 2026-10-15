@@ -87,9 +87,13 @@ class ReportFunc(TelethonFunction):
         return selections
 
     async def replay(self, session, peer, ids, comment, selections):
-        """Repeat the recorded report path on another account (menu choices by index)."""
+        """Repeat the recorded report path on another account (menu choices by index). ValueError if
+        Telegram asks this one a menu the path has no choice for: its report is not sent rather than sent
+        under a reason nobody picked."""
         recorded = iter(selections)
-        await self.walk(session, peer, ids, comment, b"", lambda result: next(recorded, 0))
+        status, _ = await self.walk(session, peer, ids, comment, b"", lambda result: next(recorded, None))
+        if status == "choose":
+            raise ValueError("Telegram показал этому аккаунту другой путь жалобы — жалоба не отправлена")
 
     async def step(self, state, option):
         """Advance the report flow one step on the first worker (bot-driven).

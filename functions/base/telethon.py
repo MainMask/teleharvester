@@ -28,6 +28,18 @@ class TelethonFunction(BaseFunction):
             raise AccountLimited("сессия мертва (бан или выход)")
         return me
 
+    async def cached_me(self, session):
+        """get_me() once per worker in a run (self._me_cache, which the run resets); AccountLimited if it
+        can't be polled, so a rotation moves on to the next worker."""
+        if id(session) not in self._me_cache:
+            try:
+                self._me_cache[id(session)] = await self.get_me(session)
+            except AccountLimited:
+                raise
+            except Exception as err:
+                raise AccountLimited(f"не удалось опросить аккаунт: {err}")
+        return self._me_cache[id(session)]
+
     async def poll_me(self, session, report):
         """get_me() for a worker's run; None once it is reported as failed (an error in the job's
         summary): the caller skips the worker, the others still run."""

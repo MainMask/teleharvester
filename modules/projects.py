@@ -204,11 +204,17 @@ _USERNAME = re.compile(r"(?:@|(?i:(?:https?://)?(?:www\.)?(?:t\.me|telegram\.(?:
 _PHONE = re.compile(r"\+?\d{7,15}")
 
 
+def as_username(line: str) -> str | None:
+    """The line as "@username" (@name, name, a t.me/name link); None if it is no username."""
+    found = _USERNAME.fullmatch(line.strip())
+    return f"@{found[1]}" if found else None
+
+
 def _recipient(line: str) -> str | None:
     """The line as "@username" or "+digits" (the mailing resolves a number as a contact); None if it is neither."""
     line = line.strip()
-    if found := _USERNAME.fullmatch(line):
-        return f"@{found[1]}"
+    if username := as_username(line):
+        return username
     phone = re.sub(r"[\s()\-]", "", line)
     return "+" + phone.lstrip("+") if _PHONE.fullmatch(phone) else None
 
@@ -235,6 +241,7 @@ def add_to_list(name: str, lines: list[str]) -> tuple[int, int, int]:
 
 
 FIRST_COLLECT = "сначала «▶️ Скрап проекта» или «👥 Участники чата»"
+NO_CHANNELS_TEXT = "У проекта нет каналов — добавьте их: «➕ Добавить каналы»."  # a scrape needs them
 
 
 def missing(project: Project, what: str) -> str | None:
@@ -244,7 +251,7 @@ def missing(project: Project, what: str) -> str | None:
     if what == "scrape":
         if project.channels or unfinished(project.name) is not None:
             return None
-        return "У проекта нет каналов — добавьте их: «➕ Добавить каналы»."
+        return NO_CHANNELS_TEXT
     kinds = {label.partition(" ")[0] for _, label in scraped_files.project_files(
         project.name, kinds=("posts", "participants", "list"))}
     if what == "contacts" and "participants" not in kinds:
@@ -285,11 +292,10 @@ class Topup:
 
 
 def topup(project: Project) -> Topup | None:
-    """The project's top-up (ScrapeParams.extend): the newest posts file's channels and keyword,
-    from TOPUP_OVERLAP before the end of its scrape window to today. None without a finished
-    scrape that stored its window and channels (an older or a combined file)."""
-    posts = next((path for path, text in scraped_files.project_files(project.name) if text.startswith("posts")),
-                 None)
+    """The project's top-up (ScrapeParams.extend): the newest scrape's posts file's (not 🧩's: scraped_files.
+    scrape_posts) channels and keyword, from TOPUP_OVERLAP before the end of its scrape window to today. None
+    without a finished scrape that stored its window and channels (an older or a combined-by-hand file)."""
+    posts = next((path for path, _ in scraped_files.scrape_posts(project.name)), None)  # not 🧩's file
     if posts is None:
         return None
     try:

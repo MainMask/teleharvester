@@ -13,6 +13,7 @@ from telethon.tl.types.auth import SentCodeTypeApp
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import main_menu
+from bot.routers._common import delete_quietly
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from modules.registry import menu_path
@@ -29,14 +30,6 @@ RESEND_KB = choice_kb("phone_resend", [("📨 Отправить код зано
 
 
 # =============================== add by phone ===============================
-
-async def _delete(message: Message):
-    """Best effort: the code / password must not stay in the chat."""
-    try:
-        await message.delete()
-    except Exception:
-        pass
-
 
 async def _end_login(message: Message, state: FSMContext, text: str):
     await logins.close(message.chat.id)
@@ -140,7 +133,7 @@ async def code_input(message: Message, state: FSMContext, pool: WorkerPool, pers
         await _end_login(message, state, f"Вход устарел — начните заново: {menu_path('add')}.")
         return
     code = sign_in.code_digits(message.text)
-    await _delete(message)
+    await delete_quietly(message)
     if code is None:
         await message.answer(CODE_PROMPT, parse_mode="HTML")
         return
@@ -180,7 +173,7 @@ async def password_input(message: Message, state: FSMContext, pool: WorkerPool, 
         await _end_login(message, state, f"Вход устарел — начните заново: {menu_path('add')}.")
         return
     password = message.text  # as typed: spaces may be part of it
-    await _delete(message)
+    await delete_quietly(message)
     if not password:
         await message.answer("Ожидается пароль текстом:")
         return

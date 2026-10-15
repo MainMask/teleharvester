@@ -59,8 +59,12 @@ async def analysis_tool(callback: CallbackQuery, callback_data: ChoiceCB, state:
 
     label, hint, kind, _ = analysis_tools.TOOLS[tool]
     project = data["only_project"]
-    files = (scraped_files.project_files(project) if kind == "any"
-             else scraped_files.project_files(project, kinds=("posts",)))
+    if kind == "any":
+        files = scraped_files.project_files(project)
+    elif kind == "combine":  # the scrapes' files: the previous combine's is not merged into the next
+        files = scraped_files.scrape_posts(project)
+    else:
+        files = scraped_files.project_files(project, kinds=("posts",))
     options = [(f"📄 {name}", str(i)) for i, (_, name) in enumerate(files)]
     if kind == "combine":
         options = [(f"🗂 Все файлы постов ({len(files)})", "all")] if len(files) > 1 else []
@@ -105,7 +109,8 @@ async def analysis_file_text(message: Message, state: FSMContext, analyses: JobM
 
 
 async def _analysis_file_chosen(message: Message, state: FSMContext, analyses: JobManager, path):
-    tool = (await state.get_data())["tool"]
+    data = await state.get_data()
+    tool = data["tool"]
     if tool == "filter":
         await state.update_data(path=path)
         await state.set_state(Analysis.keywords)
@@ -113,7 +118,8 @@ async def _analysis_file_chosen(message: Message, state: FSMContext, analyses: J
                              reply_markup=cancel_kb(Analysis.keywords))
         return
     await _clear_keeping_menu(state)
-    await _run_analysis(message, analyses, tool, path, {})
+    # the project: combine writes the project's own file
+    await _run_analysis(message, analyses, tool, path, {"project": data["only_project"]})
 
 
 @router.message(Analysis.keywords)

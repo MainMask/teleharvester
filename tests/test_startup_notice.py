@@ -53,3 +53,12 @@ def test_one_unreachable_admin_does_not_stop_the_others(tmp_path, monkeypatch):
     bot = _Bot(fail_for={1})
     asyncio.run(app.announce_start(bot, {1, 2}, POOL))
     assert [chat for chat, _ in bot.sent] == [2]
+
+
+def test_the_marker_is_dropped_after_every_other_shutdown_step():
+    # a stop that hangs until systemd kills the bot must leave the marker: the next start says so
+    import inspect
+
+    shutdown = [line.strip() for line in inspect.getsource(app.run_bot).splitlines()
+                if line.strip().startswith("dp.shutdown.register(")]
+    assert shutdown[-1] == "dp.shutdown.register(mark_stopped)" and len(shutdown) == 3

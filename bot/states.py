@@ -39,6 +39,7 @@ class ChangePhoto(StatesGroup):
 
 class SetPassword(StatesGroup):
     password = State()
+    confirm = State()
 
 
 class SetProxy(StatesGroup):

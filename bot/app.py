@@ -177,11 +177,12 @@ async def run_bot():
     dp["admins"] = config.admins  # who autoreply notifies
     dp.startup.register(announce_start)  # first: before "continuing the scrape"
     dp.startup.register(set_commands)
-    dp.shutdown.register(mark_stopped)
     dp.startup.register(scraping.resume_after_restart)
     dp.shutdown.register(scraping.stop_for_shutdown)
     dp.startup.register(autoreply.start)
     dp.shutdown.register(autoreply.stop)
+    # last: a stop that hangs until systemd kills the bot leaves the marker, so the next start says so
+    dp.shutdown.register(mark_stopped)
 
     dp.update.outer_middleware(AuthMiddleware(config.admins))
     dp.message.outer_middleware(AlbumMiddleware())

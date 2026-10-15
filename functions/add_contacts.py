@@ -24,20 +24,12 @@ class AddContactsFunc(TelethonFunction):
             phone=row.get("phone") or ""
         )))
 
-    async def my_id(self, session):
-        if id(session) not in self._my_ids:
-            try:
-                self._my_ids[id(session)] = (await session.get_me()).id
-            except Exception as err:
-                raise AccountLimited(f"не удалось опросить аккаунт: {err}")
-        return self._my_ids[id(session)]
-
     async def _add_by_username(self, session, row):
         user = await self.safe_call(lambda: session.get_input_entity(row["username"]))
         await self._add(session, user, row)
 
     async def add_one(self, session, row):
-        aid = await self.my_id(session)
+        aid = (await self.cached_me(session)).id
 
         if self._limits.reached(aid):
             # out for today: rotation moves this person to the next account (item not lost)
@@ -90,7 +82,7 @@ class AddContactsFunc(TelethonFunction):
         self.delay_range = delay
         self.added = 0
         self.skipped = 0
-        self._my_ids = {}
+        self._me_cache = {}
         self._unsaved = 0
         self._limits = DailyCounter(
             "stats/contacts_limits.json", self.settings.contacts_per_account_daily

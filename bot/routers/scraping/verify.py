@@ -7,8 +7,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB
-from bot.keyboards.common import cancel_kb, choice_kb, scrape_kb
-from bot.routers._common import menu_answer, require_text
+from bot.keyboards.common import cancel_kb, choice_kb, paged_kb, scrape_kb
+from bot.routers._common import menu_answer, require_text, send_chunked
 from bot.routers.scraping import common
 from bot.services import scraping
 from bot.services.delegation import WorkerPool
@@ -80,13 +80,18 @@ async def _ask_channel(message: Message, state: FSMContext, pool: WorkerPool, pe
         text = "Канал из файла — или введите другой (@name / t.me / числовой id):"
         labels = [f"{'⚠️' if b else '📢'} {name}" for name, b in zip(names, bad)]
     if any(bad):
-        # numbered as the buttons above
-        text += "\n\n" + "\n\n".join(chat_block(i, info, html=True) for i, info in enumerate(infos, 1)
-                                       if info.problem)
-    await message.answer(
-        text, parse_mode="HTML", reply_markup=cancel_kb(Verify.channel,
-                                     choice_kb("verify_channel", [(label, str(i)) for i, label in enumerate(labels)]))
-    )
+        # why, numbered in the buttons' order; on their own: a hundred of them would not fit with the prompt
+        await send_chunked(message, "", [chat_block(i, info, html=True) for i, info in enumerate(infos, 1)
+                                         if info.problem])
+        text += "\n\n⚠️ — канал сейчас не читается, почему — выше."
+    await state.update_data(channel_labels=labels)  # a page of the buttons is drawn again from them
+    await message.answer(text, parse_mode="HTML", reply_markup=_channels_kb(labels, 0))
+
+
+def _channels_kb(labels: list[str], page: int):
+    """The file's channels, a page of them (keyboards.paged_kb): a big project's don't fit under one message."""
+    return cancel_kb(Verify.channel, paged_kb("verify_channel", [(label, str(i)) for i, label in enumerate(labels)],
+                                              page))
 
 
 @router.callback_query(Verify.input, ChoiceCB.filter(F.scope == "verify_base"))
@@ -113,6 +118,13 @@ async def verify_channel_pick(callback: CallbackQuery, callback_data: ChoiceCB, 
                               pool: WorkerPool, personal, scrapes: JobManager):
     await callback.answer()
     data = await state.get_data()
+    if callback_data.value.startswith("pg."):  # ⬅️ · 📄 · ➡️: another page of the channels
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=_channels_kb(data.get("channel_labels", []), int(callback_data.value[3:])))
+        except Exception:  # 📄, the page shown: "message is not modified"
+            pass
+        return
     channels = data.get("channels", [])
     index = int(callback_data.value)
     if not 0 <= index < len(channels):
@@ -167,6 +179,9 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, pers
         return
 
     data = await state.get_data()
+    if parse_date(data["date_min"]) > parse_date(date_max, end_of_day=True):  # the step stays, as the scrape's
+        await message.answer("Дата 'с' позже даты 'по'. Пришлите дату 'по' ещё раз.")
+        return
     await state.clear()
     await _run_verify(message, scrapes, pool, common.run_account(pool, personal, data.get("account", "")),
                       data["input"], data["channel"], data["date_min"], date_max)

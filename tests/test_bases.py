@@ -605,6 +605,16 @@ def _posts(dir_, name, mtime, window=None, groups=("@omni",)):
     return str(path)
 
 
+def test_a_base_older_than_the_limit_s_worth_of_other_files_is_still_offered(tmp_path, monkeypatch):
+    """The limit counts the files of the kinds asked for: fifty newer posts files don't hide a base."""
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    base = _base(tmp_path, "Omni_participants_members.parquet", 3, 1_000)
+    for day in range(1, 61):
+        _base(tmp_path, f"Omni_posts_{day:02}.01.2026-{day:02}.01.2026.parquet" if day <= 31 else
+              f"Omni_posts_{day - 31:02}.02.2026-{day - 31:02}.02.2026.parquet", 1, 2_000 + day)
+    assert [path for path, _ in scraped_files.project_files("Omni", kinds=("participants",))] == [base]
+
+
 def test_a_project_s_posts_files_are_only_its_posts_files(tmp_path, monkeypatch):
     _bases_dir(tmp_path, monkeypatch)  # two _participants bases + one _posts file (mtime 3000)
     newer = _posts(tmp_path, "OmniBase_posts_01.01.2026-02.01.2026.parquet", 4_000)
@@ -699,6 +709,31 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_verify_channel_buttons_come_a_page_at_a_time(tmp_path):
+    """A project of a hundred channels and more: Telegram takes at most 100 buttons under a message."""
+    path = _posts(tmp_path, "Omni_posts.parquet", 1_000, groups=tuple(f"@ch{i:02}" for i in range(25)))
+    state, msg = _State(), _Msg()
+    asyncio.run(scraping_router.verify._ask_channel(msg, state, _one_account(), None, path))
+    texts = [b.text for b in _buttons(msg.answers[-1][1])]
+    assert texts == [*(f"📢 @ch{i:02}" for i in range(20)), "⬅️", "📄 стр 1/2", "➡️", "✖️ Отмена"]
+
+    page, edited = _Callback(), []
+
+    async def edit_reply_markup(reply_markup=None):
+        edited.append(reply_markup)
+
+    page.message.edit_reply_markup = edit_reply_markup
+    asyncio.run(scraping_router.verify.verify_channel_pick(
+        page, ChoiceCB(scope="verify_channel", value="pg.1"), state, _one_account(), None, None))
+    assert [b.text for b in _buttons(edited[0])] == [
+        *(f"📢 @ch{i:02}" for i in range(20, 25)), "⬅️", "📄 стр 2/2", "➡️", "✖️ Отмена"]
+
+    pick = _Callback()  # a button of the second page: its channel, by its index in the whole list
+    asyncio.run(scraping_router.verify.verify_channel_pick(
+        pick, ChoiceCB(scope="verify_channel", value="22"), state, _one_account(), None, None))
+    assert state.data["channel"] == "@ch22" and pick.message.answers[0][0] == "Дата с:"
+
+
 def test_verify_channel_buttons_carry_the_channels_titles(tmp_path, monkeypatch):
     import conftest
     from scraper.scrape import ChatInfo
@@ -722,7 +757,9 @@ def test_verify_channel_buttons_carry_the_channels_titles(tmp_path, monkeypatch)
     text, markup = msg.answers[-1]
     assert [b.text for b in _buttons(markup)] == [  # not found: as in the file, marked
         "▶️ «Omni» · 01.05.2022–27.09.2026", "⚠️ -100123 · 01.05.2022–27.09.2026", "✖️ Отмена"]
-    assert text.endswith("\n\n2. <code>-100123</code>\n⚠️ нет доступа")  # why, for that one only, as its button
+    # why, for that one only, numbered as its button: in a message of its own before the buttons
+    assert msg.answers[-2][0] == "2. <code>-100123</code>\n⚠️ нет доступа"
+    assert text.endswith("⚠️ — канал сейчас не читается, почему — выше.")
 
 
 def test_verify_typed_path_that_can_t_be_read_asks_the_channel(tmp_path):
@@ -885,6 +922,7 @@ def test_analysis_combine_all_posts_files(tmp_path, monkeypatch):
     b = _posts(tmp_path, "P_posts_03.01.2026-04.01.2026.parquet", 2_000)
     _posts(tmp_path, "P_posts_03.01.2026-04.01.2026_missed.parquet", 3_000)  # a verify result: not merged
     _posts(tmp_path, "Q_posts.parquet", 4_000)  # another project's
+    _posts(tmp_path, "P_posts_combined.parquet", 5_000)  # the previous combine's: not merged into the next
     seen = []
     monkeypatch.setattr(analysis, "combine", lambda inputs, output, cols: seen.append((inputs, output)))
     manager, _ = _analysis_run(monkeypatch)
@@ -896,7 +934,7 @@ def test_analysis_combine_all_posts_files(tmp_path, monkeypatch):
 
     asyncio.run(scraping_router.analysis.analysis_file_pick(
         _Callback(), ChoiceCB(scope="an_file", value="all"), state, manager))
-    assert seen == [([b, a], str(tmp_path / "Combined_posts"))]
+    assert seen == [([b, a], str(tmp_path / "P_posts_combined"))]  # the project's own file, on its card
 
 
 def test_analysis_without_posts_files_explains(tmp_path, monkeypatch):
@@ -1231,3 +1269,12 @@ def test_cli_subset_contacts_skip_unpicked_workers_people(monkeypatch, tmp_path)
 
     asyncio.run(fn.run(str(path), [0], report))
     assert a.added == [] and contacts_ledger.load() == {"1": 2}
+
+
+def test_a_project_s_files_are_not_crowded_out_by_another_name_starting_with_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    own = _base(tmp_path, "Omni_posts_01.01.2026-31.01.2026.parquet", 2, 1_000)
+    for i in range(51):  # Omni_x's files, all newer: the same Omni_* glob
+        _base(tmp_path, f"Omni_x{i}_posts_01.01.2026-31.01.2026.parquet", 1, 2_000 + i)
+
+    assert scraped_files.project_files("Omni", kinds=("posts",)) == [(own, "posts · 01.01.2026-31.01.2026 · 2")]

@@ -591,6 +591,51 @@ class TestParseMessageLink:
         assert (peer.channel_id, message_id) == (1234567890, 89)
 
 
+    @pytest.mark.parametrize("link", ["https://telegram.dog/durov/5/123", "HTTPS://T.ME/durov/5/123"])
+    def test_any_host_it_accepts_in_any_case(self, link):
+        """is_message_link takes these hosts in any case (_TME_LINK): the peer is the segment after them."""
+        assert BaseFunction.is_message_link(link)
+        assert BaseFunction.parse_message_link(link) == ("durov", 123)
+
+
+class TestReportReplay:
+    """The next workers repeat the report path the first one chose: a menu it never saw is not answered for it."""
+
+    @staticmethod
+    def _session(results):
+        sent = []
+
+        async def session(request):
+            sent.append(request.option)
+            return results.pop(0)
+        return session, sent
+
+    @staticmethod
+    def _menu(*options):
+        from telethon import types as tl
+
+        return tl.ReportResultChooseOption("Причина", [tl.MessageReportOption(o.decode(), o) for o in options])
+
+    def test_the_recorded_path_is_followed(self):
+        from telethon import types as tl
+        from functions.report import ReportFunc
+
+        session, sent = self._session([self._menu(b"spam", b"fake"), tl.ReportResultReported()])
+        func = ReportFunc(types.SimpleNamespace(sessions=[]), types.SimpleNamespace())
+        asyncio.run(func.replay(session, "https://t.me/durov/1", [1], "", [1]))
+        assert sent == [b"", b"fake"]
+
+    def test_a_menu_the_first_worker_never_saw_is_not_answered(self):
+        from functions.report import ReportFunc
+
+        # the first worker chose once; this one is asked a second time: nothing it may pick for it
+        session, sent = self._session([self._menu(b"spam", b"fake"), self._menu(b"a", b"b")])
+        func = ReportFunc(types.SimpleNamespace(sessions=[]), types.SimpleNamespace())
+        with pytest.raises(ValueError, match="другой путь жалобы"):
+            asyncio.run(func.replay(session, "https://t.me/durov/1", [1], "", [1]))
+        assert sent == [b"", b"fake"]  # never b"a": a reason nobody picked
+
+
 class TestCommentLinks:
     """A …/<post>?comment=<id> link: the reaction / vote lands on the comment, in the discussion group."""
 
@@ -941,7 +986,7 @@ class TestAddContactsUsernameFallback:
 
         fn = AddContactsFunc(_Storage(), ns(delay=[0]))
         msgs, fn._report = collect()
-        fn.added, fn.ledger, fn._unsaved, fn._my_ids = 0, {}, 0, {}
+        fn.added, fn.ledger, fn._unsaved, fn._me_cache = 0, {}, 0, {}
         fn._limits = ns(reached=lambda k: False, bump=lambda k: None, cap=0)
         asyncio.run(fn.add_one(_S(), row))
         return fn.added, added_ids, msgs
@@ -970,7 +1015,7 @@ class TestAddContactsName:
 
         fn = AddContactsFunc(_Storage(), ns(delay=[0]))
         msgs, fn._report = collect()
-        fn.added, fn.ledger, fn._unsaved, fn._my_ids = 0, {}, 0, {}
+        fn.added, fn.ledger, fn._unsaved, fn._me_cache = 0, {}, 0, {}
         fn._limits = ns(reached=lambda k: False, bump=lambda k: None, cap=0)
         asyncio.run(fn.add_one(_S(), {"user_id": 1, "access_hash": 2, **row}))
         return sent[0].first_name
@@ -1003,7 +1048,7 @@ class TestAddContactsDailyCap:
 
         fn = AddContactsFunc(_Storage(), ns(delay=[0]))
         _msgs, fn._report = collect()
-        fn.added, fn.ledger, fn._unsaved, fn._my_ids = 0, {}, 0, {}
+        fn.added, fn.ledger, fn._unsaved, fn._me_cache = 0, {}, 0, {}
         fn._limits = DailyCounter(str(tmp_path / "contacts_limits.json"), 1)
 
         session, row = _S(), {"user_id": 1, "access_hash": 2}
@@ -1454,7 +1499,41 @@ class TestInvitingMissingInvitees:
         _msgs, report = collect()
         asyncio.run(fn.invite(_S(), "src", "dest", [1, 2], report))
 
-        assert len(delays) == 2
+        assert len(delays) == 1  # after the errored first; none after the last of the share
+
+    def test_the_listing_stops_once_the_whole_share_is_seen(self):
+        # each worker lists the source itself (access hashes are per account): not past its share
+        from functions.inviting import InvitingFunc
+
+        listed = []
+
+        class _S:
+            async def get_me(self):
+                return ns(first_name="A")
+
+            async def get_entity(self, dest):
+                return dest
+
+            async def iter_participants(self, source):
+                for i in range(1, 7):
+                    listed.append(i)
+                    yield ns(id=i, bot=False, deleted=False, is_self=i == 2)  # itself: seen, not invited
+
+            async def __call__(self, request):
+                return ns(missing_invitees=[])
+
+        fn = InvitingFunc(_Storage(), ns(delay=[0]))
+        fn.delay = _no_sleep
+        fn._limits = ns(reached=lambda k: False, bump=lambda k: None, cap=0)
+
+        async def resolve_source(session, link):
+            return "src"
+
+        fn.resolve_source = resolve_source
+        msgs, report = collect()
+        asyncio.run(fn.invite(_S(), "src", "dest", [1, 2], report))
+
+        assert listed == [1, 2] and [m for m in msgs if "приглашён" in m] == ["[A] приглашён 🆔 1, всего: 1"]
 
 
 # --- round 4 -----------------------------------------------------------------
@@ -2596,3 +2675,46 @@ def test_a_fresh_clear_confirmation_runs_the_wipe():
 
     alerts, runs = _clear(datetime.timedelta(seconds=5))
     assert runs and not alerts
+
+
+class TestMailingLastChoiceWins:
+    """A list pasted at the recipients step, then a base picked there: the mailing goes to the base."""
+
+    def test_a_base_picked_after_a_pasted_list(self, monkeypatch):
+        from bot.routers import broadcasts
+
+        class _State:
+            def __init__(self):
+                self.data = {}
+
+            async def get_data(self):
+                return dict(self.data)
+
+            async def update_data(self, **kwargs):
+                self.data.update(kwargs)
+
+            async def set_state(self, value):
+                return None
+
+            async def clear(self):
+                self.data = {}
+
+        async def answer(*args, **kwargs):
+            return None
+
+        async def no_content(message, album):
+            return None  # the run stops here: only which recipients were read matters
+
+        monkeypatch.setattr(broadcasts, "build_content", no_content)
+        state = _State()
+        state.data["bases"] = ["assets/databases/G_participants.parquet"]
+        asyncio.run(broadcasts.mail_path(ns(document=None, text="@a\n@b", answer=answer), state))
+        callback = ns(answer=answer, message=ns(answer=answer))
+        asyncio.run(broadcasts.mail_base(callback, ns(value="0"), state))
+
+        read = []
+        instance = ns(load_recipients=lambda path: read.append(path) or [{"user_id": 1}])
+        manager = ns(active=False)
+        asyncio.run(broadcasts.mail_run(ns(answer=answer), state, None, None,
+                                        {"PmMailingFunc": lambda: instance}, manager, None))
+        assert read == ["assets/databases/G_participants.parquet"]

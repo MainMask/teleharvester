@@ -61,7 +61,7 @@ class ParseMessageLinkTest(unittest.TestCase):
 
 class ChunkifyTest(unittest.TestCase):
     def test_split(self):
-        self.assertEqual(InvitingFunc.chunkify([1, 2, 3, 4, 5], 2), [[1, 3, 5], [2, 4]])
+        self.assertEqual(InvitingFunc.chunkify([1, 2, 3, 4, 5], 2), [[1, 2, 3], [4, 5]])
 
 
 class InviteLinkTest(unittest.TestCase):

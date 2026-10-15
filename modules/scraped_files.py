@@ -15,8 +15,10 @@ from scraper.scrape import _channel_ref, group_channel
 BASES_DIR = "assets/databases"  # default scrape output; holds the <name>_participants bases
 # a bot scrape in progress, continued after a bot restart (bot/routers/scraping/scrape.py)
 SCRAPE_MARKER = os.path.join("stats", "bot_scrape.json")
+# 🧩 Объединить's file of a project's posts files: <name>_posts_combined (see combined_output)
+COMBINED = "_combined"
 # what a scrape's file names are cut at (project_files, pending_resume)
-FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial", "_previous")
+FILE_MARKERS = ("_posts", "_reactors", "_participants", "_partial", "_previous", COMBINED)
 # the analysis tools' outputs, named after the posts file: <name>_<suffix><span>… (see output_path)
 ANALYSIS_SUFFIXES = ("links", "keywords", "comments", "summary", "sample")
 _SPAN = re.compile(r"_\d{2}\.\d{2}\.\d{4}-\d{2}\.\d{2}\.\d{4}")
@@ -104,18 +106,36 @@ def project_files(name: str, limit: int = 50, kinds=("posts", "reactors", "parti
     and participants files (or only `kinds` of them) whose name before the marker is the project's
     exactly (GreenBase's, not GreenBase2's). label: "posts · 01.05.2022-27.09.2026 · 48 213".
     "list" in `kinds`: its uploaded list too, last ("list · 120") — a text file, for the mailing only."""
-    files = []
-    for path, rows in _newest(f"{glob.escape(name)}_*.parquet", limit, skip=lambda p: p.stem.endswith("_missed")):
+    def kind(path):  # "posts" / "reactors" / "participants"; None for another name's (Green_x's for Green)
         for marker in ("_posts", "_reactors", "_participants"):
-            prefix, found, span = path.stem.partition(marker)
-            if found and prefix == name:
-                if marker[1:] in kinds:
-                    parts = [marker[1:], span.strip("_"), _rows(rows)]
-                    files.append((str(path), " · ".join(part for part in parts if part)))
-                break
+            prefix, found, _ = path.stem.partition(marker)
+            if found:
+                return marker[1:] if prefix == name else None
+        return None
+
+    files = []
+    # skipped before the limit, which then counts the files asked for only
+    for path, rows in _newest(f"{glob.escape(name)}_*.parquet", limit,
+                              skip=lambda p: p.stem.endswith("_missed") or kind(p) not in kinds):
+        marker = kind(path)
+        parts = [marker, path.stem.partition(f"_{marker}")[2].strip("_"), _rows(rows)]
+        files.append((str(path), " · ".join(part for part in parts if part)))
     if "list" in kinds and (path := list_path(name)).exists():
         files.append((str(path), f"list · {_rows(len(read_list(path)))}"))
     return files
+
+
+def scrape_posts(name: str) -> list[tuple[str, str]]:
+    """The posts files the project's scrapes wrote (project_files' "posts"), its combined one left out:
+    the files a top-up continues and 🧩 Объединить merges."""
+    return [(path, label) for path, label in project_files(name, kinds=("posts",))
+            if not Path(path).stem.endswith(COMBINED)]
+
+
+def combined_output(name: str) -> str:
+    """Where 🧩 Объединить writes a project's posts files merged (save_table adds .parquet): one of its posts
+    files, offered on its card as "posts · combined"."""
+    return str(Path(BASES_DIR) / f"{name}_posts{COMBINED}")
 
 
 def project_entries(name: str) -> list[Path]:
@@ -140,7 +160,9 @@ def project_entries(name: str) -> list[Path]:
         after = rest[token.end():]
         if token.group() in ("posts", "reactors", "participants") and after[:1] in ("_", ".", ""):
             found.append(path)  # these markers can't be in a name: the file is surely this name's
-        elif token.group() in ANALYSIS_SUFFIXES and (_SPAN.match(after) or after[:1] in (".", "")):
+        # an analysis of a posts file: its span, or its combined one's marker (no name holds it), follows
+        elif token.group() in ANALYSIS_SUFFIXES and (_SPAN.match(after) or after.startswith(COMBINED)
+                                                     or after[:1] in (".", "")):
             found.append(path)
     return sorted(found)
 

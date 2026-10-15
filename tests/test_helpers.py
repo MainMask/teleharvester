@@ -128,6 +128,23 @@ def test_save_table_keeps_dotted_name(tmp_path):
     assert read_table(out)["a"].tolist() == [1]
 
 
+def test_save_table_parquet_is_whole_or_not_at_all(tmp_path, monkeypatch):
+    # a base (members, a rebuilt participants one) must survive a kill mid-write
+    path = save_table(pd.DataFrame({"ID": [1]}), tmp_path / "base", "parquet")
+    before = path.read_bytes()
+
+    def killed(self, dest, *args, **kwargs):
+        with open(dest, "wb") as fileobj:
+            fileobj.write(b"half")
+        raise MemoryError
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", killed)
+    with pytest.raises(MemoryError):
+        save_table(pd.DataFrame({"ID": [1, 2]}), tmp_path / "base", "parquet")
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.glob("*.parquet")) == ["base.parquet"]  # no .tmp offered
+
+
 def test_save_table_excel_takes_aware_dates(tmp_path):
     # e.g. `verify --output` dates, converted with `read --to excel`
     df = pd.DataFrame({"Date": [datetime(2024, 1, 1, 10, tzinfo=timezone.utc)]})

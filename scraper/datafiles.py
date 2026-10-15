@@ -8,6 +8,8 @@ from pathlib import Path
 import pandas as pd
 import pyarrow.parquet as pq
 
+from modules import atomic_file
+
 _EXT_FOR_FORMAT = {"xlsx": "xlsx", "excel": "xlsx", "parquet": "parquet", "csv": "csv"}
 
 # Characters that are valid in XML 1.0 (and therefore storable in .xlsx). Anything
@@ -93,7 +95,11 @@ def save_table(df: pd.DataFrame, path: str | Path, fmt: str | None = None) -> Pa
                     if cell.data_type in ("f", "e"):  # "e": a text that is exactly "#N/A", "#REF!", …
                         cell.data_type = "s"
     elif ext == "parquet":
-        df.to_parquet(path, index=False)
+        # whole or not at all: a base (members, participants) must survive a kill mid-write; the
+        # .tmp is never picked up by a *.parquet glob
+        tmp = path.with_name(path.name + ".tmp")
+        df.to_parquet(tmp, index=False)
+        atomic_file.commit(tmp, path)
     else:
         df.to_csv(path, index=False)
     return path

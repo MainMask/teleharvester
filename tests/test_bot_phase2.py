@@ -195,7 +195,9 @@ class TestPostLink:
         for link in ("t.me/chan/5", "https://t.me/chan/5?comment=7", "https://t.me/c/123/456",
                      "t.me/forum/3/40", "https://telegram.me/chan/5"):
             assert BaseFunction.is_message_link(link), link
-        for link in ("@chan", "t.me/chan", "https://t.me/chan/abc", "5", "просто текст"):
+        # a private chat's own link and an invite: chats, not posts
+        for link in ("@chan", "t.me/chan", "https://t.me/chan/abc", "5", "просто текст",
+                     "https://t.me/c/1234567890", "t.me/+AbCdEf/5", "hello/5"):
             assert not BaseFunction.is_message_link(link), link
 
     def test_bot_steps_ask_again(self):
@@ -353,6 +355,31 @@ class TestJobManager:
 
         stopped, disconnected, active = asyncio.run(scenario())
         assert stopped is True and disconnected is True and active is False
+
+    def test_only_the_job_s_own_workers_are_disconnected(self):
+        # a worker outside the job (the auto-reply may poll it, a login code be read) stays connected
+        class S:
+            def __init__(self):
+                self.disconnected = False
+                self.session = ns(_entities=set())
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        class _PickedPool(_Pool):
+            async def run(self, instance, bot_function, factory, report, only=None):
+                instance.sessions = self.workers[:1]  # as WorkerPool.delegate with `only`
+                await factory(instance)
+
+        async def scenario():
+            m = JobManager()
+            mine, other = S(), S()
+            await m.run(_Bot(), 1, _PickedPool([mine, other]), ns(), ns(risk="safe"),
+                        lambda f, r: asyncio.sleep(0), "H", "done")
+            await asyncio.sleep(0.05)
+            return mine.disconnected, other.disconnected
+
+        assert asyncio.run(scenario()) == (True, False)
 
     def test_run_returns_false_when_status_message_fails(self):
         # reporter.start() can't post (chat unreachable): run frees the slot and reports
@@ -1165,6 +1192,12 @@ class TestBadDateHandled:
         assert asyncio.run(state.get_state()) == Verify.date_max.state
         assert state.data["account"] == "a"  # the flow's data is kept
 
+        m = self._TextMsg("01.01.2023")  # before «Дата с»: asked again at its step, the flow kept
+        asyncio.run(scraping.verify.verify_run(m, state, None, None, JobManager()))
+        assert any("позже" in r for r in m.replies)
+        assert asyncio.run(state.get_state()) == Verify.date_max.state
+        assert state.data["account"] == "a"
+
 
 # --- members: a ⏹ is reported as one even if another scraper job starts during the upload ---
 
@@ -1264,39 +1297,78 @@ class TestVerifyBadInputReported:
 # --- 2fa: the operator's password message is deleted from the chat ---
 
 class TestTwoFaDeletesPassword:
-    def test_password_message_deleted_and_job_started(self):
+    class _State:
+        def __init__(self):
+            self.data, self.step = {"workers": ["sessions/a.jsession"]}, None
+
+        async def get_data(self):
+            return dict(self.data)
+
+        async def update_data(self, **kwargs):
+            self.data.update(kwargs)
+
+        async def set_state(self, step):
+            self.step = step
+
+        async def clear(self):
+            self.data, self.step = {}, None
+
+    class _Msg:
+        chat = ns(id=1)
+        bot = _Bot()
+
+        def __init__(self, text):
+            self.text, self.deleted, self.replies = text, False, []
+
+        async def delete(self):
+            self.deleted = True
+
+        async def answer(self, text, **kwargs):
+            self.replies.append(text)
+
+    class _Manager:
+        def __init__(self):
+            self.runs = []
+
+        async def run(self, *args, **kwargs):
+            self.runs.append((args, kwargs))
+            return True
+
+    def _type(self, state, manager, *texts):
         from bot.routers import profile
+        from bot.states import SetPassword
 
-        class _State:
-            async def get_data(self):
-                return {}
+        messages = []
+        for text in texts:
+            m = self._Msg(text)
+            handler = profile.twofa_confirm if state.step == SetPassword.confirm else profile.twofa_run
+            if handler is profile.twofa_run:
+                asyncio.run(handler(m, state))
+            else:
+                asyncio.run(handler(m, state, ns(), {"SetPasswordFunc": object}, manager))
+            messages.append(m)
+        return messages
 
-            async def clear(self):
-                return None
+    def test_password_typed_twice_both_deleted_then_job_started(self):
+        state, manager = self._State(), self._Manager()
+        first, second = self._type(state, manager, "s3cret", "s3cret")
+        assert first.deleted and second.deleted
+        assert len(manager.runs) == 1 and manager.runs[0][1]["only"] == ["sessions/a.jsession"]
 
-        class _Msg:
-            text = "s3cret"
-            chat = ns(id=1)
-            bot = _Bot()
+    def test_a_mismatch_asks_again_and_starts_nothing(self):
+        from bot.states import SetPassword
 
-            def __init__(self):
-                self.deleted = False
+        state, manager = self._State(), self._Manager()
+        _, second = self._type(state, manager, "s3cret", "s3cert")
+        assert not manager.runs and second.deleted
+        assert any("не совпадают" in r for r in second.replies)
+        assert state.step == SetPassword.password
 
-            async def delete(self):
-                self.deleted = True
-
-        class _Manager:
-            started = False
-
-            async def run(self, *args, **kwargs):
-                _Manager.started = True
-                return True
-
-        m = _Msg()
-        asyncio.run(profile.twofa_run(m, _State(), ns(), {"SetPasswordFunc": object}, _Manager()))
-
-        assert m.deleted is True
-        assert _Manager.started is True
+    def test_an_empty_password_is_refused(self):
+        state, manager = self._State(), self._Manager()
+        (m,) = self._type(state, manager, "   ")
+        assert any("пустым" in r for r in m.replies)
+        assert state.step is None and not manager.runs  # still at the password step
 
 
 # --- analysis: a bad input (SystemExit from scraper.analysis) is reported, not fatal ---
@@ -1309,7 +1381,7 @@ class TestAnalysisBadInputReported:
 
         class _State:
             async def get_data(self):
-                return {"tool": "combine"}
+                return {"tool": "combine", "only_project": "P"}  # opened from a project's card
 
             async def clear(self):
                 return None

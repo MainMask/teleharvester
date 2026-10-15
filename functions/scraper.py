@@ -71,10 +71,12 @@ class ScrapeFunc(TelethonFunction):
         meta = pending_resume(out_dir, name)
         if meta is not None:  # its channels by name, as the card lists them
             console.print(projects.chat_list(projects.find(name), meta["channels"]), markup=False, highlight=False)
+        # a fresh scrape reads the project's channels: with none (all removed since), «нет» only leaves
+        fresh = ("нет — начать заново, собранное удалится" if channels != [] else
+                 "нет — выйти: для нового скрапа у проекта нет каналов")
         if meta is not None and Confirm.ask(
             f"[bold red]под этим именем есть незавершённый скрап '{self.safe(name)}' по каналам выше "
-            f"(собрано постов: {meta.get('t_index', 0)}) — "
-            "продолжить? (нет — начать заново, собранное удалится)[/]", default=True,
+            f"(собрано постов: {meta.get('t_index', 0)}) — продолжить? ({fresh})[/]", default=True,
         ):
             params = resume_params(meta, out_dir)
             if params.account:  # the same account: the scraped access hashes are valid for it only
@@ -92,6 +94,9 @@ class ScrapeFunc(TelethonFunction):
             self._run(account, params)
             return
 
+        if channels == []:  # the checkpoint kept: it can still be continued
+            console.print(projects.NO_CHANNELS_TEXT, style="bold yellow", markup=False)
+            return
         account = pick_session(self.storage, personal)
         if account is None:
             return

@@ -23,8 +23,9 @@ def _combine(project):
     # blank: all the project's posts files, as the bot's «🗂 Все файлы постов»
     inp = Prompt.ask("[bold red]что объединить (файл / папка / шаблон *.parquet; пусто — все файлы постов "
                      "проекта)[/]", default="")
-    inp = inp or [path for path, _ in scraped_files.project_files(project, kinds=("posts",))]
-    out = Prompt.ask("[bold red]куда сохранить[/]", default=str(Path(scraped_files.BASES_DIR) / "Combined_posts"))
+    inp = inp or [path for path, _ in scraped_files.scrape_posts(project)]  # not the previous combine's
+    # the project's own posts file: offered on its card, as the bot's
+    out = Prompt.ask("[bold red]куда сохранить[/]", default=scraped_files.combined_output(project))
     dedup = Prompt.ask("[bold red]столбцы для удаления повторов[/]", default="Group,Message ID")
     analysis.combine(inp, out, [c.strip() for c in dedup.split(",")])
 

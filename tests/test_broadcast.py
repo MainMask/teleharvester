@@ -227,3 +227,16 @@ def test_pm_broadcast_names_a_recipients_settings_refusal(monkeypatch):
     asyncio.run(fn.run("user", RichContent(text="hi"), False, report))
 
     assert "[acc] не отправлено: пишут только контакты и Premium" in reports
+
+
+def test_cli_campaign_with_no_config_messages_stops_before_asking_anything(monkeypatch):
+    """The terminal sends one of [broadcast] messages (config.toml.example has none): said at once, before
+    any question or worker, not as an IndexError from every worker."""
+    import pytest
+
+    from functions import broadcast
+
+    monkeypatch.setattr(broadcast.console, "input", lambda *a, **k: pytest.fail("nothing is asked"))
+    settings = types.SimpleNamespace(delay=[0], messages_count=1, messages=[], trigger="go")
+    with pytest.raises(ValueError, match=r"\[broadcast\] messages"):
+        Broadcast(_storage([_Session()]), settings).ask()

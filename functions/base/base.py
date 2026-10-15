@@ -1,5 +1,6 @@
 import asyncio
 import random
+import re
 from urllib.parse import parse_qs, urlparse
 from rich.console import Console
 from rich.markup import escape
@@ -34,6 +35,7 @@ def pick_seconds(pause) -> int:
 
 
 POST_LINK_HINT = "Нужна ссылка на пост: t.me/name/123 или t.me/c/…/123."
+_TME_LINK = re.compile(r"(?i)(?:https?://)?(?:www\.)?(?:t\.me|telegram\.(?:me|dog))/")  # a post's link starts so
 
 _END = object()  # sentinel for "no more items" (so a real None item isn't mistaken for the end)
 SKIPPED = object()  # returned by a rotation action that skipped an item without any request
@@ -128,18 +130,23 @@ class BaseFunction:
             return types.PeerChannel(int(parts[parts.index("c") + 1])), message_id
 
         # the peer is the segment right after the host (a topic id may follow it)
-        host = next((i for i, p in enumerate(parts) if p.endswith(("t.me", "telegram.me"))), None)
+        # the hosts _TME_LINK takes, in any case
+        host = next((i for i, p in enumerate(parts) if p.lower().endswith(("t.me", "telegram.me", "telegram.dog"))),
+                    None)
         return (parts[host + 1] if host is not None else parts[-2]), message_id
 
     @classmethod
     def is_message_link(cls, link: str) -> bool:
         """The link points at a post (see parse_message_link): checked as it is typed, not when
         every worker fails on it."""
+        if not _TME_LINK.match(link.strip()):
+            return False
         try:
-            cls.parse_message_link(link)
+            peer, _ = cls.parse_message_link(link)
         except (ValueError, IndexError):
             return False
-        return True
+        # t.me/c/<id> is a private chat's own link, t.me/+<hash> an invite: no post in either
+        return not (isinstance(peer, str) and (peer == "c" or peer.startswith("+")))
 
     @classmethod
     def ask_message_link(cls, label: str) -> str:

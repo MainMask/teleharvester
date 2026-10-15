@@ -248,3 +248,21 @@ def test_password_step_refuses_an_archive_that_unpacks_too_big(monkeypatch):
 
     assert storage.added is None and manager.released is True
     assert any("слишком велик" in r for r in msg.replies)
+
+
+def test_password_with_spaces_is_kept_as_typed(monkeypatch):
+    # as at the sign-in by phone: spaces may be part of a 2FA password, the stored one must match
+    msg = _Msg(text=" secret ")
+    captured = {}
+
+    async def fake_convert(tdata_dir, proxy, password, sessions_dir):
+        captured["password"] = password
+        return "79990001122"
+
+    monkeypatch.setattr(accounts.tdata_import, "convert", fake_convert)
+    monkeypatch.setattr(accounts.tdata_import, "load_proxies", lambda path: [])
+
+    asyncio.run(accounts.tdata_password(msg, _State({"zip": _zip_bytes()}), _Pool(_Storage()),
+                                        _Manager(free=True)))
+
+    assert captured["password"] == " secret "

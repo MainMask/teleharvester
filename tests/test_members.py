@@ -480,5 +480,27 @@ def test_members_collected_again_are_added_to_the_base(fake, tmp_path, monkeypat
 def test_an_unreadable_base_is_replaced_by_the_new_members(fake, tmp_path):
     (tmp_path / "grp_participants_members.parquet").write_bytes(b"half-written")
     fake.chats = {"@one": ([_user(1)], 1, {})}
-    path, _ = _run(tmp_path, ["@one"])
+    path, problems = _run(tmp_path, ["@one"])
     assert [r["user_id"] for r in parquet_db.load(str(path))] == [1]
+    assert any(where == "grp_participants_members.parquet" and "перенесена" in why for where, why in problems)
+    # not lost: kept aside, as 🧹 Очистить базу keeps a cleared one
+    assert (tmp_path / "grp_previous" / "grp_participants_members.parquet").read_bytes() == b"half-written"
+
+
+def test_a_write_that_dies_midway_leaves_the_base_as_it_was(fake, tmp_path, monkeypatch):
+    fake.chats = {"@one": ([_user(1, username="ann")], 1, {})}
+    path, _ = _run(tmp_path, ["@one"])
+    before = path.read_bytes()
+
+    def killed(self, dest, *args, **kwargs):  # the process killed while writing the new base
+        with open(dest, "wb") as fileobj:
+            fileobj.write(b"half")
+        raise MemoryError
+
+    monkeypatch.setattr(members.pd.DataFrame, "to_parquet", killed)
+    fake.chats = {"@two": ([_user(2, username="bob")], 1, {})}
+    try:
+        _run(tmp_path, ["@two"])
+    except MemoryError:
+        pass
+    assert path.read_bytes() == before  # the members collected before are still there

@@ -54,7 +54,7 @@ def test_txt_document_becomes_recipient_list():
     state = _State()
     asyncio.run(broadcasts.mail_path(msg, state))
     assert state.data["recipients"] == ["@alice", "+79990001122", "@bob"]
-    assert "path" not in state.data
+    assert state.data.get("path") is None  # the list replaces a path chosen before
 
 
 def test_inline_multiline_text_becomes_list():
@@ -69,7 +69,7 @@ def test_dash_uses_default_targets_path():
     state = _State()
     asyncio.run(broadcasts.mail_path(msg, state))
     assert state.data["path"] == broadcasts.DEFAULT_TARGETS
-    assert "recipients" not in state.data
+    assert state.data.get("recipients") is None
 
 
 def test_single_path_kept_for_backward_compat():
@@ -77,7 +77,7 @@ def test_single_path_kept_for_backward_compat():
     state = _State()
     asyncio.run(broadcasts.mail_path(msg, state))
     assert state.data["path"] == "assets/targets.txt"
-    assert "recipients" not in state.data
+    assert state.data.get("recipients") is None
 
 
 def test_parquet_document_is_rejected_with_hint():
@@ -150,7 +150,7 @@ def test_mail_start_drops_stale_recipients_from_an_abandoned_run():
     asyncio.run(broadcasts.ask_recipients(_Msg(), state, []))  # a project's card's 📨
     asyncio.run(broadcasts.mail_path(_Msg(text="-"), state))
 
-    assert "recipients" not in state.data
+    assert state.data.get("recipients") is None
     assert state.data["path"] == broadcasts.DEFAULT_TARGETS
 
 

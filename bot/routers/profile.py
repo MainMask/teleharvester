@@ -8,7 +8,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import PAGE_SIZE, cancel_kb, choice_kb
-from bot.routers._common import STALE_BUTTON, ensure_workers, read_text_document, require_text, resolve
+from bot.routers._common import (STALE_BUTTON, delete_quietly, ensure_workers, read_text_document, require_text,
+                                 resolve)
 from modules.registry import BOT_FUNCTIONS_BY_KEY
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -460,15 +461,34 @@ async def _twofa_prompt(message: Message, state: FSMContext, deps: dict):
 
 
 @router.message(SetPassword.password)
-async def twofa_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+async def twofa_run(message: Message, state: FSMContext):
     if not message.text:
         await message.answer("Ожидается текст. Попробуйте ещё раз.")
         return
     password = message.text
-    try:
-        await message.delete()  # don't leave the password in the chat history
-    except Exception:
-        pass
+    await delete_quietly(message)
+    if not password.strip():  # as the CLI: an empty one would mean no 2FA
+        await message.answer("Пароль не может быть пустым. Введите новый пароль 2FA:")
+        return
+    # typed unseen and deleted: asked twice, as the CLI does, so a typo isn't set on every worker
+    await state.update_data(new_password=password)
+    await state.set_state(SetPassword.confirm)
+    await message.answer("Повторите пароль 2FA:", reply_markup=cancel_kb(SetPassword.confirm))
+
+
+@router.message(SetPassword.confirm)
+async def twofa_confirm(message: Message, state: FSMContext, pool: WorkerPool, functions: dict,
+                        manager: JobManager):
+    if not message.text:
+        await message.answer("Ожидается текст. Попробуйте ещё раз.")
+        return
+    await delete_quietly(message)
+    password = (await state.get_data()).get("new_password")
+    if message.text != password:
+        await state.set_state(SetPassword.password)
+        await message.answer("Пароли не совпадают. Введите новый пароль 2FA:",
+                             reply_markup=cancel_kb(SetPassword.password))
+        return
     only = await _picked(state)
     await state.clear()
     instance, bot_function = resolve(functions, "2fa")

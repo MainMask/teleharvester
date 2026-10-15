@@ -27,7 +27,9 @@ PROXIES_FILE = "assets/proxies.txt"  # the proxy pool, one `scheme://[user:pass@
 
 def save_proxies(text: str) -> None:
     """Make `text` (one proxy per line) the pool: the phone login and the tdata import take theirs from it."""
-    atomic_file.write(PROXIES_FILE, "\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n")
+    # owner-only, as a session's key: its lines hold the proxies' logins and passwords
+    atomic_file.write(PROXIES_FILE, "\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n",
+                      mode=0o600)
 
 
 def load_proxies(path: str = PROXIES_FILE) -> list[Proxy]:

@@ -95,6 +95,7 @@ def test_an_unreadable_file_is_reported_and_never_overwritten(content):
 @pytest.mark.parametrize("name, problem", [
     ("", "пустое"), ("x" * (projects.MAX_NAME + 1), "длиннее"), ("a/b", "без /"), ("a\\b", "без /"),
     ("..", "без /"), ("greenbase", "уже есть"), ("my_posts_x", "«_posts»"), ("a_partial", "«_partial»"),
+    ("a_combined", "«_combined»"),
 ])
 def test_bad_names_are_refused(name, problem):
     projects.add("GreenBase", ["@a"])
@@ -203,6 +204,28 @@ def test_bot_with_no_projects_offers_a_new_one():
     text, markup = start.message.answers[0]
     assert text.startswith("📁 <b>Проекты</b> — пока ни одного") and "Без проекта" not in text
     assert _buttons(markup) == ["➕ Новый проект"]  # all the work is a project's
+
+
+def test_bot_lists_projects_a_page_at_a_time():
+    """Telegram takes at most 100 buttons under a message: the projects come 20 a page."""
+    router = _router()
+    for i in range(25):
+        projects.add(f"P{i:02}", ["@a"])
+    state, start = _State(), _SCallback()
+    asyncio.run(router.projects_screen(start.message, state, False))
+    first = _buttons(start.message.answers[0][1])
+    assert first[:20] == [f"📁 P{i:02} · каналов: 1" for i in range(20)]
+    assert first[20:] == ["⬅️", "📄 стр 1/2", "➡️", "➕ Новый проект"]
+
+    page = _SCallback()
+    asyncio.run(router.project_pick(page, ChoiceCB(scope="prj", value="pg.1"), state))
+    second = _buttons(page.message.edits[0][1])  # in the list's place
+    assert second == [*(f"📁 P{i:02} · каналов: 1" for i in range(20, 25)), "⬅️", "📄 стр 2/2", "➡️",
+                      "➕ Новый проект"]
+
+    card = _SCallback()  # a button of the second page opens its project
+    asyncio.run(router.project_pick(card, ChoiceCB(scope="prj", value="22"), state))
+    assert card.message.edits[0][0].startswith("📁 P22")
 
 
 def test_bot_creates_a_project_and_shows_its_card():
@@ -537,6 +560,52 @@ def test_bot_project_scrape_offers_to_continue_and_fresh_keeps_the_channels(monk
     assert state.state == Scrape.date_min and state.data["channels"] == "@new"  # not asked again
 
 
+def test_bot_project_without_channels_continues_its_scrape_but_never_starts_it_afresh(monkeypatch, tmp_path):
+    """Its channels all removed after the scrape stopped: «▶️ Продолжить» only; a fresh scrape would have
+    no channel to read (and an old «🆕» button says why, instead of an empty message Telegram refuses)."""
+    from bot.routers import scraping
+
+    async def lookup(message, pool, personal, path, chats):  # as lookup_on on a live account: [] for []
+        return []
+
+    router = _router()
+    monkeypatch.setattr(scraping.common, "DEFAULT_OUT", str(tmp_path))
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    monkeypatch.setattr(scraping.common, "lookup", lookup)
+    _checkpoint(tmp_path, "Green")
+    projects.add("Green", [])
+    state = _State({"project_name": "Green"})
+
+    go = _SCallback()
+    asyncio.run(router.project_action(go, _act("scrape", state), state, _pool(), None, JobManager()))
+    text, markup = go.message.answers[0]
+    assert _buttons(markup) == ["▶️ Продолжить"]
+    assert text.endswith(f"🆕 Начать заново нельзя. {projects.NO_CHANNELS_TEXT}")
+
+    stale = _SCallback()
+    asyncio.run(scraping.scrape.scrape_resume(stale, ChoiceCB(scope="scrape_resume", value="fresh"), state, _pool(),
+                                              None, JobManager()))
+    assert [answer for answer, _ in stale.message.answers] == [projects.NO_CHANNELS_TEXT]
+    assert state.state is None and projects.unfinished("Green") is not None  # the checkpoint is kept
+
+
+def test_cli_project_without_channels_never_starts_its_scrape_afresh(monkeypatch, tmp_path):
+    from functions import scraper
+
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    _checkpoint(tmp_path, "Green")
+    asked, printed = [], []
+    monkeypatch.setattr(scraper.Confirm, "ask", lambda text, **k: asked.append(text) or False)  # «нет»
+    monkeypatch.setattr(scraper, "pick_session", lambda *a: pytest.fail("no account is asked"))
+    monkeypatch.setattr(scraper, "scrape_run", lambda *a: pytest.fail("no scrape runs"))
+    monkeypatch.setattr(scraper.console, "print", lambda *a, **k: printed.append(str(a[0]) if a else ""))
+
+    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).scrape("Green", [])
+    assert "удалится" not in asked[0] and "нет каналов" in asked[0]
+    assert printed[-1] == projects.NO_CHANNELS_TEXT
+    assert projects.unfinished("Green") is not None
+
+
 # --- the CLI ----------------------------------------------------------------------------------
 
 def test_cli_menu_discovers_only_the_projects_function():
@@ -695,13 +764,15 @@ def test_cli_combine_takes_the_project_s_posts_files_by_default(monkeypatch, tmp
     green = _posts(tmp_path, "Green", 1_000)
     _write_parquet(tmp_path / "Green_participants_01.01.2024-31.01.2024.parquet")
     _write_parquet(tmp_path / "Green_reactors_01.01.2024-31.01.2024.parquet")
+    _write_parquet(tmp_path / "Green_posts_combined.parquet")  # the previous combine's: not an input again
     combined = []
-    monkeypatch.setattr(scraper_analysis.analysis, "combine", lambda inp, out, dedup: combined.append(inp))
+    monkeypatch.setattr(scraper_analysis.analysis, "combine", lambda inp, out, dedup: combined.append((inp, out)))
     monkeypatch.setattr(scraper_analysis.Prompt, "ask", lambda *a, default=None, **k: default)  # Enter each time
 
     _posts(tmp_path, "Other", 2_000)  # another project's
     scraper_analysis._combine("Green")
-    assert combined == [[str(green)]]  # the project's posts files: its bases are not even read
+    # the project's posts files: its bases are not even read; the result is the project's own file
+    assert combined == [([str(green)], str(tmp_path / "Green_posts_combined"))]
 
 
 # --- the top-up (🔄 Дособрать) ------------------------------------------------------------------
@@ -735,6 +806,9 @@ def test_topup_continues_the_newest_scrape_from_a_week_before_its_end(tmp_path):
     assert projects.topup(project) is None  # an older file: no window to continue from
 
     path = _scraped(tmp_path, "Green", channels=("@a", "@b"), keyword="war")
+    newer = tmp_path / "Green_posts_combined.parquet"  # 🧩's file, written since: no scrape to continue
+    pd.DataFrame({"Group": ["@a"], "Message ID": ["1"]}).to_parquet(newer)
+    os.utime(newer, (5_000, 5_000))
     plan = projects.topup(project)
     assert (plan.posts, plan.channels, plan.keyword) == (str(path), ["@a", "@b"], "war")
     assert (plan.date_min, plan.date_max) == (date(2024, 1, 24), _today())
@@ -1005,7 +1079,9 @@ def test_project_files_by_kind(tmp_path):
 SPAN = "01.01.2024-31.01.2024"
 GREEN = [f"Green_posts_{SPAN}.parquet", f"Green_reactors_{SPAN}.parquet", f"Green_participants_{SPAN}.parquet",
          "Green_participants_members.parquet", f"Green_posts_{SPAN}_missed.parquet",
-         f"Green_links_{SPAN}.xlsx", f"Green_summary_{SPAN}_monthly.xlsx", "Green_sample.xlsx"]
+         f"Green_links_{SPAN}.xlsx", f"Green_summary_{SPAN}_monthly.xlsx", "Green_sample.xlsx",
+         # 🧩's file of the project's posts, and what the analysis made of it
+         "Green_posts_combined.parquet", "Green_links_combined.xlsx", "Green_keywords_combined_unique.xlsx"]
 NOT_GREEN = [f"Green_x_posts_{SPAN}.parquet",        # the project Green_x's
              f"Green_links_posts_{SPAN}.parquet",    # a one-off scrape named Green_links
              "Green_notes.txt", "Greenish_posts.parquet"]

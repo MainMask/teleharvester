@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB
 from bot.keyboards.common import cancel_kb, choice_kb, scrape_kb
 from bot.keyboards.menu import main_menu
-from bot.routers._common import menu_answer, require_text
+from bot.routers._common import menu_answer, require_text, typed_channels
 from bot.routers.scraping import common
 from bot.services import scraping
 from bot.services.delegation import WorkerPool
@@ -20,7 +20,7 @@ from bot.states import Scrape
 from modules import json_file, projects, scraped_files
 from modules.scraper_creds import build_credentials
 from scraper.scrape import (
-    ScrapeParams, bad_channels, bad_channels_text, parse_channels, parse_date, pending_resume, resume_params,
+    ScrapeParams, parse_channels, parse_date, pending_resume, resume_params,
 )
 
 router = Router()
@@ -78,19 +78,22 @@ async def topup_project(message: Message, state: FSMContext, project, plan, deps
 
 async def _scrape_named(message: Message, state: FSMContext, deps: dict, flow: str):
     """The scrape's name is set: offer to continue an interrupted scrape under it, else ask the account."""
-    name = (await state.get_data())["name"]
-    meta = pending_resume(common.DEFAULT_OUT, name)
+    data = await state.get_data()
+    meta = pending_resume(common.DEFAULT_OUT, data["name"])
     if meta is not None:  # an interrupted scrape under this name: offer to continue it
+        # a fresh scrape reads the project's channels: with none (all removed since), only the continuing
+        fresh = bool(parse_channels(data["channels"]))
         await state.set_state(Scrape.resume)
         await message.answer(
             f"Под этим именем есть незавершённый скрап «{html.escape(meta['name'])}».\n\n"
-            f"Каналы:\n\n{projects.chat_list(projects.find(name), meta['channels'], html=True)}\n\n"
+            f"Каналы:\n\n{projects.chat_list(projects.find(data['name']), meta['channels'], html=True)}\n\n"
             f"Период: {meta['date_min'][:10]} – {meta['date_max'][:10]}\n"
-            f"Уже собрано постов: {meta.get('t_index', 0)}",
+            f"Уже собрано постов: {meta.get('t_index', 0)}"
+            + ("" if fresh else f"\n\n🆕 Начать заново нельзя. {projects.NO_CHANNELS_TEXT}"),
             parse_mode="HTML",
             reply_markup=choice_kb("scrape_resume", [
                 ("▶️ Продолжить", "continue"),
-                ("🆕 Начать заново (собранное удалится)", "fresh"),
+                *([("🆕 Начать заново (собранное удалится)", "fresh")] if fresh else []),
             ]),
         )
         return
@@ -134,27 +137,27 @@ async def _resume_on_chosen(message: Message, state: FSMContext, deps: dict):
 
 @router.message(Scrape.channels)
 async def scrape_channels(message: Message, state: FSMContext, pool: WorkerPool, personal):
-    channels = await require_text(message)
+    raw = await require_text(message)
+    if raw is None:
+        return
+    channels = await typed_channels(message, raw)
     if channels is None:
         return
-    if not parse_channels(channels):
-        await message.answer("Не вижу ни одного канала. Пришлите ещё раз:")
-        return
-    if bad := bad_channels(parse_channels(channels)):
-        await message.answer(f"{bad_channels_text(bad)} Пришлите список ещё раз:")
-        return
-    await state.update_data(channels=channels)
+    await state.update_data(channels=raw)
     # a list corrected for this run: those of the project's own channels in it get named on its card
-    if await common.check_chats(message, state, pool, personal, parse_channels(channels),
-                          (await state.get_data()).get("name")):
+    if await common.check_chats(message, state, pool, personal, channels, (await state.get_data()).get("name")):
         await _ask_date_min(message, state)
 
 
 async def _check_project_channels(message: Message, state: FSMContext, deps: dict):
     """A project's scrape: its channels are checked on the chosen account as if just typed (a
     corrected list sent now is for this run only)."""
-    await state.set_state(Scrape.channels)
     data = await state.get_data()
+    if not parse_channels(data["channels"]):  # an old «🆕 Начать заново», or the checkpoint gone meanwhile
+        await state.clear()
+        await menu_answer(message, projects.NO_CHANNELS_TEXT)
+        return
+    await state.set_state(Scrape.channels)
     if await common.check_chats(message, state, deps["pool"], deps["personal"], parse_channels(data["channels"]),
                           data.get("name")):
         await _ask_date_min(message, state)

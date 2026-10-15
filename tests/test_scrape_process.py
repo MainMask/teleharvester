@@ -167,7 +167,8 @@ def test_an_analysis_input_error_comes_back_as_system_exit(tmp_path):
     import conftest
 
     with pytest.raises(SystemExit):
-        asyncio.run(conftest.REAL_DO_ANALYSIS("combine", str(tmp_path / "nothing_*.parquet"), {}))
+        asyncio.run(conftest.REAL_DO_ANALYSIS("combine", str(tmp_path / "nothing_*.parquet"),
+                                                   {"project": "P"}))
 
 
 def test_progress_is_throttled_but_the_latest_value_arrives(monkeypatch):

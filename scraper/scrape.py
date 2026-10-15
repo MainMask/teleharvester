@@ -33,7 +33,7 @@ from telethon.tl.types import (
 
 from modules import atomic_file
 from scraper.config import Credentials
-from scraper.datafiles import clean_xml_text, format_duration, read_attrs
+from scraper.datafiles import clean_xml_text, format_duration, read_attrs, save_table
 
 SEP = "-" * 80
 
@@ -171,14 +171,6 @@ MERGE_BATCH_ROWS = 500  # posts per batch when a top-up stitches files: a post c
 # One (person, message, reaction) is unique; a resume overlap or a repeated
 # reaction-list page can re-emit a row, so exact repeats on this key are dropped.
 REACTOR_DEDUP_KEY = ["Group", "Target", "Message ID", "Reactor ID", "Reaction"]
-
-
-def _atomic_parquet(df: pd.DataFrame, dest: Path) -> None:
-    """Write via a temp file + rename, so an OOM-kill mid-write can't leave a
-    half-written shard behind."""
-    tmp = dest.with_name(dest.name + ".tmp")
-    df.to_parquet(tmp, index=False)
-    atomic_file.commit(tmp, dest)
 
 
 def _shard_paths(ckpt_dir: Path, base: str) -> list[Path]:
@@ -1020,7 +1012,8 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
             pdf["Author Access Hash"] = pd.array(
                 [r["Author Access Hash"] for r in data], dtype="Int64")
             pdf["Topic ID"] = pd.array([r["Topic ID"] for r in data], dtype="Int64")
-            _atomic_parquet(pdf, ckpt_dir / f"posts_part_{shard_index:05}.parquet")
+            # whole or not at all (save_table): an OOM-kill mid-write leaves no half-written shard
+            save_table(pdf, ckpt_dir / f"posts_part_{shard_index:05}.parquet", "parquet")
             data.clear()
             wrote = True
         if reactors:
@@ -1028,8 +1021,7 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
             # int64 + None would become float64 and corrupt the hash; keep a stable type
             rdf["Reactor Access Hash"] = pd.array(
                 [r["Reactor Access Hash"] for r in reactors], dtype="Int64")
-            _atomic_parquet(rdf,
-                            ckpt_dir / f"reactors_part_{shard_index:05}.parquet")
+            save_table(rdf, ckpt_dir / f"reactors_part_{shard_index:05}.parquet", "parquet")
             reactors.clear()
             wrote = True
         if wrote:

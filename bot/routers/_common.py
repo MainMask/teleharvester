@@ -3,6 +3,7 @@ from bot.services import login as logins
 from bot.services.capture import capture
 from modules.registry import BOT_FUNCTIONS_BY_KEY, menu_path
 from functions.base.base import POST_LINK_HINT, BaseFunction
+from scraper.scrape import bad_channels, bad_channels_text, parse_channels
 
 # a stale tap: a button of an old message; a stale step: text sent to a step whose flow is gone
 STALE_BUTTON = "Кнопка устарела — откройте раздел заново."
@@ -105,6 +106,26 @@ async def require_post_link(message) -> str | None:
         await message.answer(f"{POST_LINK_HINT} Пришлите ещё раз:")
         return None
     return link
+
+
+async def typed_channels(message, raw: str) -> list[str] | None:
+    """The typed channels; None after asking for them again (none, or one that can't be a channel)."""
+    channels = parse_channels(raw)
+    if not channels:
+        await message.answer("Не вижу ни одного канала. Пришлите ещё раз:")
+        return None
+    if bad := bad_channels(channels):
+        await message.answer(f"{bad_channels_text(bad)} Пришлите список ещё раз:")
+        return None
+    return channels
+
+
+async def delete_quietly(message):
+    """Best effort: a password or a login code must not stay in the chat history."""
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 async def require_text(message) -> str | None:

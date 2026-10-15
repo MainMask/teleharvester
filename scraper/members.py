@@ -124,19 +124,23 @@ async def _run(creds: Credentials, params: MembersParams) -> tuple[dict, list[tu
     return members, problems
 
 
-def _with_previous(df: pd.DataFrame, path: Path) -> pd.DataFrame:
+def _with_previous(df: pd.DataFrame, path: Path, keep: Path) -> tuple[pd.DataFrame, str | None]:
     """The base collected before under the same name keeps its people: the new list is added to it,
-    a person in both as listed now (its hash is the listing account's: Owner ID, per row)."""
+    a person in both as listed now (its hash is the listing account's: Owner ID, per row).
+    One that can't be read is moved to `keep` (<name>_previous/, as 🧹 Очистить базу does), never lost.
+    Returns (the base, why the previous one was moved aside or None)."""
     if not path.exists():
-        return df
+        return df, None
     try:
         old = pd.read_parquet(path)
         merged = pd.concat([old, df], ignore_index=True).drop_duplicates("ID", keep="last")
-    except Exception as exc:  # half-written, or not a members base: the new list replaces it
-        print(f"  ! the previous base can't be read ({exc}): replaced")
-        return df
+    except Exception as exc:  # not a members base: the new list is the base, the old file kept aside
+        keep.mkdir(exist_ok=True)
+        path.replace(keep / path.name)
+        print(f"  ! the previous base can't be read ({exc}): moved to {keep}")
+        return df, f"прежняя база не читалась ({type(exc).__name__}) — перенесена в {keep.name}/, собрана новая"
     print(f"  added to the previous base: {len(merged) - len(old)} new")
-    return merged.reset_index(drop=True)
+    return merged.reset_index(drop=True), None
 
 
 def run(creds: Credentials, params: MembersParams) -> tuple[Path | None, list[tuple[str, str]]]:
@@ -158,7 +162,10 @@ def run(creds: Credentials, params: MembersParams) -> tuple[Path | None, list[tu
     if params.owner_id is not None:
         df["Owner ID"] = pd.array([params.owner_id] * len(df), dtype="Int64")
     target = params.out_dir / f"{params.name}_participants_members"
-    df = _with_previous(df, target.with_name(target.name + ".parquet"))
+    previous = target.with_name(target.name + ".parquet")
+    df, replaced = _with_previous(df, previous, params.out_dir / f"{params.name}_previous")
+    if replaced:  # the operator is told where the people collected before are
+        problems.append((previous.name, replaced))
     path = save_table(df, target, "parquet")
     print(f"Members: {path}  ({len(df)} people)")
     return path, problems

@@ -78,22 +78,26 @@ class JobManager:
                 pass
             return False
 
-        self._stop_sessions = list(stop_sessions) if stop_sessions is not None else list(pool.workers)
+        # by default the job's own workers, once pool.run has given them (see _wrap.start): another
+        # one may be in use meanwhile (the auto-reply, a login code) and must stay connected
+        self._stop_sessions = list(stop_sessions) if stop_sessions is not None else []
         task = asyncio.create_task(
-            self._wrap(pool, instance, bot_function, factory, reporter, done, cleanup, only)
+            self._wrap(pool, instance, bot_function, factory, reporter, done, cleanup, only, stop_sessions is None)
         )
         self._task = task
         # backstop: a cancel before _wrap starts, or during its finally, skips its _clear()
         task.add_done_callback(lambda t: self._clear() if self._task is t else None)
         return True
 
-    async def _wrap(self, pool, instance, bot_function, factory, reporter, done, cleanup, only):
+    async def _wrap(self, pool, instance, bot_function, factory, reporter, done, cleanup, only, own_workers):
         instance.progress = self.progress  # the function steps it (see BaseFunction.progress)
         entered = False
 
         def start(func):  # pool.run calls it once it has given the job its workers
             nonlocal entered
             entered = True
+            if own_workers:  # the ones it may connect: released at its end
+                self._stop_sessions = list(func.sessions)
             reporter.workers = len(func.sessions)  # the summary's count: a scraping worker is left out
             return factory(func, reporter)
 

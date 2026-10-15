@@ -280,6 +280,8 @@ class Broadcast(TelethonFunction):
     def ask(self, modes=(0, 1, 3, 4)):
         """CLI: the campaign's settings. `modes`: the indexes of self.modes that make sense for the
         caller (the CLI sends config text only, so "с медиа" is never one of them)."""
+        if not self.settings.messages:  # the text each send picks from (_base_content); the bot asks its own
+            raise ValueError("в config.toml [broadcast] messages нет ни одного сообщения — добавьте хотя бы одно")
         for number, mode in enumerate(modes, 1):
             console.print(
                 "[bold white][{index}] {description}[/]"

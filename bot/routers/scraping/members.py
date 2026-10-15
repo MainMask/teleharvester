@@ -46,19 +46,19 @@ async def _ask_groups(message: Message, state: FSMContext, deps: dict):
 
 @router.message(Members.chats)
 async def members_chats(message: Message, state: FSMContext, pool: WorkerPool, personal, scrapes: JobManager):
-    chats = await require_text(message)
-    if chats is None:
+    raw = await require_text(message)
+    if raw is None:
         return
-    if not parse_channels(chats):
+    chats = parse_channels(raw)
+    if not chats:
         await message.answer("Не вижу ни одной группы. Пришлите ещё раз:")
         return
-    if bad := bad_channels(parse_channels(chats)):
+    if bad := bad_channels(chats):
         await message.answer(f"{bad_channels_text(bad)} Пришлите список групп ещё раз:")
         return
-    await state.update_data(chats=chats)
+    await state.update_data(chats=raw)
     # the groups get named on the project too: its messages show them by name
-    if await common.check_chats(message, state, pool, personal, parse_channels(chats),
-                          (await state.get_data()).get("only_project")):
+    if await common.check_chats(message, state, pool, personal, chats, (await state.get_data()).get("only_project")):
         await _members_ready(message, state, dict(pool=pool, personal=personal, scrapes=scrapes))
 
 

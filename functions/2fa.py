@@ -53,7 +53,7 @@ class SetPasswordFunc(TelethonFunction):
 
         while True:  # typed unseen: twice, and never empty (that would remove every account's 2FA)
             password = console.input("[bold red]новый пароль> [/]", password=True)
-            if not password:
+            if not password.strip():  # blanks too, as the bot: typed unseen, surely a mistake
                 console.print("[bold red]Пароль не может быть пустым.[/]")
                 continue
             if console.input("[bold red]повторите пароль> [/]", password=True) == password:

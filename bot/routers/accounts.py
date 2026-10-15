@@ -14,7 +14,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb, paged_kb
 from bot.keyboards.menu import main_menu
-from bot.routers._common import ensure_workers, require_text, send_chunked
+from bot.routers._common import delete_quietly, ensure_workers, send_chunked
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -431,14 +431,12 @@ async def tdata_archive(message: Message, state: FSMContext):
 
 @router.message(ImportTdata.password, ~F.text.in_(MAIN_MENU))
 async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager):
-    raw = await require_text(message)  # a sticker/photo must not import with "no password"
-    if raw is None:
+    raw = message.text  # as typed: spaces may be part of it, as at the sign-in by phone
+    if not raw:  # a sticker/photo must not import with "no password"
+        await message.answer("Ожидается текст. Попробуйте ещё раз.")
         return
-    password = None if raw == "-" else raw
-    try:
-        await message.delete()  # don't leave the password in the chat history
-    except Exception:
-        pass
+    password = None if raw.strip() == "-" else raw
+    await delete_quietly(message)
 
     data = await state.get_data()
     zip_bytes = data.get("zip")

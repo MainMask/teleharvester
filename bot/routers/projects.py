@@ -5,20 +5,20 @@ from typing import NamedTuple
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from bot.callbacks import ChoiceCB
-from bot.keyboards.common import cancel_kb, choice_kb
+from bot.keyboards.common import cancel_kb, choice_kb, paged_kb
 from bot.keyboards.menu import card_kb
 from bot.routers import audience, broadcasts, scraping
-from bot.routers._common import ensure_workers, left_flow, menu_answer, read_text_document, require_text
+from bot.routers._common import (ensure_workers, left_flow, menu_answer, read_text_document, require_text,
+                                 typed_channels)
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services import screens
 from modules.registry import MAIN_MENU, PROJECT_CARD, PROJECT_MANAGE, PROJECTS, RISK_NOTE, card_rows
 from bot.states import Projects
 from modules import projects, scraped_files
-from scraper.scrape import bad_channels, bad_channels_text, parse_channels
 
 router = Router()
 
@@ -48,8 +48,9 @@ async def _load(message: Message, state: FSMContext) -> list | None:
         return None
 
 
-async def _show_list(message: Message, state: FSMContext, note: str = "", edit: bool = False):
-    """The projects' list; `edit`: in place of the message (a button's), not a new one."""
+async def _show_list(message: Message, state: FSMContext, note: str = "", edit: bool = False, page: int = 0):
+    """The projects' list, a `page` of them (keyboards.paged_kb); `edit`: in place of the message (a
+    button's), not a new one."""
     items = await _load(message, state)
     if items is None:
         return
@@ -63,13 +64,14 @@ async def _show_list(message: Message, state: FSMContext, note: str = "", edit: 
         text = ("📁 <b>Проекты</b> — пока ни одного. Проект — ваша аудитория: каналы для скрапа, участники "
                 "групп или список; в его карточке — сбор и вся работа с базой. Готовые файлы скрапа станут "
                 "проектом через «📥 Из готового скрапа».")
-    options = [(projects.label(p), str(i)) for i, p in enumerate(items)]
-    options.append(("➕ Новый проект", "new"))
+    listed = paged_kb("prj", [(projects.label(p), str(i)) for i, p in enumerate(items)], page)
+    actions = [("➕ Новый проект", "new")]
     if scraped_files.scrape_names(limit=1):  # which of them can be a project: asked on the button
-        options.append(("📥 Из готового скрапа", "import"))
+        actions.append(("📥 Из готового скрапа", "import"))
+    markup = InlineKeyboardMarkup(inline_keyboard=[*listed.inline_keyboard,
+                                                   *choice_kb("prj", actions).inline_keyboard])
     send = message.edit_text if edit else message.answer
-    await send(f"{html.escape(note)}\n\n{text}" if note else text, parse_mode="HTML",
-               reply_markup=choice_kb("prj", options))
+    await send(f"{html.escape(note)}\n\n{text}" if note else text, parse_mode="HTML", reply_markup=markup)
 
 
 class _CardView(NamedTuple):
@@ -143,6 +145,12 @@ async def project_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
     if callback_data.value == "import":
         await _offer_import(callback.message, state)
         return
+    if callback_data.value.startswith("pg."):  # ⬅️ · 📄 · ➡️: another page, the list read again
+        try:
+            await _show_list(callback.message, state, edit=True, page=int(callback_data.value[3:]))
+        except Exception:  # 📄, the page shown: "message is not modified"
+            pass
+        return
     names = (await state.get_data()).get("project_names", [])
     index = int(callback_data.value)
     project = await _project(callback.message, state, names[index] if 0 <= index < len(names) else None)
@@ -212,21 +220,9 @@ async def project_channels(message: Message, state: FSMContext):
     raw = await require_text(message)
     if raw is None:
         return
-    channels = await _typed_channels(message, raw)
+    channels = await typed_channels(message, raw)
     if channels is not None:
         await _create(message, state, channels)
-
-
-async def _typed_channels(message: Message, raw: str) -> list[str] | None:
-    """The typed channels; None after asking for them again (none, or one that can't be a channel)."""
-    channels = parse_channels(raw)
-    if not channels:
-        await message.answer("Не вижу ни одного канала. Пришлите ещё раз:")
-        return None
-    if bad := bad_channels(channels):
-        await message.answer(f"{bad_channels_text(bad)} Пришлите список ещё раз:")
-        return None
-    return channels
 
 
 async def _create(message: Message, state: FSMContext, channels: list[str]):
@@ -327,7 +323,7 @@ async def project_edit(message: Message, state: FSMContext):
     raw = await require_text(message)
     if raw is None:
         return
-    channels = await _typed_channels(message, raw)
+    channels = await typed_channels(message, raw)
     if channels is not None:
         await _save_channels(message, state, channels)
 

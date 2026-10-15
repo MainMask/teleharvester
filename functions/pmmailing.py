@@ -12,6 +12,7 @@ from rich.table import Table
 from functions.base import TelethonFunction
 from functions.base.base import SKIPPED, AccountLimited, console_report, pick_seconds
 from modules import contacts_ledger, json_file, parquet_db, rich_message
+from modules.projects import as_username
 from modules.account_limits import DailyCounter
 from modules.rich_message import RichContent
 
@@ -43,8 +44,10 @@ class PmMailingFunc(TelethonFunction):
         json_file.save(STATS_PATH, self.stats)
 
     def record_success(self, recipient):
-        entry = self.stats.setdefault(recipient, {"count": 0})
+        entry = self.stats.setdefault(self.recipient_key(recipient), {"count": 0})
         entry["count"] += 1
+        if isinstance(recipient, dict) and recipient.get("username"):  # a list's @name finds them by it
+            entry["username"] = recipient["username"]
         entry["last_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         self._unsaved += 1
@@ -87,20 +90,6 @@ class PmMailingFunc(TelethonFunction):
             return users[0]
 
         return recipient
-
-    async def account(self, session):
-        if id(session) not in self._me_cache:
-            try:
-                me = await session.get_me()
-            except Exception as err:
-                raise AccountLimited(f"не удалось опросить аккаунт: {err}")
-
-            if me is None:
-                raise AccountLimited("аккаунт не авторизован")
-
-            self._me_cache[id(session)] = me
-
-        return self._me_cache[id(session)]
 
     async def check_requirements(self, session, recipient, me):
         """Ask Telegram what this worker needs to write to `recipient` and the base's
@@ -174,7 +163,7 @@ class PmMailingFunc(TelethonFunction):
 
     async def send_premium(self, session, recipient):
         """send_one for the Premium pass: a worker without Premium passes the recipient on."""
-        if not (await self.account(session)).premium:
+        if not (await self.cached_me(session)).premium:
             raise AccountLimited("нет Premium")
         return await self.send_one(session, recipient)
 
@@ -210,7 +199,7 @@ class PmMailingFunc(TelethonFunction):
 
     async def send_one(self, session, recipient):
         key = self.recipient_key(recipient)
-        me = await self.account(session)
+        me = await self.cached_me(session)
         account_key = str(me.id)
         name = me.first_name or ""
         foreign = isinstance(recipient, dict) and recipient.get("owner_id") not in (None, me.id)
@@ -264,7 +253,7 @@ class PmMailingFunc(TelethonFunction):
                                + (f"— {reason}" if reason else str(err)))
             return
 
-        self.record_success(key)
+        self.record_success(recipient)
         self._limits.bump(account_key)
         self.progress_ok()
         await self._report(
@@ -276,22 +265,39 @@ class PmMailingFunc(TelethonFunction):
             )
         )
 
+    @staticmethod
+    def parse_list(lines) -> list[str]:
+        """A list's recipients, a line each: a username as a project's list keeps it (@name, also from a
+        t.me link — filter_unsent then knows it from a base's username), anything else as typed."""
+        return [as_username(line) or line.strip() for line in lines if line.strip()]
+
     def load_recipients(self, path):
         """Read recipients from a .parquet DB (dict rows) or a .txt list (strings)."""
         if path.endswith(".parquet"):
             return parquet_db.load(path)
 
         with open(path, encoding="utf-8") as fileobj:
-            return [line.strip() for line in fileobj if line.strip()]
+            return self.parse_list(fileobj)
+
+    @staticmethod
+    def _username(text) -> str | None:
+        """A username as compared across a base and a list (@Alice = alice); None for an id or a phone."""
+        name = str(text or "").lstrip("@").casefold()
+        return name if name and not name.lstrip("+").isdigit() else None
 
     def filter_unsent(self, recipients):
-        """Drop recipients already recorded in stats (requires load_stats first)."""
+        """Drop recipients already recorded in stats (requires load_stats first): by their key, or by
+        their username, so a person mailed from a list (@name) and from a base (user id) is mailed once."""
+        # a list's keys (@name), a base row's entry username; older stats kept a base's people by username
+        usernames = {self._username(key) for key in self.stats}
+        usernames |= {self._username(entry.get("username")) for entry in self.stats.values()}
+        usernames.discard(None)
+
         def sent(recipient):
             if self.recipient_key(recipient) in self.stats:
                 return True
-            # stats written before the user_id key keep a base's people by username
-            return isinstance(recipient, dict) and bool(recipient.get("username")) \
-                and recipient["username"] in self.stats
+            username = recipient.get("username") if isinstance(recipient, dict) else recipient
+            return self._username(username) in usernames
 
         return [r for r in recipients if not sent(r)]
 

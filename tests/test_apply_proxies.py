@@ -72,3 +72,17 @@ def test_add_jsession_registers_and_dedupes(tmp_path):
     data["account"]["phone_number"] = "1000000001"
     dup_path.write_text(json.dumps(data))
     assert storage.add_jsession(str(dup_path)) is None
+
+
+def test_the_proxy_pool_is_owner_only(tmp_path, monkeypatch):
+    """Its lines hold the proxies' logins and passwords: as a session's key, never readable by others."""
+    import os
+
+    from modules import tdata_import
+
+    path = tmp_path / "proxies.txt"
+    path.write_text("socks5://old:pw@10.0.0.1:1080\n")
+    os.chmod(path, 0o644)  # a pool written before: narrowed on the next write too
+    monkeypatch.setattr(tdata_import, "PROXIES_FILE", str(path))
+    tdata_import.save_proxies("socks5://user:secret@10.0.0.2:1080")
+    assert oct(os.stat(path).st_mode & 0o777) == oct(0o600)

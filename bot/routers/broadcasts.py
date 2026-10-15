@@ -11,6 +11,7 @@ from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, build_content,
                                  require_post_link, require_text, resolve)
 from bot.services.delegation import WorkerPool
 from functions.broadcast import MENTION_ADMINS, MENTION_USERS
+from functions.pmmailing import PmMailingFunc
 from bot.services.jobs import JobManager
 from bot.states import BroadcastOptions, ChatBroadcast, Comments, Instant, PmMailing
 from modules.settings import Settings
@@ -25,11 +26,6 @@ MENTION_ASK = "Добавлять в сообщения скрытые упом�
 MENTION_WHO = "Кого упоминать в каждом сообщении?"
 DEFAULT_TARGETS = "assets/targets.txt"
 MAX_RECIPIENTS_FILE_SIZE = 5 * 1024 * 1024  # a recipients list is text; cap at 5 MB
-
-
-def _parse_recipients(text: str) -> list[str]:
-    """One recipient per line (@username / phone); blank lines dropped."""
-    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 # =========================== PM mailing (with stats) ===========================
@@ -57,7 +53,7 @@ async def mail_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     index = int(callback_data.value)
     if not 0 <= index < len(bases):
         return
-    await state.update_data(path=bases[index])
+    await state.update_data(path=bases[index], recipients=None)  # the last choice wins: a list sent before
     await callback.message.answer("Пропустить тех, кому уже писали раньше?", reply_markup=yes_no_kb("mail_skip"))
 
 
@@ -72,25 +68,25 @@ async def mail_path(message: Message, state: FSMContext):
             await message.answer("Файл слишком большой. Пришлите .txt поменьше или укажите путь.")
             return
         buffer = await message.bot.download(message.document)
-        recipients = _parse_recipients(buffer.read().decode("utf-8", "replace"))
+        recipients = PmMailingFunc.parse_list(buffer.read().decode("utf-8", "replace").splitlines())
         if not recipients:
             await message.answer("В файле нет получателей. Пришлите список заново.")
             return
-        await state.update_data(recipients=recipients)
+        await state.update_data(recipients=recipients, path=None)
     else:
         raw = await require_text(message)  # a photo / sticker must not fall back to the default list
         if raw is None:
             return
         if raw == "-":
-            await state.update_data(path=DEFAULT_TARGETS)
+            await state.update_data(path=DEFAULT_TARGETS, recipients=None)
         elif "\n" not in raw and (os.path.exists(raw) or raw.endswith((".txt", ".parquet"))):
-            await state.update_data(path=raw)  # a file path (backward compatible)
+            await state.update_data(path=raw, recipients=None)  # a file path (backward compatible)
         else:
-            recipients = _parse_recipients(raw)
+            recipients = PmMailingFunc.parse_list(raw.splitlines())
             if not recipients:
                 await message.answer("Пустой список. Пришлите получателей.")
                 return
-            await state.update_data(recipients=recipients)
+            await state.update_data(recipients=recipients, path=None)
 
     await message.answer("Пропустить тех, кому уже писали раньше?", reply_markup=yes_no_kb("mail_skip"))
 
@@ -131,13 +127,13 @@ async def mail_run(
     data = await state.get_data()
     await state.clear()
 
-    if "recipients" not in data and "path" not in data:  # a stale «Пропускать?» button after a state clear
+    if not data.get("recipients") and not data.get("path"):  # a stale «Пропускать?» button after a state clear
         await message.answer(STALE_STEP)
         return
 
     instance, bot_function = resolve(functions, "pmmailing")
 
-    if "recipients" in data:  # list supplied inline or via an uploaded .txt
+    if data.get("recipients"):  # list supplied inline or via an uploaded .txt
         recipients = list(data["recipients"])
     else:
         try:
@@ -447,7 +443,7 @@ async def cha_run(
     started = await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function, factory,
         "Слушатель рассылки запущен", "Слушатель остановлен",
-        stop_sessions=pool.workers, cleanup=content.cleanup,
+        cleanup=content.cleanup,
     )
 
     if started:
