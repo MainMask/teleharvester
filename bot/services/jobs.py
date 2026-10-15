@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 
 from bot.keyboards.common import stop_kb
 from bot.keyboards.menu import main_menu
@@ -8,8 +9,8 @@ from modules.storages.sessions_storage import release_client
 
 
 class JobManager:
-    """One active job at a time in this slot. The bot has three (bot/app.py): `manager` for the
-    workers' jobs, `scrapes` for the scraper's (scrape, members, verify), which run on their
+    """One active job at a time in this slot. Each project has three (bot/services/workspaces.py):
+    `manager` for the workers' jobs, `scrapes` for the scraper's (scrape, members, verify), which run on their
     own client, so a multi-day scrape doesn't hold up the rest, and `analyses` for the analysis,
     which uses no account at all.
 
@@ -17,11 +18,15 @@ class JobManager:
     background task with a ⏹ Stop button. Interactive/threaded jobs (the report flow,
     the analysis, a tdata import) take their slot via acquire()/release().
 
-    One slot for the workers' jobs is correct: every admin shares one worker pool, and the
-    worker TelegramClient objects must not be driven by two jobs at once.
+    One slot for a project's workers' jobs is correct: every admin shares its worker pool, and the
+    worker TelegramClient objects must not be driven by two jobs at once; projects have workers of
+    their own, so their jobs run side by side.
     """
 
+    _keys = itertools.count(1)
+
     def __init__(self):
+        self.key = next(self._keys)  # what its 📊 and ⏹ buttons name it by (/status lists every project's)
         self._active = False
         self._label = ""
         self._kind = None            # "task" | "interactive"
@@ -58,7 +63,7 @@ class JobManager:
         self.progress = Progress()
 
         reporter = TelegramReporter(
-            bot, chat_id, header=header, reply_markup=stop_kb(),
+            bot, chat_id, header=header, reply_markup=stop_kb(self.key),
             job_label=header, workers=len(pool.workers), final_markup=main_menu(), progress=self.progress,
         )
         try:

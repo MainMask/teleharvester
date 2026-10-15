@@ -79,13 +79,14 @@ def test_every_analysis_tool_is_described():
 
 
 def test_menu_path_finds_functions_and_screen_buttons():
-    assert menu_path("status") == "🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)"
-    assert menu_path("2fa") == "🤖 Аккаунты → 🛠 Обслуживание → 🔒 Установить 2FA"
-    assert menu_path("invite") == "💬 Активность → 🤝 Инвайтинг"
+    # all the work is a project's: on its card (📁 Проект), or its screens
+    assert menu_path("status") == "📁 Проекты → 📁 Проект → 🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)"
+    assert menu_path("2fa") == "📁 Проекты → 📁 Проект → 🤖 Аккаунты → 🛠 Обслуживание → 🔒 Установить 2FA"
+    assert menu_path("invite") == "📁 Проекты → 📁 Проект → 💬 Активность → 🤝 Инвайтинг"
     assert menu_path("autoreply") == "⚙️ Настройки → 📬 Автоответ"
-    assert menu_path("members") == "📁 Проекты → карточка проекта → 👥 Участники чата"
+    assert menu_path("members") == "📁 Проекты → 📁 Проект → 👥 Участники чата"
     assert "projects" not in BOT_FUNCTIONS_BY_KEY  # 📁 Проекты: a main-menu button; the CLI's item (CLI_EXTRAS)
-    assert menu_path("add") == "🤖 Аккаунты → ➕ Добавить"
+    assert menu_path("add") == "📁 Проекты → 📁 Проект → 🤖 Аккаунты → ➕ Добавить"
     actions = {b.action for screen in SCREENS.values() for b in screen.buttons}
     assert not actions & set(BOT_FUNCTIONS_BY_KEY)  # one key, one place
 
@@ -144,7 +145,8 @@ def test_every_screen_of_the_main_menu_starts_with_an_emoji(monkeypatch, tmp_pat
     from modules import projects
 
     deps = dict(pool=types.SimpleNamespace(count=lambda: 1), settings=types.SimpleNamespace(
-        delay=[2, 5], profile_pause=[60, 180], autoreply_enabled=False, autoreply_text=""))
+        delay=[2, 5], profile_pause=[60, 180], autoreply_enabled=False, autoreply_text=""),
+        workspace=types.SimpleNamespace())  # a project opened: its screens
 
     def opened(title):
         msg = _Screen(title)

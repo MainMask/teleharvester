@@ -1,10 +1,32 @@
 import asyncio
+import functools
 import importlib.util
 import inspect
 import os
 
 from .sessions_storage import SessionsStorage
 from ..settings import Settings
+
+
+@functools.cache
+def discover(directory: str) -> dict[str, type]:
+    """{class name: class} of every *Func in the directory's modules, loaded once: each project's
+    functions are these classes on its own workers (the bot's workspaces, the CLI's project card).
+
+    Discovery convention: a class is a menu entry iff its name ends in "Func", and its docstring is
+    the menu label. The bot keys the same classes by name in modules/registry.py (validated at bot
+    startup). A helper base like functions/broadcast.py's `Broadcast` is deliberately named without
+    the suffix so it is skipped here."""
+    found = {}
+    for file in os.listdir(directory):
+        if file.endswith(".py"):
+            spec = importlib.util.spec_from_file_location(file[:-3], os.path.join(directory, file))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            found.update((name, cls) for name, cls in inspect.getmembers(module, inspect.isclass)
+                         if name.endswith("Func"))
+    return found
+
 
 class FunctionsStorage:
     def __init__(
@@ -26,42 +48,18 @@ class FunctionsStorage:
             self.loop = sessions_storage.loop or asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
 
-        self.functions: list[tuple[object, str | None]] = []  # (the *Func instance, its docstring)
-
-        for file in os.listdir(directory):
-            if file.endswith(".py"):
-                self.load_function(
-                    file[:-3], os.path.join(directory, file)
-                )
-
-        # item[1] is the class docstring (the menu label); a *Func without one would
-        # make None.lower() crash startup, so treat a missing docstring as empty.
-        self.functions.sort(key=lambda item: (item[1] or "").lower())
-
-    def load_function(self, name: str, path: str):
-        spec = importlib.util.spec_from_file_location(name, path)
-        function = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(function)
-
-        self.register_function(function)
-
-    def register_function(self, module):
-        # Discovery convention: a class is a menu entry iff its name ends in "Func",
-        # and its docstring is the menu label. The bot keys the same classes by name
-        # in modules/registry.py (validated at bot startup). A helper base like
-        # functions/broadcast.py's `Broadcast` is deliberately named without the suffix
-        # so it is skipped here.
-        for classname, classobj in inspect.getmembers(module, inspect.isclass):
-            if classname.endswith("Func"):
-                self.functions.append((
-                    classobj(self.storage, self.settings),
-                    classobj.__doc__
-                ))
+        # (the *Func instance, its docstring); item[1] is the menu label: a *Func without one would
+        # make None.lower() crash startup, so treat a missing docstring as empty
+        self.functions: list[tuple[object, str | None]] = sorted(
+            ((cls(self.storage, self.settings), cls.__doc__) for cls in discover(directory).values()),
+            key=lambda item: (item[1] or "").lower())
 
     def run_instance(self, function_instance):
         """Run a menu item: a new instance of its class, so no run inherits another's state."""
-        function = type(function_instance)(self.storage, self.settings).execute()
+        self.run(type(function_instance)(self.storage, self.settings).execute())
 
+    def run(self, function):
+        """A function's result: awaited on the sessions' loop if it is a coroutine."""
         if inspect.isawaitable(function):
             # restore our loop in case a scraper function's asyncio.run() cleared it
             asyncio.set_event_loop(self.loop)

@@ -1,6 +1,7 @@
 import asyncio
 import html
 import io
+import os
 import secrets
 import shutil
 import tempfile
@@ -12,16 +13,18 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
-from bot.keyboards.common import cancel_kb, choice_kb, paged_kb
+from bot.keyboards.common import cancel_kb, choice_kb, marks_kb, paged_kb
 from bot.keyboards.menu import main_menu
-from bot.routers._common import delete_quietly, ensure_workers, send_chunked
+from bot.routers._common import STALE_BUTTON, delete_quietly, ensure_workers, marks_step, send_chunked
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.workspaces import Workspace, Workspaces
 from bot.services import screens
 from modules.registry import ACCOUNTS, MAIN_MENU, menu_path
-from bot.states import ImportTdata, SetProxy
-from modules import login as sign_in, phone_countries, restricted_workers, scraped_files, tdata_import
+from bot.states import ImportTdata, MoveWorkers, SetProxy
+from modules import login as sign_in, phone_countries, projects, restricted_workers, scraped_files, tdata_import
+from modules.storages.sessions_storage import release_client
 from modules.scraper_creds import card_lines, find_account, scrape_accounts
 from modules.storages.sessions_storage import profile_order
 from modules.types.proxy import ACCOUNTS_PER_PROXY, parse_proxies
@@ -34,14 +37,15 @@ MAX_PROXY_FILE_SIZE = 256 * 1024       # a proxy list is tiny; reject anything c
 MAX_TDATA_ZIP_SIZE = 10 * 1024 * 1024  # a tdata archive is small; cap at 10 MB
 MAX_TDATA_UNZIPPED = 100 * 1024 * 1024  # and so is what it unpacks to: a 10 MB archive mustn't fill the disk
 
-NO_WORKERS = (f"Добавьте аккаунт ({menu_path('add')}) или положите сессии в <code>sessions/</code>, "
-              "чтобы запускать задачи.")
+NO_WORKERS = (f"Добавьте аккаунт ({menu_path('add')}) — по номеру, из tdata или из свободных, — "
+              "чтобы запускать задачи проекта.")
 STALE_LIST = f"Список устарел — откройте заново: {menu_path('list')}."
 
 PROXY_PROMPT = (
     "Пришлите список прокси — <b>.txt файлом</b> или текстом, по одному на строку:\n"
     "<code>scheme://user:pass@ip:port</code> (socks5/socks4/http).\n\n"
-    f"Они распределятся по аккаунтам: один прокси на {ACCOUNTS_PER_PROXY} аккаунта."
+    f"Они распределятся по аккаунтам проекта: один прокси на {ACCOUNTS_PER_PROXY} аккаунта. Новые аккаунты "
+    "проекта тоже получат прокси из этого списка."
 )
 
 
@@ -69,7 +73,7 @@ def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str 
 
 @screens.view(ACCOUNTS)
 async def accounts_screen(message: Message, state: FSMContext, edit: bool, pool: WorkerPool, **_):
-    header = f"🤖 <b>Аккаунты</b> — воркеров подключено: <b>{pool.count()}</b>"
+    header = f"🤖 <b>Аккаунты проекта</b> — воркеров: <b>{pool.count()}</b>"
     if pool.count() == 0:
         header += f"\n\n{NO_WORKERS}"
     await screens.show(message, ACCOUNTS, edit, header)
@@ -193,7 +197,7 @@ def _card(pool: WorkerPool, personal, account, key: str):
     storage = personal if account.personal else pool.storage
     lines = card_lines(storage, account, html=True)
     lines[0] = f"<b>{lines[0]}</b>"
-    if pool.scraping is not None and pool.scraping.path == account.path:
+    if pool.scraped(account.path):
         lines.append("⏳ занят скрапом")
     actions = [("🔑 Код входа", f"codes.{key}")]
     if account.personal:
@@ -213,7 +217,7 @@ def _codes_text(account, codes, now: datetime) -> str:
 async def _codes(pool: WorkerPool, account, key: str) -> tuple[str, object]:
     """(text, keyboard) of an account's (a worker's or a personal one's) recent login codes, in its card's place."""
     keyboard = choice_kb("acc_act", [("🔄 Обновить", f"codes.{key}"), ("⬅️ Назад", f"card.{key}")], widths=(2,))
-    if pool.scraping is not None and pool.scraping.path == account.path:
+    if pool.scraped(account.path):
         # its key is in use by the scrape's own client: a second connection risks AUTH_KEY_DUPLICATED
         return f"⏳ {html.escape(account.label)} занят скрапом — коды после его окончания.", keyboard
     try:
@@ -287,7 +291,7 @@ async def _confirm_removal(message: Message, state: FSMContext, account, key: st
 
 def _removal_blocked(pool: WorkerPool, path: str) -> str | None:
     """Why the personal account can't be removed now, or None."""
-    if pool.scraping is not None and pool.scraping.path == path:
+    if pool.scraped(path):
         return "⛔ На этом аккаунте идёт скрап — уберите его после окончания."
     if pool.busy(path):
         return ("⛔ Бот сейчас читает коды входа или проверяет названия чатов на этом аккаунте — "
@@ -295,6 +299,172 @@ def _removal_blocked(pool: WorkerPool, path: str) -> str | None:
     if scraped_files.unfinished_scrape(path):
         return "⛔ На этом аккаунте есть незавершённый скрап — продолжить его можно только на нём."
     return None
+
+
+# --- workers moved by ticks: free ones into the project, the project's out of it ----------------
+# The lists of the worker picker (profile.py, keyboards.marks_kb): ✅ / ⬜, ☑️ Все, ⬜ Никого, then ▶️.
+
+TICKS = [("☑️ Все", "all"), ("⬜ Никого", "none")]
+FREE_HEAD = "📦 <b>Свободные аккаунты</b> — ещё ни в одном проекте. Отмеченные станут воркерами этого проекта."
+OUT_HEAD = ("↪️ <b>Перенести воркеров</b> — в другой проект или в свободные. Ограничения от @SpamBot и прокси "
+            "аккаунты унесут с собой; люди, добавленные ими в контакты, в этом проекте перейдут к другим воркерам.")
+
+
+def _ticks_text(head: str, picked: list[int], total: int) -> str:
+    return f"{head}\n\nОтмечено: {len(picked)} из {total}"
+
+
+async def _ask_ticks(message: Message, state: FSMContext, step, head: str, scope: str, paths: list[str],
+                     labels: list[str], go: str):
+    await state.clear()  # an abandoned flow's data must not reach this one
+    await state.set_state(step)
+    await state.update_data(move_paths=paths, move_labels=labels, picked=[], move_page=0)
+    await message.answer(_ticks_text(head, [], len(paths)), parse_mode="HTML",
+                         reply_markup=marks_kb(scope, labels, [], 0, TICKS + [(go, "go")], (2, 1)))
+
+
+async def _ticked(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, head: str, scope: str,
+                  go: str) -> list[str] | None:
+    """A tap on a ticks list: the list redrawn; on ▶️, the ticked paths (None till then)."""
+    data = await state.get_data()
+    paths, labels, picked, page = data["move_paths"], data["move_labels"], data["picked"], data["move_page"]
+    if callback_data.value == "go":
+        if not picked:
+            await callback.answer("Отметьте хотя бы один аккаунт", show_alert=True)
+            return None
+        await callback.answer()
+        return [paths[index] for index in picked]
+    await callback.answer()
+    new_picked, new_page = marks_step(callback_data.value, picked, page, len(paths),
+                                      {"all": range(len(paths)), "none": []})
+    if (new_picked, new_page) != (picked, page):  # an unchanged message can't be edited (📄 too)
+        await state.update_data(picked=new_picked, move_page=new_page)
+        await callback.message.edit_text(_ticks_text(head, new_picked, len(paths)), parse_mode="HTML",
+                                         reply_markup=marks_kb(scope, labels, new_picked, new_page,
+                                                               TICKS + [(go, "go")], (2, 1)))
+    return None
+
+
+def _moved_text(done: str, moved: list[str], failed: list[tuple[str, str]], total: int) -> str:
+    """The summary of a move: how many of the ticked, then each one not moved and why."""
+    lines = [f"{done}: {len(moved)} из {total}."]
+    if failed:
+        lines += ["", "Не перенесены:", *(f"• {html.escape(label)} — {html.escape(why)}" for label, why in failed)]
+    return "\n".join(lines)
+
+
+@router.callback_query(MenuCB.filter(F.action == MenuAction.FREE))
+async def free_start(callback: CallbackQuery, state: FSMContext):
+    """📦 Из свободных (➕ Добавить): the accounts in no project, read offline, to tick."""
+    await callback.answer()
+    free = [path for path in projects.account_files(projects.FREE_DIR) if path.endswith(".jsession")]
+    if not free:
+        await callback.message.answer(
+            f"Свободных аккаунтов нет — все уже в проектах. (Свободные — файлы .jsession в "
+            f"<code>{projects.FREE_DIR}/</code>.)", parse_mode="HTML")
+        return
+    await _ask_ticks(callback.message, state, MoveWorkers.free, FREE_HEAD, "mv_free", free,
+                     [projects.account_label(path) for path in free], "▶️ Добавить в проект")
+
+
+@router.callback_query(MoveWorkers.free, ChoiceCB.filter(F.scope == "mv_free"))
+async def free_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool):
+    paths = await _ticked(callback, callback_data, state, FREE_HEAD, "mv_free", "▶️ Добавить в проект")
+    if paths is None:
+        return
+    await state.clear()
+    moved, failed = [], []
+    for path in paths:
+        label = projects.account_label(path) if os.path.exists(path) else os.path.basename(path)
+        if not os.path.exists(path):  # taken meanwhile, from another chat
+            failed.append((label, "его уже нет среди свободных"))
+            continue
+        try:
+            pool.storage.add_jsession(projects.move_account(path, pool.storage.directory))
+        except (ValueError, OSError) as err:
+            failed.append((label, str(err)))
+            continue
+        moved.append(label)
+    await callback.message.edit_text(
+        _moved_text("✅ Добавлено в проект", moved, failed, len(paths)) + f"\n🤖 Воркеров в проекте: {pool.count()}",
+        parse_mode="HTML")
+
+
+@router.callback_query(MenuCB.filter(F.action == MenuAction.MOVE))
+async def move_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
+    """↪️ Перенести: the project's workers to tick; one in use now is marked, and stays."""
+    await callback.answer()
+    if not await ensure_workers(callback, pool):
+        return
+    # a StringSession has nothing to load it by elsewhere: moved by hand
+    workers = [account for account in scrape_accounts(pool.storage) if account.path.endswith(".jsession")]
+    labels = [f"{account.label}{' ⏳ занят' if pool.busy(account.path) or pool.scraped(account.path) else ''}"
+              for account in workers]
+    await _ask_ticks(callback.message, state, MoveWorkers.out, OUT_HEAD, "mv_out",
+                     [account.path for account in workers], labels, "▶️ Далее")
+
+
+@router.callback_query(MoveWorkers.out, ChoiceCB.filter(F.scope == "mv_out"))
+async def move_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, workspace: Workspace):
+    paths = await _ticked(callback, callback_data, state, OUT_HEAD, "mv_out", "▶️ Далее")
+    if paths is None:
+        return
+    try:
+        others = [project for project in projects.load() if project.id != workspace.project_id]
+    except ValueError as err:
+        await state.clear()
+        await callback.message.answer(f"⚠️ {err}")
+        return
+    await state.set_state(MoveWorkers.target)
+    await state.update_data(move_chosen=paths)
+    await callback.message.edit_text(
+        f"Куда перенести отмеченных — {len(paths)}?",
+        reply_markup=choice_kb("mv_to", [*((f"📁 {project.name}", str(project.id)) for project in others),
+                                         ("📦 В свободные", "free")]))
+
+
+@router.callback_query(MoveWorkers.target, ChoiceCB.filter(F.scope == "mv_to"))
+async def move_to(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool,
+                  workspaces: Workspaces):
+    await callback.answer()
+    paths = (await state.get_data())["move_chosen"]
+    await state.clear()
+    try:
+        project = None if callback_data.value == "free" else next(
+            p for p in projects.load() if str(p.id) == callback_data.value)
+    except (ValueError, StopIteration):  # an unreadable file, or the project deleted meanwhile
+        await callback.message.answer("Этого проекта уже нет — начните заново.")
+        return
+    target = None if project is None else workspaces.get(project.id)  # else it reads its folder when opened
+    moved, failed = [], []
+    for path in paths:
+        account = find_account(scrape_accounts(pool.storage), path)
+        if account is None:  # moved or gone meanwhile
+            failed.append((os.path.basename(path), "его уже нет в проекте"))
+            continue
+        # one account, one job: not one a job, the auto-reply, a code or a scrape uses now
+        if pool.busy(path) or pool.scraped(path):
+            failed.append((account.label, "занят задачей — перенесите после её окончания"))
+            continue
+        try:  # no await from the check to here: nothing takes it meanwhile
+            new = projects.move_account(path, projects.FREE_DIR if project is None else projects.sessions_dir(project))
+        except (ValueError, OSError) as err:
+            failed.append((account.label, str(err)))
+            continue
+        pool.storage.forget_session(path)
+        await release_client(account.client)
+        if target is not None:
+            target.pool.storage.add_jsession(new)
+        moved.append(account.label)
+    where = "в свободные" if project is None else f"в проект «{project.name}»"
+    await callback.message.edit_text(_moved_text(f"✅ Перенесено {html.escape(where)}", moved, failed, len(paths)),
+                                     parse_mode="HTML")
+
+
+@router.callback_query(ChoiceCB.filter(F.scope.in_({"mv_free", "mv_out", "mv_to"})))
+async def move_stale(callback: CallbackQuery):
+    """A ticks list's button whose flow is gone (another one began, or a restart)."""
+    await callback.answer(STALE_BUTTON)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prm_ok"))
@@ -373,7 +543,7 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
         await message.answer(f"⚠️ {err}. Пришлите больше прокси.")
         return
 
-    tdata_import.save_proxies(raw)
+    tdata_import.save_proxies(raw, projects.proxies_path(pool.storage.home))
 
     await state.clear()
 
@@ -468,13 +638,14 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
 
         used = [js.account.proxy for js in pool.storage.jsessions_paths.values()]
         try:
-            proxy = tdata_import.choose_pool_proxy(used, tdata_import.load_proxies(tdata_import.PROXIES_FILE))
+            proxy = tdata_import.choose_pool_proxy(
+                used, tdata_import.load_proxies(projects.proxies_path(pool.storage.home)))
         except ValueError as err:
             await message.answer(f"⚠️ {err}.", reply_markup=main_menu())
             return
 
         await message.answer("Импортирую аккаунт…")
-        phone = await tdata_import.convert(tdata_dir, proxy, password, "sessions")
+        phone = await tdata_import.convert(tdata_dir, proxy, password, pool.storage.directory)
 
         if phone is None:
             await message.answer("⚠️ Аккаунт не авторизован — импорт отменён.", reply_markup=main_menu())
@@ -482,10 +653,10 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
 
         # an account already loaded may sit in a file not named after its phone
         session = (None if pool.storage.is_phone_exists(phone)
-                   else pool.storage.add_jsession(f"sessions/{phone}.jsession"))
+                   else pool.storage.add_jsession(os.path.join(pool.storage.directory, f"{phone}.jsession")))
         if session is None:
             await message.answer(
-                f"ℹ️ Аккаунт +{phone} уже есть в sessions/ — файл не изменён.",
+                f"ℹ️ Аккаунт +{phone} уже есть в проекте — файл не изменён.",
                 reply_markup=main_menu(),
             )
             return
@@ -498,7 +669,7 @@ async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, 
             f"📱 Номер: +{phone}\n"
             f"🔐 2FA: {'да' if saved.password else 'нет'}\n"
             f"🌐 Прокси: {proxy_note}\n"
-            f"🤖 Всего воркеров: {pool.count()}",
+            f"🤖 Воркеров в проекте: {pool.count()}",
             reply_markup=main_menu(),
         )
     except Exception as err:

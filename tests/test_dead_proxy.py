@@ -5,6 +5,7 @@ failure there used to raise past every function's per-worker get_me guard and en
 """
 
 import asyncio
+import conftest
 import types
 
 from python_socks import ProxyError
@@ -56,7 +57,7 @@ class _Worker:
 
 
 def _storage(tmp_path):
-    return SessionsStorage(str(tmp_path), 1, "x", initialize=False)
+    return SessionsStorage(str(tmp_path), 1, "x", initialize=False, home=conftest.home())
 
 
 def _messages():
@@ -102,7 +103,6 @@ def test_clear_dialogs_skips_the_dead_worker(tmp_path):
 
 def test_mailing_rotates_past_the_dead_worker(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm.json"))
     monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "limits.json"))
     dead, ok = _Worker("dead", dead=True), _Worker("ok")
     settings = types.SimpleNamespace(delay=[0], per_account_daily=0, account_pause=[0])
@@ -137,7 +137,6 @@ def test_refusing_proxy_does_not_raise(tmp_path):
 
 def test_mailing_rotates_past_a_refusing_proxy(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm.json"))
     monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "limits.json"))
     dead, ok = _Worker("dead", dead=True, error=PROXY_REFUSED), _Worker("ok")
     settings = types.SimpleNamespace(delay=[0], per_account_daily=0, account_pause=[0])

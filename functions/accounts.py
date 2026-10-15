@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 from rich.markup import escape
 from rich.table import Table
@@ -7,7 +8,7 @@ from modules.console import console
 from functions.base import TelethonFunction
 # the module, not its *Func class: an imported *Func would be a second menu entry (as functions/projects.py)
 from functions import sign_in as cli_sign_in
-from modules import login as sign_in, phone_countries, restricted_workers
+from modules import login as sign_in, phone_countries, projects, restricted_workers
 from modules.scraped_files import unfinished_scrape
 from modules.scraper_creds import card_lines, find_account, personal_storage, scrape_accounts
 from modules.storages.sessions_storage import profile_order
@@ -72,7 +73,7 @@ class AccountsFunc(TelethonFunction):
         """The workers' table; the workers (scrape_accounts) in its order."""
         workers = self.storage.sessions
         if not workers:
-            console.print("[bold red]Нет аккаунтов в sessions/[/]")
+            console.print("[bold red]У проекта нет аккаунтов — добавьте: ➕ Добавить[/]")
             return []
 
         with console.status("Опрос аккаунтов..."):
@@ -101,6 +102,50 @@ class AccountsFunc(TelethonFunction):
 
         listed = scrape_accounts(self.storage)
         return [find_account(listed, self.storage.get_session_path(client)) for client, _ in ordered]
+
+
+class MoveWorkersFunc(TelethonFunction):
+    """Move workers"""
+
+    async def execute(self):
+        """As the bot's ↪️ Перенести: the project's workers by their numbers, into another project or the
+        free ones (projects.move_account); this one stops using them."""
+        # a StringSession has nothing to load it by elsewhere: moved by hand
+        workers = [account for account in scrape_accounts(self.storage) if account.path.endswith(".jsession")]
+        if not workers:
+            console.print("[bold red]У проекта нет воркеров для переноса.[/]")
+            return
+        for index, account in enumerate(workers, 1):
+            console.print(f"[{index}] {account.label}", markup=False, highlight=False)
+        raw = console.input("[bold white]кого перенести — номера (1,3,5-8), all — всех (Enter — назад)> [/]")
+        picked = [workers[index] for index in self.parse_picks(raw, len(workers), [])]
+        if not picked:
+            return
+        try:
+            others = [project for project in projects.load()
+                      if os.path.normpath(projects.sessions_dir(project)) != os.path.normpath(self.storage.directory)]
+        except ValueError as err:
+            console.print(str(err), markup=False, highlight=False)
+            return
+        for index, project in enumerate(others, 1):
+            console.print(f"[{index}] 📁 {project.name}", markup=False, highlight=False)
+        console.print(f"[{len(others) + 1}] 📦 В свободные", markup=False, highlight=False)
+        raw = console.input("[bold white]куда (Enter — назад)> [/]").strip()
+        if not raw.isdigit() or not 1 <= int(raw) <= len(others) + 1:
+            return
+        target = projects.FREE_DIR if int(raw) == len(others) + 1 else projects.sessions_dir(others[int(raw) - 1])
+        moved = 0
+        for account in picked:
+            try:
+                projects.move_account(account.path, target)
+            except (ValueError, OSError) as err:
+                console.print(f"{account.label}: не перенесён — {err}", markup=False, highlight=False)
+                continue
+            self.storage.forget_session(account.path)
+            await account.client.disconnect()  # the card's clients may be connected: a forgotten one runs on
+            moved += 1
+        console.print(f"✅ Перенесено: {moved} из {len(picked)}. Ограничения от @SpamBot и прокси они унесли с собой.",
+                      markup=False, highlight=False)
 
 
 async def remove_personal(personal, account) -> None:

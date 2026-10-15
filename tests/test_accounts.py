@@ -71,6 +71,9 @@ class _Pool:
     def count(self):
         return len(self._workers)
 
+    def scraped(self, path):
+        return self.scraping is not None and self.scraping.path == path
+
 
 class _Manager:
     def __init__(self, free=True):
@@ -462,7 +465,7 @@ def test_no_removal_while_it_scrapes_or_has_an_unfinished_scrape(tmp_path, monke
     assert "идёт скрап" in _remove(pool, personal)[-1]
 
     pool.scraping = None
-    json_file.save(scraped_files.SCRAPE_MARKER, {"account": path})
+    json_file.save(scraped_files.SCRAPE_MARKER, {"1": {"account": path}})
     assert "незавершённый скрап" in _remove(pool, personal)[-1]
     assert not me.logged_out and (tmp_path / path).exists() and personal.sessions == [me]
 
@@ -528,6 +531,7 @@ def test_a_worker_s_card_is_from_what_is_stored_and_has_no_removal(tmp_path, mon
     # the number, id and file in <code>: a tap copies them
     assert text == ("<b>🤖 Воркер: Ann (@ann)</b>\n📱 <code>+79991234567</code> · 🆔 <code>7</code>\n"
                     "🌐 socks5://1.2.3.4:1080\n❔ не проверялся\n📄 <code>sessions/w.jsession</code>")
+    # a worker is moved to another project (🤖 Аккаунты → ↪️ Перенести), never removed
     assert [b.text for row in markup.inline_keyboard for b in row] == ["🔑 Код входа"]
 
     _press("acc_act", f"rm.{_key(state, 0)}", state, pool, personal, msg)  # a forged 🗑 on a worker removes nothing

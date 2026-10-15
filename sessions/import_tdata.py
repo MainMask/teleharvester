@@ -1,16 +1,13 @@
-import asyncio
+"""Import the tdata_import/<name>/tdata folders into a project's workers: the terminal menu's
+«📂 tdata из папки» (functions/sign_in.py)."""
 import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
-os.chdir(ROOT)  # import_all's default paths (tdata_import/, sessions/, assets/) are relative to the root
+os.chdir(ROOT)  # tdata_import/, projects/ are relative to the root
 
-from modules import instance_lock
-from modules.console import console
-from modules.tdata_import import import_all
+from functions.sign_in import TdataImportFunc, run_standalone
 
 if __name__ == "__main__":
-    instance_lock.hold()  # not while the bot or the menu runs, as add_session.py / login.py
-    count = asyncio.run(import_all())
-    console.print(f"[bold white]Импортировано аккаунтов: {count}[/]")
+    run_standalone(TdataImportFunc)

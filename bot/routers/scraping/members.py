@@ -87,7 +87,7 @@ async def _members_go(message: Message, state: FSMContext, name: str, pool: Work
     stop = params.stop = scrapes.soft_stop()  # the job's own ⏹: a later job's can't relabel this one
     status = None
     try:
-        status = await message.answer("Собираю участников…", reply_markup=scrape_kb())
+        status = await message.answer("Собираю участников…", reply_markup=scrape_kb(scrapes.key))
         path, problems = await scraping.do_members(build_credentials(account.client), params)
     except (Exception, SystemExit) as err:  # connect() raises SystemExit on a logged-out session
         await menu_answer(message, f"Ошибка: {err}")

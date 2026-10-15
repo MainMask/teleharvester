@@ -38,11 +38,13 @@ async def _end_login(message: Message, state: FSMContext, text: str):
 
 
 def add_kb():
-    """By phone: a worker or a personal account; from tdata: a worker (bot/routers/accounts.py)."""
+    """By phone: a worker or a personal account; from tdata, or one in no project: a worker
+    (bot/routers/accounts.py)."""
     builder = InlineKeyboardBuilder()
     builder.button(text="🤖 Воркер — по номеру", callback_data=ChoiceCB(scope="phone_role", value="worker"))
     builder.button(text="👤 Личный — по номеру", callback_data=ChoiceCB(scope="phone_role", value=sign_in.PERSONAL))
     builder.button(text="📥 Воркер — из tdata (ZIP)", callback_data=MenuCB(action=MenuAction.TDATA))
+    builder.button(text="📦 Воркеры — из свободных", callback_data=MenuCB(action=MenuAction.FREE))
     builder.adjust(1)
     return builder.as_markup()
 
@@ -51,7 +53,8 @@ def add_kb():
 async def phone_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
-    await callback.message.answer("Кого и как добавляем? Личный аккаунт — только для скрапа.", reply_markup=add_kb())
+    await callback.message.answer("Кого и как добавляем в проект? Личный аккаунт — общий для всех проектов, "
+                                  "только для скрапа.", reply_markup=add_kb())
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "phone_role"))

@@ -51,10 +51,10 @@ def release_date(text: str):
     return next((m.group() for m in (d.search(text) for d in DATES) if m), year.group())
 
 
-def _context():
-    """What one status check reads once for all its workers (see SpamBlockFunc.scan)."""
+def _context(home: str):
+    """What one status check reads once for all its workers (see SpamBlockFunc.scan); `home`: their project's folder."""
     return SimpleNamespace(
-        counts=Counter(contacts_ledger.load().values()),  # worker id -> its people
+        counts=Counter(contacts_ledger.load(home).values()),  # worker id -> its people
         released=set(restricted_workers.load_released()),
         replies={},  # id(session) -> (who, @SpamBot reply) of the permanently restricted
     )
@@ -72,7 +72,7 @@ class SpamBlockFunc(TelethonFunction):
         return js is not None and path not in released and counts[js.account.account.user_id] > 0
 
     async def check(self, session: TelegramClient, report, unblocked: bool = False):
-        context = self._context or _context()
+        context = self._context or _context(self.storage.home)
         async with self.storage.ainitialize_session(session):
             path = self.storage.get_session_path(session)
             name = os.path.basename(path) if path else "?"
@@ -85,7 +85,7 @@ class SpamBlockFunc(TelethonFunction):
 
             if me is None:  # get_me() swallows the auth error of a banned / logged-out account
                 self.progress_failed()
-                await report(f"💀 {name} — сессия мертва (бан или выход), перенесена в sessions/inactive")
+                await report(f"💀 {name} — сессия мертва (бан или выход), перенесена в inactive/ папки проекта")
                 return "dead", session
 
             self.storage.remember_username(session, me.username)  # orders the pool
@@ -160,7 +160,7 @@ class SpamBlockFunc(TelethonFunction):
         async def collect(text):
             lines.append(text)
 
-        context = self._context = _context()
+        context = self._context = _context(self.storage.home)
         try:
             results = await self.gather_in_order(self.check, collect)
         finally:
@@ -212,7 +212,7 @@ class SpamBlockFunc(TelethonFunction):
     def waiting(self) -> List[tuple]:
         """[(path, user_id, name, people)]: the permanently restricted workers in the pool whose
         contacts wait for the admin's decision."""
-        context = _context()
+        context = _context(self.storage.home)
         result = []
         for path in restricted_workers.load():
             if self.holds_people(path, context.counts, context.released):
@@ -221,18 +221,13 @@ class SpamBlockFunc(TelethonFunction):
         return result
 
     async def move_restricted(self, blocks: Dict[str, List[TelegramClient]]) -> List[str]:
-        """Move restricted sessions into sessions/restricted/<date>/ (local filesystem op).
-        One whose people wait for it (see holds_people) stays: out of sessions/ it would be
+        """Move restricted sessions into restricted/<date>/ of their folder (local filesystem op).
+        One whose people wait for it (see holds_people) stays: out of its folder it would be
         gone, and its people handed to strangers. Returns the names of the ones kept."""
-        if not os.path.exists("sessions/restricted"):
-            os.mkdir("sessions/restricted")
-
-        context = _context()
+        context = _context(self.storage.home)
         kept = []
         for date, sessions in blocks.items():
             for session in sessions:
-                path = os.path.join("sessions", "restricted", date.replace("/", "-"))  # 12/11/2026
-
                 session_path = self.storage.get_session_path(session)
                 if session_path is None:  # already moved/forgotten: nothing to relocate
                     continue
@@ -240,8 +235,8 @@ class SpamBlockFunc(TelethonFunction):
                     kept.append(worker_name(self.storage, session_path))
                     continue
 
-                if not os.path.exists(path):
-                    os.mkdir(path)
+                path = os.path.join(os.path.dirname(session_path), "restricted", date.replace("/", "-"))  # 12/11/2026
+                os.makedirs(path, exist_ok=True)
                 session_name = os.path.basename(session_path)
 
                 await release_client(session)  # CLI clients stay connected: a forgotten one runs on
@@ -286,5 +281,5 @@ class SpamBlockFunc(TelethonFunction):
 
         if Confirm.ask("[bold magenta]Перенести ограниченные сессии в отдельные папки?[/]"):
             if kept := await self.move_restricted(blocks):
-                await console_report(f"Оставлены в sessions/ — их контакты ждут: {', '.join(kept)}")
+                await console_report(f"Оставлены в проекте — их контакты ждут: {', '.join(kept)}")
 

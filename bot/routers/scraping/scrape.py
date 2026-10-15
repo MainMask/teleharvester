@@ -34,25 +34,31 @@ router = Router()
 MAX_STALLED_RESUMES = 2
 
 
-_resume_task: asyncio.Task | None = None  # resume_after_restart's run
+_resume_tasks: set = set()  # resume_after_restart's runs, kept referenced (the loop's weak ref lets GC drop them)
 
 
-def _write_marker(marker: dict):
-    json_file.save(scraped_files.SCRAPE_MARKER, marker)
+# A project scrapes one at a time: its marker is under its folder (pool.storage.home), in one file
+# with the other projects' (scraped_files.scrape_markers).
+
+def _write_marker(key: str, marker: dict):
+    json_file.save(scraped_files.SCRAPE_MARKER, {**scraped_files.scrape_markers(), key: marker})
 
 
-def _read_marker() -> dict | None:
-    try:
-        return json_file.load(scraped_files.SCRAPE_MARKER, None)
-    except (OSError, ValueError):  # a half-written / broken marker: nothing to continue
-        return None
+def _read_marker(key: str) -> dict | None:
+    return scraped_files.scrape_markers().get(key)
 
 
-def _drop_marker():
-    try:
-        os.remove(scraped_files.SCRAPE_MARKER)
-    except OSError:
-        pass
+def _drop_marker(key: str):
+    markers = scraped_files.scrape_markers()
+    if markers.pop(key, None) is None:
+        return
+    if markers:
+        json_file.save(scraped_files.SCRAPE_MARKER, markers)
+    else:
+        try:
+            os.remove(scraped_files.SCRAPE_MARKER)
+        except OSError:
+            pass
 
 
 async def scrape_project(message: Message, state: FSMContext, project, deps: dict):
@@ -356,21 +362,21 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
     stop = params.stop = scrapes.soft_stop()
     status = None
     try:  # from here on, any error frees the slot and the worker (see finally)
-        _write_marker({"out_dir": out_dir, "name": params.name, "account": params.account, "chat_id": chat_id,
-                       **(resumes or {})})
+        _write_marker(pool.storage.home, {"out_dir": out_dir, "name": params.name, "account": params.account,
+                                          "chat_id": chat_id, **(resumes or {})})
         status = await bot.send_message(
             chat_id, f"Скрап запущен на аккаунте {account.label} — может занять долго.\n"
                      f"Остальные функции бота доступны{'' if account.personal else ' — без этого воркера'}.",
-            reply_markup=scrape_kb())
+            reply_markup=scrape_kb(scrapes.key))
         await scraping.do_scrape(build_credentials(account.client), params)
     except SystemExit as err:
         # a str code is a user-input error with its reason; an int one an interrupted run,
         # which exits before any output file is written
         if isinstance(err.code, str) and err.code:
-            _drop_marker()
+            _drop_marker(pool.storage.home)
             await menu(f"Скрап остановлен: {err}")
         elif stop.is_set() and not common.shutting_down:  # the operator's ⏹
-            _drop_marker()
+            _drop_marker(pool.storage.home)
             await menu("⏹ Скрап остановлен. Собранное сохранено: запустите скрап с тем же именем "
                        "— бот предложит продолжить.")
         elif not common.shutting_down:  # interrupted: the marker stays for a restart to continue it
@@ -378,7 +384,7 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
                        "с тем же именем — бот предложит продолжить.")
         return
     except Exception as err:  # e.g. the scrape's process killed (out of memory)
-        _drop_marker()
+        _drop_marker(pool.storage.home)
         saved = (" Собранное сохранено: запустите скрап с тем же именем — бот предложит "
                  "продолжить.") if pending_resume(out_dir, params.name) else ""
         await menu(f"Ошибка скрапа: {err}.{saved}")
@@ -386,7 +392,7 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
     finally:
         await common.free_slot(scrapes, pool, status)
 
-    _drop_marker()
+    _drop_marker(pool.storage.home)
     files = scraping.new_files(out_dir, before, tuple(f"{params.name}{marker}"
                                                       for marker in ("_posts", "_reactors", "_participants")))
     if files:
@@ -397,14 +403,21 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
         await menu("Готово, но новых файлов не найдено.")
 
 
-async def resume_after_restart(bot, scrapes: JobManager, pool: WorkerPool, personal):
-    """Bot startup: continue the scrape a restart interrupted (see scraped_files.SCRAPE_MARKER)."""
-    marker = _read_marker()
+async def resume_after_restart(bot, workspaces, personal):
+    """Bot startup: continue the scrapes a restart interrupted, each in its project (see
+    scraped_files.SCRAPE_MARKER)."""
+    for workspace in workspaces.all():
+        await _resume(bot, workspace.scrapes, workspace.pool, personal)
+
+
+async def _resume(bot, scrapes: JobManager, pool: WorkerPool, personal):
+    key = pool.storage.home
+    marker = _read_marker(key)
     if marker is None:
         return
     meta = pending_resume(marker["out_dir"], marker["name"])
     if meta is None:  # finished or removed meanwhile
-        _drop_marker()
+        _drop_marker(key)
         return
     # progress since the last automatic resume, by the checkpoint's post count; a clean
     # shutdown (systemd / needrestart restarts) is no crash and doesn't count as a stall
@@ -412,7 +425,7 @@ async def resume_after_restart(bot, scrapes: JobManager, pool: WorkerPool, perso
     clean = marker.pop("clean_shutdown", False)
     stalls = marker.get("stalls", 0) + (not clean) if marker.get("t_index") == t_index else 0
     if stalls >= MAX_STALLED_RESUMES:
-        _drop_marker()
+        _drop_marker(key)
         try:
             await bot.send_message(
                 marker["chat_id"],
@@ -426,9 +439,9 @@ async def resume_after_restart(bot, scrapes: JobManager, pool: WorkerPool, perso
     params = resume_params(meta, marker["out_dir"])
     params.account = params.account or marker.get("account", "")
     if common.run_account(pool, personal, params.account) is None:
-        _drop_marker()  # its account is gone for good: _run_scrape says so once, no retries
+        _drop_marker(key)  # its account is gone for good: _run_scrape says so once, no retries
     else:  # counted now: a run that returns before writing its own marker must still count
-        _write_marker({**marker, "t_index": t_index, "stalls": stalls})
+        _write_marker(key, {**marker, "t_index": t_index, "stalls": stalls})
 
     async def run():
         try:
@@ -438,25 +451,25 @@ async def resume_after_restart(bot, scrapes: JobManager, pool: WorkerPool, perso
         await _run_scrape(bot, marker["chat_id"], scrapes, pool, personal, params,
                           resumes={"t_index": t_index, "stalls": stalls})
 
-    global _resume_task
-    # don't hold up the bot's start; kept referenced, or the loop's weak ref lets GC drop it
-    _resume_task = asyncio.create_task(run())
+    # don't hold up the bot's start
+    task = asyncio.create_task(run())
+    _resume_tasks.add(task)
+    task.add_done_callback(_resume_tasks.discard)
 
 
-async def stop_for_shutdown(scrapes: JobManager):
-    """Bot shutdown: stop the scraper slot's job; a scrape checkpoints and its marker stays,
-    so the next start continues it."""
+async def stop_for_shutdown(workspaces):
+    """Bot shutdown: stop every project's scraper slot's job; a scrape checkpoints and its marker
+    stays, so the next start continues it."""
     common.shutting_down = True
-    marker = _read_marker()
-    if marker is not None:  # see resume_after_restart: a crash never gets here
-        _write_marker({**marker, "clean_shutdown": True})
-    if await scrapes.stop():
-        # its last bot call (common.free_slot) must come before aiogram closes the bot's session, or
-        # it opens a new one nobody closes; within systemd's TimeoutStopSec (30 s)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + scraping.CHILD_STOP_GRACE + 5
-        while scrapes.active and loop.time() < deadline:
-            await asyncio.sleep(0.1)
+    for key, marker in scraped_files.scrape_markers().items():  # see _resume: a crash never gets here
+        _write_marker(key, {**marker, "clean_shutdown": True})
+    stopping = [workspace.scrapes for workspace in workspaces.all() if await workspace.scrapes.stop()]
+    # their last bot call (common.free_slot) must come before aiogram closes the bot's session, or
+    # it opens a new one nobody closes; within systemd's TimeoutStopSec (30 s)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + scraping.CHILD_STOP_GRACE + 5
+    while any(scrapes.active for scrapes in stopping) and loop.time() < deadline:
+        await asyncio.sleep(0.1)
 
 
 common.FLOW_NEXT.update(scrape_resume=_resume_on_chosen, project=_check_project_channels, topup=_ask_go)

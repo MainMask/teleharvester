@@ -2,6 +2,7 @@
 bot/routers/login.py; the codes, from an account's card: bot/routers/accounts.py)."""
 
 import asyncio
+import conftest
 import json
 import types
 from collections import Counter
@@ -67,7 +68,8 @@ class _Worker:
 
 
 def _pool(busy=False, scraping=None):
-    return ns(busy=lambda path: busy, scraping=scraping, borrowed=Counter())
+    return ns(busy=lambda path: busy, scraping=scraping, borrowed=Counter(),
+              scraped=lambda path: scraping is not None and scraping.path == path)
 
 
 def test_free_worker_read_then_disconnected_and_cache_cleared():
@@ -184,6 +186,9 @@ class _Client:
 
 
 class _Storage:
+    directory = "sessions"
+    home = property(lambda self: conftest.home())
+
     def __init__(self, phones=(), proxies=()):
         self.phones = set(phones)
         self.jsessions_paths = {f"p{i}": ns(account=ns(proxy=p)) for i, p in enumerate(proxies)}

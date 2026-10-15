@@ -66,7 +66,12 @@ async def release_client(client):
 
 
 class SessionsStorage:
-    def __init__(self, directory: str, api_id: Union[str, int], api_hash: str, initialize: bool = True):
+    def __init__(self, directory: str, api_id: Union[str, int], api_hash: str, initialize: bool = True,
+                 home: str | None = None):
+        # the project whose workers these are (projects.home): its mailing stats, contacts ledger and
+        # proxies; None for the personal accounts, which are no project's
+        self.directory = directory
+        self.home = home
         self.full_sessions: Dict[str, Union[TelegramClient, JsonSession]] = {}
         self.json_sessions: List[JsonSession] = []
         self.jsessions_paths: Dict[str, JsonSession] = {}
@@ -75,7 +80,8 @@ class SessionsStorage:
         self.initialize = initialize
         self.loop = None  # the loop clients were connected on (initialize=True only)
 
-        for file in sorted(os.listdir(directory)):  # stable order (by phone), not filesystem order
+        # stable order (by phone), not filesystem order; a project without workers may have no folder yet
+        for file in sorted(os.listdir(directory) if os.path.isdir(directory) else []):
             if file.endswith(".session"):
                 session_path = os.path.join(directory, file)
 
@@ -254,7 +260,7 @@ class SessionsStorage:
             return
 
         if not authorized:
-            console.log(f"Сессия {path} неактивна, переношу в sessions/inactive")
+            console.log(f"Сессия {path} неактивна, переношу в inactive/ рядом с ней")
             await session.disconnect()
             self.move_to_inactive(path)
             return

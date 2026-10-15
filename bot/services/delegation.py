@@ -37,7 +37,7 @@ class WorkerPool:
 
     Host protection: the bot (Bot API) performs no MTProto actions and never appears
     here. This class enforces that invariant explicitly — every executor must be a
-    Telethon worker from sessions/, and RISKY functions refuse to run with no workers.
+    Telethon worker of its project (bot/services/workspaces.py), and RISKY functions refuse to run with no workers.
     """
 
     def __init__(self, sessions_storage):
@@ -50,6 +50,9 @@ class WorkerPool:
         # the session paths borrow() uses now — 🔑 Код входа, a chat names check (path -> uses in
         # flight: a double 🔄): nor on them
         self.borrowed: Counter = Counter()
+        # every project's pool (bot/services/workspaces.py): a personal account is every project's, so
+        # one in use by any of them is busy in all
+        self.peers = [self]
 
     @property
     def workers(self) -> list:
@@ -68,9 +71,14 @@ class WorkerPool:
 
     def busy(self, path: str) -> bool:
         """The account (session path) is in the job run() is running, autoreply polls it or
-        borrow() uses it."""
-        return (path == self.polling or self.borrowed[path] > 0
-                or any(self.storage.get_session_path(worker) == path for worker in self.in_job))
+        borrow() uses it — in any project's pool (peers)."""
+        return any(path == pool.polling or pool.borrowed[path] > 0
+                   or any(pool.storage.get_session_path(worker) == path for worker in pool.in_job)
+                   for pool in self.peers)
+
+    def scraped(self, path: str) -> bool:
+        """A scrape runs on the account (session path), in any project (peers)."""
+        return any(pool.scraping is not None and pool.scraping.path == path for pool in self.peers)
 
     def delegate(self, func_instance, only=None) -> list:
         """Point a function at the workers (never the host) but the one the scraper runs

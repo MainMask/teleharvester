@@ -2,6 +2,7 @@
 bot; the accounts list and proxies in the CLI."""
 
 import asyncio
+import conftest
 import functools
 import io
 import os
@@ -11,6 +12,7 @@ import pytest
 import toml
 
 from bot.callbacks import ChoiceCB
+from bot.routers import menu
 from bot.services.delegation import WorkerPool
 
 
@@ -339,7 +341,7 @@ def _pool(*paths):
     paths = paths or (_ACC,)
     clients = [object() for _ in paths]
     by_client = dict(zip(map(id, clients), paths))
-    return WorkerPool(ns(sessions=clients, jsessions_paths={},
+    return WorkerPool(ns(sessions=clients, jsessions_paths={}, home=conftest.home(),
                          get_session_path=lambda c: by_client[id(c)]))
 
 
@@ -476,7 +478,7 @@ def test_an_interrupted_scrape_keeps_its_marker_and_says_how_to_continue(monkeyp
     params = router.scrape._scrape_params({**_SCRAPE, "date_max": "31.01.2024"})
     asyncio.run(router.scrape._run_scrape(bot, 1, JobManager(), _pool(), None, params))
     assert any("с тем же именем" in t for t in _sent(bot))
-    assert router.scrape._read_marker() == {"out_dir": "out", "name": "n", "account": _ACC, "chat_id": 1}
+    assert router.scrape._read_marker(conftest.home()) == {"out_dir": "out", "name": "n", "account": _ACC, "chat_id": 1}
 
 
 def test_the_stop_button_stops_and_drops_the_marker(monkeypatch):
@@ -486,7 +488,9 @@ def test_the_stop_button_stops_and_drops_the_marker(monkeypatch):
     scrapes = JobManager()
 
     async def press_stop(params):
-        await router.common.scrape_stop(_SCallback(), scrapes)  # the operator's ⏹, mid-run
+        # the operator's ⏹, mid-run
+        await menu.scrape_stop(_SCallback(), ChoiceCB(scope="scrape_stop", value=str(scrapes.key)),
+                               conftest.Workspaces(scrapes=scrapes))
         assert params.stop.is_set()
         raise SystemExit(1)  # the scrape checkpoints and exits
 
@@ -495,7 +499,7 @@ def test_the_stop_button_stops_and_drops_the_marker(monkeypatch):
     params = router.scrape._scrape_params({**_SCRAPE, "date_max": "31.01.2024"})
     asyncio.run(router.scrape._run_scrape(bot, 1, scrapes, _pool(), None, params))
     assert any(t.startswith("⏹ Скрап остановлен") for t in _sent(bot))
-    assert router.scrape._read_marker() is None and not scrapes.active
+    assert router.scrape._read_marker(conftest.home()) is None and not scrapes.active
 
 
 def test_a_bot_shutdown_checkpoints_silently_and_keeps_the_marker(monkeypatch):
@@ -516,14 +520,14 @@ def test_a_bot_shutdown_checkpoints_silently_and_keeps_the_marker(monkeypatch):
     async def scenario():
         run = asyncio.create_task(router.scrape._run_scrape(bot, 1, scrapes, _pool(), None, params))
         await asyncio.sleep(0.05)
-        await router.scrape.stop_for_shutdown(scrapes)
+        await router.scrape.stop_for_shutdown(conftest.Workspaces(scrapes=scrapes))
         # returns once the job is over: its last bot call came before aiogram closes the session
         assert not scrapes.active
         await run
 
     asyncio.run(scenario())
     assert not any("прерван" in t or "остановлен" in t for t in _sent(bot))  # the bot is going down
-    assert router.scrape._read_marker() is not None
+    assert router.scrape._read_marker(conftest.home()) is not None
 
 
 def test_a_finished_scrape_drops_the_marker(monkeypatch):
@@ -533,7 +537,7 @@ def test_a_finished_scrape_drops_the_marker(monkeypatch):
     _scrapes(monkeypatch)
     params = router.scrape._scrape_params({**_SCRAPE, "date_max": "31.01.2024"})
     asyncio.run(router.scrape._run_scrape(_SBot(), 1, JobManager(), _pool(), None, params))
-    assert router.scrape._read_marker() is None
+    assert router.scrape._read_marker(conftest.home()) is None
 
 
 def test_a_worker_in_a_bot_job_is_not_scraped_on(monkeypatch):
@@ -545,7 +549,7 @@ def test_a_worker_in_a_bot_job_is_not_scraped_on(monkeypatch):
     params = router.scrape._scrape_params({**_SCRAPE, "date_max": "31.01.2024"})
     asyncio.run(router.scrape._run_scrape(bot, 1, scrapes, pool, None, params))
     assert calls == [] and _sent(bot) == [router.common.WORKER_BUSY]
-    assert not scrapes.active and router.scrape._read_marker() is None and pool.scraping is None
+    assert not scrapes.active and router.scrape._read_marker(conftest.home()) is None and pool.scraping is None
 
 
 def test_a_scraping_worker_is_kept_out_of_bot_jobs_until_the_scrape_ends(monkeypatch):
@@ -570,7 +574,7 @@ def test_a_failed_marker_write_frees_the_slot_and_the_worker(monkeypatch):
     from bot.routers import scraping as router
     from bot.services.jobs import JobManager
 
-    def no_space(marker):
+    def no_space(key, marker):
         raise OSError(28, "No space left on device")
 
     calls, bot, scrapes, pool = _scrapes(monkeypatch), _SBot(), JobManager(), _pool()
@@ -710,7 +714,8 @@ def test_the_verify_stop_says_stopped(monkeypatch, tmp_path):
     scrapes = JobManager()
 
     async def stopped(creds, params):
-        await router.common.scrape_stop(_SCallback(), scrapes)
+        await menu.scrape_stop(_SCallback(), ChoiceCB(scope="scrape_stop", value=str(scrapes.key)),
+                               conftest.Workspaces(scrapes=scrapes))
         raise SystemExit(1)  # verify ends as interrupted
 
     monkeypatch.setattr(scraping, "do_verify", stopped)
@@ -814,20 +819,19 @@ def test_a_broken_marker_reads_as_none(monkeypatch, tmp_path):
 
     monkeypatch.setattr(scraped_files, "SCRAPE_MARKER", str(tmp_path / "bot_scrape.json"))
     (tmp_path / "bot_scrape.json").write_text("{half-writ")
-    assert router.scrape._read_marker() is None
+    assert router.scrape._read_marker(conftest.home()) is None
 
 
 def test_a_restart_continues_the_marked_scrape(monkeypatch, tmp_path):
     from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
 
     calls = _scrapes(monkeypatch)
     _checkpoint(tmp_path)
-    router.scrape._write_marker({"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7})
+    router.scrape._write_marker(conftest.home(), {"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7})
     bot = _SBot()
 
     async def scenario():
-        await router.scrape.resume_after_restart(bot, JobManager(), _pool(), None)
+        await router.scrape.resume_after_restart(bot, conftest.Workspaces(_pool()), None)
         await asyncio.sleep(0.05)  # it runs in the background
 
     asyncio.run(scenario())
@@ -838,50 +842,47 @@ def test_a_restart_continues_the_marked_scrape(monkeypatch, tmp_path):
 
 def test_a_restart_without_a_checkpoint_drops_a_stale_marker(monkeypatch, tmp_path):
     from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
 
     calls = _scrapes(monkeypatch)
-    router.scrape._write_marker({"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7})
-    asyncio.run(router.scrape.resume_after_restart(_SBot(), JobManager(), _pool(), None))
-    assert calls == [] and router.scrape._read_marker() is None
+    router.scrape._write_marker(conftest.home(), {"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7})
+    asyncio.run(router.scrape.resume_after_restart(_SBot(), conftest.Workspaces(_pool()), None))
+    assert calls == [] and router.scrape._read_marker(conftest.home()) is None
 
 
 def test_a_restart_drops_the_marker_of_a_gone_account(monkeypatch, tmp_path):
     from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
 
     calls = _scrapes(monkeypatch)
     gone = "sessions/gone.jsession"
     _checkpoint(tmp_path, account=gone)
-    router.scrape._write_marker({"out_dir": str(tmp_path), "name": "n", "account": gone, "chat_id": 7})
+    router.scrape._write_marker(conftest.home(), {"out_dir": str(tmp_path), "name": "n", "account": gone, "chat_id": 7})
     bot = _SBot()
 
     async def scenario():
-        await router.scrape.resume_after_restart(bot, JobManager(), _pool(), None)
+        await router.scrape.resume_after_restart(bot, conftest.Workspaces(_pool()), None)
         await asyncio.sleep(0.05)
 
     asyncio.run(scenario())
-    assert calls == [] and router.scrape._read_marker() is None  # no retry on the next restart
+    assert calls == [] and router.scrape._read_marker(conftest.home()) is None  # no retry on the next restart
     assert any("не найден" in text for text in _sent(bot))
 
 
 def test_a_restart_that_returns_early_still_counts_the_stall(monkeypatch, tmp_path):
     from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
 
     calls = _scrapes(monkeypatch)
     _checkpoint(tmp_path)  # t_index 42, as in the marker: no progress since
-    router.scrape._write_marker({"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
+    router.scrape._write_marker(conftest.home(), {"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
                           "t_index": 42, "stalls": 0})
     pool = _pool()
     pool.in_job = pool.workers  # its worker is busy: _run_scrape returns before its own marker
 
     async def scenario():
-        await router.scrape.resume_after_restart(_SBot(), JobManager(), pool, None)
+        await router.scrape.resume_after_restart(_SBot(), conftest.Workspaces(pool), None)
         await asyncio.sleep(0.05)
 
     asyncio.run(scenario())
-    assert calls == [] and router.scrape._read_marker()["stalls"] == 1
+    assert calls == [] and router.scrape._read_marker(conftest.home())["stalls"] == 1
 
 
 # --- 4. CLI: accounts list, proxies ---------------------------------------------------------
@@ -915,7 +916,6 @@ def test_cli_set_proxies_reconnects_rebuilt_clients(tmp_path, monkeypatch):
     from functions import set_proxies
 
     (tmp_path / "proxies.txt").write_text("socks5://u:p@1.2.3.4:1080\n")
-    monkeypatch.setattr(set_proxies.tdata_import, "PROXIES_FILE", str(tmp_path / "proxies.txt"))  # never the real pool
     monkeypatch.setattr(set_proxies.Prompt, "ask", lambda *a, **k: str(tmp_path / "proxies.txt"))
     monkeypatch.setattr(set_proxies.console, "print", lambda *a, **k: None)
 
@@ -931,6 +931,7 @@ def test_cli_set_proxies_reconnects_rebuilt_clients(tmp_path, monkeypatch):
         initialize = True
         sessions = []
         full_sessions = {"a.jsession": old}
+        home = str(tmp_path)  # its pool: the file given
 
         def apply_proxies(self, proxies):
             assert proxies[0].ip == "1.2.3.4"
@@ -947,21 +948,21 @@ def test_cli_set_proxies_reconnects_rebuilt_clients(tmp_path, monkeypatch):
 def test_cli_set_proxies_from_another_file_become_the_pool(tmp_path, monkeypatch):
     from functions import set_proxies
 
-    pool = tmp_path / "pool.txt"
+    pool = tmp_path / "home" / "proxies.txt"  # the project's
     (tmp_path / "new.txt").write_text("socks5://u:p@1.2.3.4:1080\n\n  socks5://5.6.7.8:1080  \n")
-    monkeypatch.setattr(set_proxies.tdata_import, "PROXIES_FILE", str(pool))
     monkeypatch.setattr(set_proxies.Prompt, "ask", lambda *a, **k: str(tmp_path / "new.txt"))
     monkeypatch.setattr(set_proxies.console, "print", lambda *a, **k: None)
 
     class _Storage:
         sessions = []
         full_sessions = {}
+        home = str(tmp_path / "home")
 
         def apply_proxies(self, proxies):
             return {"accounts": 2, "proxies_used": 2, "string_sessions_skipped": 0}
 
     asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
-    # as the bot saves it: the phone login and the tdata import take this list from now on
+    # as the bot saves it: the project's phone logins and tdata imports take this list from now on
     assert pool.read_text() == "socks5://u:p@1.2.3.4:1080\nsocks5://5.6.7.8:1080\n"
 
 
@@ -996,7 +997,8 @@ def test_cli_tdata_import_adds_the_new_workers_without_a_restart(tmp_path, monke
     said = []
     monkeypatch.setattr(cli, "say", said.append)
 
-    async def import_all():
+    async def import_all(workers_dir, sessions_dir, proxies_path):
+        assert (sessions_dir, proxies_path) == ("sessions", os.path.join("home", "proxies.txt"))
         (tmp_path / "sessions" / "new.jsession").write_text("{}")
         return 1
 
@@ -1007,6 +1009,7 @@ def test_cli_tdata_import_adds_the_new_workers_without_a_restart(tmp_path, monke
         sessions = []
         initialize = True
         full_sessions = {os.path.join("sessions", "old.jsession"): "old"}
+        directory, home = "sessions", "home"  # the project's
 
         def add_jsession(self, path):
             added.append(path)
@@ -1024,7 +1027,7 @@ def test_cli_tdata_import_adds_the_new_workers_without_a_restart(tmp_path, monke
     assert added == [new] and checked == [("client", new)]
     assert said == ["✅ Импортировано аккаунтов: 1. Воркеров: 2."]
 
-    async def nothing():
+    async def nothing(*args):
         return 0
 
     monkeypatch.setattr(cli, "import_all", nothing)
@@ -1066,7 +1069,7 @@ def test_every_function_is_discovered_once():
 
 
 def test_cli_menu_is_the_bot_s_menu(monkeypatch):
-    import main
+    from modules import cli_menu
     from modules.registry import BOT_FUNCTIONS, CLI_EXTRAS, NOT_MENU_ITEMS
 
     class Unknown:
@@ -1077,29 +1080,30 @@ def test_cli_menu_is_the_bot_s_menu(monkeypatch):
     functions.append((type("ScrapeFunc", (), {})(), "Скрап"))  # run from a project's card only
     functions.append((type("TdataImportFunc", (), {})(), "tdata"))  # from ➕ Добавить only
     functions.append((type("LoginCodesFunc", (), {})(), "codes"))  # from an account's card only
-    entries = main.menu_entries(functions)
+    entries = cli_menu.menu_entries(functions)
+    project = cli_menu.menu_entries(functions, project=True)
 
-    # the projects — their card has all the work on a base —, then one target for all the workers
-    assert [e[2] for e in entries[:3]] == ["📁 Проекты", "✉️ ЛС человеку", "🗨 Комментарии"]
-    assert "🤝 Инвайтинг" in [e[2] for e in entries if e[0] == "💬 Активность"]
+    # the main menu: the projects — all the work is a project's —, the settings, what the registry doesn't know
+    assert [(e[0], e[2]) for e in entries] == [("📁 Проекты", "📁 Проекты"), ("⚙️ Настройки", "⚙️ Настройки"),
+                                               ("Прочее", "Some new thing")]
+    # a project's sections: its accounts (the screen's actions, then its function, as in the bot), their
+    # profile and service, then one target for all its workers
+    assert [e[2] for e in project if e[0] == "🤖 Аккаунты"] == [
+        "📋 Список", "🌐 Прокси", "➕ Добавить", "↪️ Перенести", "🛡 Проверка статуса (SpamBot)"]
+    assert [e[0] for e in project][-1] == "💬 Активность" and "🤝 Инвайтинг" in [e[2] for e in project]
     # nothing lost, nothing repeated; a project card's items and ➕ Добавить's tdata are other items'
-    assert len(entries) == len(functions) - len(NOT_MENU_ITEMS)
-    assert not {"Скрап", "tdata", "👥 Участники чата", "📨 ЛС по базе", "📈 Анализ"} & {e[2] for e in entries}
-    assert entries[-1][0] == "Прочее" and entries[-1][2] == "Some new thing"
-    assert entries[-2][:1] + entries[-2][2:3] == ("⚙️ Настройки", "⚙️ Настройки")  # after the workers' groups
-    accounts = [e[2] for e in entries if e[0] == "🤖 Аккаунты"]
-    # the screen's actions, then its function, as in the bot
-    assert accounts == ["📋 Список", "🌐 Прокси", "➕ Добавить", "🛡 Проверка статуса (SpamBot)"]
+    assert len(entries) + len(project) == len(functions) - len(NOT_MENU_ITEMS)
+    assert not {"Скрап", "tdata", "👥 Участники чата", "📨 ЛС по базе", "📈 Анализ"} & {e[2] for e in project}
 
     printed = []
-    monkeypatch.setattr(main.console, "print", lambda text="", *a, **k: printed.append(text))
-    main.print_menu(entries)
+    monkeypatch.setattr(cli_menu.console, "print", lambda text="", *a, **k: printed.append(text))
+    cli_menu.print_menu(project)
     # an all-risky section: ⚠️ once, on its title, as in the bot; a mixed one: on its risky items
     assert "\n[bold magenta]💬 Активность[/] ⚠️" in printed and "\n[bold magenta]🛠 Обслуживание[/]" in printed
-    assert any("[24] ⚠️ [bold white]🧹 Очистить диалоги[/] — удаляет" in p for p in printed)
+    assert any("[14] ⚠️ [bold white]🧹 Очистить диалоги[/] — удаляет" in p for p in printed)
     heading = printed.index("  [italic]Действия в чатах[/]")  # the bot's subheadings
-    assert "[6] [bold white]🚪 Вступить в чат" in printed[heading + 1]
-    assert any("[2] [bold white]✉️ ЛС человеку" in p for p in printed)
+    assert "[19] [bold white]🚪 Вступить в чат" in printed[heading + 1]
+    assert any("[15] [bold white]✉️ ЛС человеку" in p for p in printed)
 
 
 def test_run_instance_runs_a_new_instance_of_the_chosen_function():
@@ -1144,17 +1148,16 @@ def test_the_bot_runs_a_new_instance_each_time():
 
 def test_auto_resume_gives_up_after_restarts_without_progress(monkeypatch, tmp_path):
     from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
 
     calls = _scrapes(monkeypatch)
     _checkpoint(tmp_path)  # 42 posts saved
     # the previous automatic resume already found 42 posts and was killed again at the same spot
-    router.scrape._write_marker({"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
+    router.scrape._write_marker(conftest.home(), {"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
                           "t_index": 42, "stalls": 1})
     bot = _SBot()
-    asyncio.run(router.scrape.resume_after_restart(bot, JobManager(), _pool(), None))
+    asyncio.run(router.scrape.resume_after_restart(bot, conftest.Workspaces(_pool()), None))
 
-    assert calls == [] and router.scrape._read_marker() is None
+    assert calls == [] and router.scrape._read_marker(conftest.home()) is None
     assert _sent(bot)[0].startswith("⚠️ Автопродолжение скрапа «n» отключено")
 
 
@@ -1163,15 +1166,16 @@ def test_restarts_after_a_clean_shutdown_dont_count_as_stalls(monkeypatch, tmp_p
     from bot.services.jobs import JobManager
 
     seen = []
-    _scrapes(monkeypatch, lambda params: seen.append(router.scrape._read_marker()))
+    _scrapes(monkeypatch, lambda params: seen.append(router.scrape._read_marker(conftest.home())))
     _checkpoint(tmp_path)  # 42 posts, as in the marker: no progress since
-    router.scrape._write_marker({"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
+    router.scrape._write_marker(conftest.home(), {"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
                           "t_index": 42, "stalls": 1})
-    asyncio.run(router.scrape.stop_for_shutdown(JobManager()))  # e.g. needrestart after a library upgrade
+    # e.g. needrestart after a library upgrade
+    asyncio.run(router.scrape.stop_for_shutdown(conftest.Workspaces(scrapes=JobManager())))
     router.common.shutting_down = False
 
     async def scenario():
-        await router.scrape.resume_after_restart(_SBot(), JobManager(), _pool(), None)
+        await router.scrape.resume_after_restart(_SBot(), conftest.Workspaces(_pool()), None)
         await asyncio.sleep(0.05)
 
     asyncio.run(scenario())
@@ -1181,16 +1185,15 @@ def test_restarts_after_a_clean_shutdown_dont_count_as_stalls(monkeypatch, tmp_p
 
 def test_auto_resume_with_progress_counts_afresh(monkeypatch, tmp_path):
     from bot.routers import scraping as router
-    from bot.services.jobs import JobManager
 
     seen = []
-    _scrapes(monkeypatch, lambda params: seen.append(router.scrape._read_marker()))
+    _scrapes(monkeypatch, lambda params: seen.append(router.scrape._read_marker(conftest.home())))
     _checkpoint(tmp_path)  # 42 posts now
-    router.scrape._write_marker({"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
+    router.scrape._write_marker(conftest.home(), {"out_dir": str(tmp_path), "name": "n", "account": _ACC, "chat_id": 7,
                           "t_index": 10, "stalls": 1})
 
     async def scenario():
-        await router.scrape.resume_after_restart(_SBot(), JobManager(), _pool(), None)
+        await router.scrape.resume_after_restart(_SBot(), conftest.Workspaces(_pool()), None)
         await asyncio.sleep(0.05)
 
     asyncio.run(scenario())
@@ -1203,8 +1206,8 @@ def test_the_marker_is_written_atomically(tmp_path):
 
     from bot.routers import scraping as router
 
-    router.scrape._write_marker({"name": "n"})
-    assert router.scrape._read_marker() == {"name": "n"}
+    router.scrape._write_marker(conftest.home(), {"name": "n"})
+    assert router.scrape._read_marker(conftest.home()) == {"name": "n"}
     assert not os.path.exists(router.common.scraped_files.SCRAPE_MARKER + ".tmp")
 
 

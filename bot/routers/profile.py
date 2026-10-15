@@ -4,12 +4,11 @@ import uuid
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
-from bot.keyboards.common import PAGE_SIZE, cancel_kb, choice_kb
-from bot.routers._common import (STALE_BUTTON, delete_quietly, ensure_workers, read_text_document, require_text,
-                                 resolve)
+from bot.keyboards.common import cancel_kb, choice_kb, marks_kb
+from bot.routers._common import (STALE_BUTTON, delete_quietly, ensure_workers, marks_step, read_text_document,
+                                 require_text, resolve)
 from modules.registry import BOT_FUNCTIONS_BY_KEY
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -65,20 +64,8 @@ def _workers_text(picked: list[int], total: int, new: list[int]) -> str:
 
 
 def _workers_kb(labels: list[str], picked: list[int], page: int):
-    pages = (len(labels) + PAGE_SIZE - 1) // PAGE_SIZE
-    first = page * PAGE_SIZE
-    builder = InlineKeyboardBuilder()
-    for index in range(first, min(first + PAGE_SIZE, len(labels))):
-        mark = "✅" if index in picked else "⬜"
-        builder.button(text=f"{mark} {labels[index]}", callback_data=ChoiceCB(scope="wpick", value=str(index)))
-    nav = []
-    if pages > 1:
-        nav = [("⬅️", "prev"), (f"📄 стр {page + 1}/{pages}", "page"), ("➡️", "next")]
-    for text, value in [*nav, ("☑️ Все", "all"), ("⬜ Никого", "none"), ("🆕 Ещё не менялись", "new"),
-                        ("▶️ Далее", "go")]:
-        builder.button(text=text, callback_data=ChoiceCB(scope="wpick", value=value))
-    builder.adjust(*[1] * (min(first + PAGE_SIZE, len(labels)) - first), *([3] if nav else []), 3, 1)
-    return builder.as_markup()
+    return marks_kb("wpick", labels, picked, page, [("☑️ Все", "all"), ("⬜ Никого", "none"),
+                                                   ("🆕 Ещё не менялись", "new"), ("▶️ Далее", "go")], (3, 1))
 
 
 async def _ask_workers(callback: CallbackQuery, state: FSMContext, key: str, deps: dict):
@@ -128,20 +115,8 @@ async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
         return
 
     await callback.answer()
-    pages = (len(paths) + PAGE_SIZE - 1) // PAGE_SIZE
-    new_picked, new_page = picked, page
-    if value == "all":
-        new_picked = list(range(len(paths)))
-    elif value == "none":
-        new_picked = []
-    elif value == "new":
-        new_picked = new
-    elif value == "prev":
-        new_page = (page - 1) % pages
-    elif value == "next":
-        new_page = (page + 1) % pages
-    elif value.isdigit() and int(value) < len(paths):
-        new_picked = sorted(set(picked) ^ {int(value)})
+    new_picked, new_page = marks_step(value, picked, page, len(paths),
+                                      {"all": range(len(paths)), "none": [], "new": new})
     if (new_picked, new_page) == (picked, page):  # an unchanged message can't be edited ("page" too)
         return
     await state.update_data(picked=new_picked, pick_page=new_page)

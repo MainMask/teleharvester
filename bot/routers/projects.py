@@ -13,10 +13,10 @@ from bot.keyboards.menu import card_kb
 from bot.routers import audience, broadcasts, scraping
 from bot.routers._common import (ensure_workers, left_flow, menu_answer, read_text_document, require_text,
                                  typed_channels)
-from bot.services.delegation import WorkerPool
-from bot.services.jobs import JobManager
 from bot.services import screens
-from modules.registry import MAIN_MENU, PROJECT_CARD, PROJECT_MANAGE, PROJECTS, RISK_NOTE, card_rows
+from bot.services.workspaces import Workspaces
+from modules.registry import (CARD, MAIN_MENU, PROJECT_CARD, PROJECT_MANAGE, PROJECTS, RISK_NOTE, card_rows, children,
+                              menu_path)
 from bot.states import Projects
 from modules import projects, scraped_files
 
@@ -24,7 +24,9 @@ router = Router()
 
 # 📁 Проекты: named sets of scrape sources (modules/projects.py). A project's scrape runs through
 # the scrape flow (scraping.scrape_project) under the project's name, so its files, and an
-# interrupted scrape to continue, are found by that name.
+# interrupted scrape to continue, are found by that name. All the work is a project's, on its own
+# workers: its card makes it the chat's current project (bot/services/workspaces.py), whose workers
+# the card's functions and its 🤖 Аккаунты, 💬 Активность run on.
 
 CHANNELS_ASK = ("Каналы/группы через запятую (@name / t.me ссылка / инвайт t.me/+… / числовой id).\n"
                 "Их названия проверяются при скрапе — на выбранном для него аккаунте.")
@@ -57,13 +59,13 @@ async def _show_list(message: Message, state: FSMContext, note: str = "", edit: 
     await state.clear()
     await state.update_data(project_names=[p.name for p in items])  # buttons carry an index into this
     if items:
-        text = ("📁 <b>Проекты</b> — ваши аудитории: каналы или группы, сбор и вся работа с их базами "
-                "(рассылка, контакты, проверка, анализ) — в карточке проекта. Имя проекта — имя его файлов "
-                "скрапа; ⏸ — есть незавершённый скрап.")
+        text = ("📁 <b>Проекты</b> — у каждого свои аккаунты и прокси, своя база и вся работа с ней: сбор, "
+                "рассылка, контакты, проверка, анализ, активность воркеров — в карточке проекта. Имя проекта — "
+                "имя его файлов скрапа; ⏸ — есть незавершённый скрап.")
     else:
-        text = ("📁 <b>Проекты</b> — пока ни одного. Проект — ваша аудитория: каналы для скрапа, участники "
-                "групп или список; в его карточке — сбор и вся работа с базой. Готовые файлы скрапа станут "
-                "проектом через «📥 Из готового скрапа».")
+        text = ("📁 <b>Проекты</b> — пока ни одного. У проекта свои аккаунты и прокси и своя аудитория: каналы "
+                "для скрапа, участники групп или список; в его карточке — сбор и вся работа с базой, аккаунты и "
+                "их активность. Готовые файлы скрапа станут проектом через «📥 Из готового скрапа».")
     listed = paged_kb("prj", [(projects.label(p), str(i)) for i, p in enumerate(items)], page)
     actions = [("➕ Новый проект", "new")]
     if scraped_files.scrape_names(limit=1):  # which of them can be a project: asked on the button
@@ -80,30 +82,34 @@ class _CardView(NamedTuple):
     topup: bool  # a finished scrape to bring up to date
 
 
-def _card_view(project: projects.Project) -> _CardView:
+def _card_view(project: projects.Project, workers: int) -> _CardView:
     """The card as shown: reads the files' footers (and the posts file's attrs), so off the event loop."""
     # a top-up while a scrape is unfinished would drop its checkpoint: ▶️ continues that first
     topup = projects.topup(project) is not None and projects.unfinished(project.name) is None
-    return _CardView(projects.card(project, html=True), topup)
+    return _CardView(projects.card(project, workers, html=True), topup)
 
 
-async def _show_card(message: Message, state: FSMContext, project: projects.Project, edit: bool = False,
-                     note: str = ""):
-    """The project's card; `edit`: in place of the message (a button's), not a new one; `note` above it."""
+async def _show_card(message: Message, state: FSMContext, workspaces: Workspaces, project: projects.Project,
+                     edit: bool = False, note: str = ""):
+    """The project's card, the chat's current project from now on; `edit`: in place of the message (a
+    button's), not a new one; `note` above it."""
     names = (await state.get_data()).get("project_names")
     await state.clear()
     # the list shown before keeps working: its buttons carry an index into project_names; the card's
     # carry its token, as the delete confirmation: an older card's must not act on the one opened since
     token = secrets.token_hex(4)
     await state.update_data(project_name=project.name, project_names=names or [], card_token=token)
-    view = await asyncio.to_thread(_card_view, project)
+    workspace = workspaces.open(message.chat.id, project)
+    view = await asyncio.to_thread(_card_view, project, workspace.pool.count())
     text = f"{html.escape(note)}\n\n{view.text}" if note else view.text
     text += f"\n\n<i>{RISK_NOTE}</i>"  # what its ⚠️ buttons mean
     # every function, data or not — one with nothing to work on yet says what to collect first
-    # (projects.missing) —, then ⚙️ to the project itself; 🔄 only when there is something to top up
+    # (projects.missing) —, then ⚙️ to the project itself, its accounts and their activity; 🔄 only
+    # when there is something to top up
     rows = card_rows(PROJECT_CARD, hidden=() if view.topup else ("topup",))
     send = message.edit_text if edit else message.answer
-    await send(text, parse_mode="HTML", reply_markup=card_kb(rows + [[("⬅️ Назад", "back")]], token))
+    await send(text, parse_mode="HTML",
+               reply_markup=card_kb(rows + [[("⬅️ Назад", "back")]], token, tuple(children(CARD))))
 
 
 async def _show_manage(message: Message, state: FSMContext, project: projects.Project):
@@ -133,8 +139,20 @@ async def projects_screen(message: Message, state: FSMContext, edit: bool, **_):
     await _show_list(message, state, edit=edit)
 
 
+@screens.view(CARD)  # ⬅️ Назад from its screens: the current project's card (menu._open checks there is one)
+async def card_screen(message: Message, state: FSMContext, edit: bool, workspace, workspaces: Workspaces, **_):
+    items = await _load(message, state)
+    if items is None:
+        return
+    project = next((p for p in items if p.id == workspace.project_id), None)
+    if project is None:  # deleted meanwhile, from another chat
+        await _show_list(message, state, edit=edit)
+        return
+    await _show_card(message, state, workspaces, project, edit=edit)
+
+
 @router.callback_query(ChoiceCB.filter(F.scope == "prj"))
-async def project_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+async def project_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, workspaces: Workspaces):
     await callback.answer()
     if callback_data.value == "new":
         await state.set_state(Projects.name)
@@ -155,7 +173,7 @@ async def project_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
     index = int(callback_data.value)
     project = await _project(callback.message, state, names[index] if 0 <= index < len(names) else None)
     if project is not None:
-        await _show_card(callback.message, state, project, edit=True)
+        await _show_card(callback.message, state, workspaces, project, edit=True)
 
 
 async def _offer_import(message: Message, state: FSMContext):
@@ -179,7 +197,8 @@ async def _offer_import(message: Message, state: FSMContext):
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prj_imp"))
-async def project_import(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+async def project_import(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
+                         workspaces: Workspaces):
     await callback.answer()
     if callback_data.value == "back":
         await _show_list(callback.message, state, edit=True)
@@ -195,7 +214,7 @@ async def project_import(callback: CallbackQuery, callback_data: ChoiceCB, state
     except (ValueError, OSError) as err:  # e.g. made meanwhile from the same scrape
         await menu_answer(callback.message, f"Проект не создан: {err}")
         return
-    await _show_card(callback.message, state, project, edit=True)
+    await _show_card(callback.message, state, workspaces, project, edit=True)
 
 
 @router.message(Projects.name, ~F.text.in_(MAIN_MENU))
@@ -216,16 +235,16 @@ async def project_name(message: Message, state: FSMContext):
 
 
 @router.message(Projects.channels, ~F.text.in_(MAIN_MENU))
-async def project_channels(message: Message, state: FSMContext):
+async def project_channels(message: Message, state: FSMContext, workspaces: Workspaces):
     raw = await require_text(message)
     if raw is None:
         return
     channels = await typed_channels(message, raw)
     if channels is not None:
-        await _create(message, state, channels)
+        await _create(message, state, workspaces, channels)
 
 
-async def _create(message: Message, state: FSMContext, channels: list[str]):
+async def _create(message: Message, state: FSMContext, workspaces: Workspaces, channels: list[str]):
     """The new project (its name asked before), then its card; none (`[]`) by its button."""
     try:
         project = projects.add((await state.get_data())["new_name"], channels)
@@ -233,7 +252,7 @@ async def _create(message: Message, state: FSMContext, channels: list[str]):
         await state.clear()
         await menu_answer(message, f"Проект не создан: {err}")
         return
-    await _show_card(message, state, project)
+    await _show_card(message, state, workspaces, project)
 
 
 MISSING_CHECKED = ("scrape", "contacts", "mail", "verify", "analysis")  # the card's functions on its data
@@ -241,7 +260,7 @@ MISSING_CHECKED = ("scrape", "contacts", "mail", "verify", "analysis")  # the ca
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prj_act"))
 async def project_action(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
-                         pool: WorkerPool, personal, scrapes: JobManager):
+                         workspaces: Workspaces, personal):
     data = await state.get_data()
     action, _, token = callback_data.value.rpartition(".")
     project = await _project(callback.message, state,
@@ -254,6 +273,8 @@ async def project_action(callback: CallbackQuery, callback_data: ChoiceCB, state
     await callback.answer(why, show_alert=bool(why))
     if why:
         return
+    workspace = workspaces.open(callback.message.chat.id, project)  # the card's: its workers, its slots
+    pool, scrapes = workspace.pool, workspace.scrapes
     if action == "scrape":
         await scraping.scrape_project(callback.message, state, project,
                                       dict(pool=pool, personal=personal, scrapes=scrapes))
@@ -306,29 +327,30 @@ async def project_action(callback: CallbackQuery, callback_data: ChoiceCB, state
         token = secrets.token_hex(4)
         await state.update_data(delete_name=project.name, delete_token=token)
         await callback.message.edit_text(  # in ⚙️'s place: ↩️ brings it back
-            f"Удалить проект «{project.name}»? Файлы скрапа останутся в {scraped_files.BASES_DIR}.",
+            f"Удалить проект «{project.name}»? Файлы скрапа останутся в {scraped_files.BASES_DIR}. Проект с "
+            f"аккаунтами не удаляется — сначала перенесите их ({menu_path('move')}).",
             reply_markup=choice_kb("prj_del", [("🗑 Удалить", f"y{token}"), ("↩️ Отмена", "no")], widths=(2,)))
     elif action == "clear":
         await _offer_clear(callback.message, state, project)
     elif action == "manage":
         await _show_manage(callback.message, state, project)
     elif action == "card":
-        await _show_card(callback.message, state, project, edit=True)
+        await _show_card(callback.message, state, workspaces, project, edit=True)
     elif action == "back":
         await _show_list(callback.message, state, edit=True)
 
 
 @router.message(Projects.edit, ~F.text.in_(MAIN_MENU))
-async def project_edit(message: Message, state: FSMContext):
+async def project_edit(message: Message, state: FSMContext, workspaces: Workspaces):
     raw = await require_text(message)
     if raw is None:
         return
     channels = await typed_channels(message, raw)
     if channels is not None:
-        await _save_channels(message, state, channels)
+        await _save_channels(message, state, workspaces, channels)
 
 
-async def _save_channels(message: Message, state: FSMContext, channels: list[str]):
+async def _save_channels(message: Message, state: FSMContext, workspaces: Workspaces, channels: list[str]):
     """The card's project gets `channels` in place of its own (none: `[]`, by its button), then its card."""
     try:
         project = projects.set_channels((await state.get_data())["project_name"], channels)
@@ -336,11 +358,11 @@ async def _save_channels(message: Message, state: FSMContext, channels: list[str
         await state.clear()
         await menu_answer(message, f"Не сохранено: {err}")
         return
-    await _show_card(message, state, project)
+    await _show_card(message, state, workspaces, project)
 
 
 @router.message(Projects.upload, ~F.text.in_(MAIN_MENU))
-async def project_upload(message: Message, state: FSMContext):
+async def project_upload(message: Message, state: FSMContext, workspaces: Workspaces):
     if message.document is not None:
         if not (message.document.file_name or "").lower().endswith(".txt"):
             await message.answer("Нужен .txt файл или список текстом. Пришлите ещё раз:")
@@ -366,11 +388,12 @@ async def project_upload(message: Message, state: FSMContext):
         return
     note = f" Пропущено строк: {skipped} — не @username и не номер." if skipped else ""
     await message.answer(f"✅ В список проекта добавлено: {added}, всего в нём: {total}.{note}")
-    await _show_card(message, state, project)
+    await _show_card(message, state, workspaces, project)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prj_none"))
-async def project_without_channels(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+async def project_without_channels(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
+                                   workspaces: Workspaces):
     """📭 under the channels' prompt: only while the chat is still at that prompt's step."""
     if callback_data.value not in NO_CHANNELS:
         await callback.answer()
@@ -380,18 +403,13 @@ async def project_without_channels(callback: CallbackQuery, callback_data: Choic
         return
     await callback.answer()
     save = _create if step is Projects.channels else _save_channels
-    await save(callback.message, state, [])
+    await save(callback.message, state, workspaces, [])
 
 
 @router.message(Projects.rename, ~F.text.in_(MAIN_MENU))
-async def project_rename(message: Message, state: FSMContext, scrapes: JobManager, analyses: JobManager):
+async def project_rename(message: Message, state: FSMContext, workspaces: Workspaces):
     new = await require_text(message)
     if new is None:
-        return
-    # a members list, a verify or an analysis writes its file under the name it started with (only a
-    # scrape leaves a marker projects.rename checks): renamed meanwhile, that file would miss the project
-    if busy := next((jobs for jobs in (scrapes, analyses) if jobs.active), None):
-        await message.answer(f"⛔ Идёт «{busy.label}» — переименуйте проект после её окончания.")
         return
     data = await state.get_data()
     items = await _load(message, state)
@@ -401,6 +419,12 @@ async def project_rename(message: Message, state: FSMContext, scrapes: JobManage
     if old not in [p.name for p in items]:  # gone meanwhile
         await state.clear()
         await menu_answer(message, "Действие устарело — откройте 📁 Проекты заново.")
+        return
+    workspace = workspaces.open(message.chat.id, next(p for p in items if p.name == old))
+    # a members list, a verify or an analysis writes its file under the name it started with (only a
+    # scrape leaves a marker projects.rename checks): renamed meanwhile, that file would miss the project
+    if busy := next((jobs for jobs in (workspace.scrapes, workspace.analyses) if jobs.active), None):
+        await message.answer(f"⛔ Идёт «{busy.label}» — переименуйте проект после её окончания.")
         return
     if problem := projects.rename_problem(old, new, items):
         await message.answer(f"Не подходит: {problem}. Пришлите другое имя:")
@@ -415,7 +439,7 @@ async def project_rename(message: Message, state: FSMContext, scrapes: JobManage
     await state.update_data(project_names=[project.name if name == old else name
                                            for name in data.get("project_names") or []])
     await message.answer(f"✅ Проект «{old}» теперь «{project.name}». Переименовано файлов и папок: {moved}.")
-    await _show_card(message, state, project)
+    await _show_card(message, state, workspaces, project)
 
 
 CLEAR_LABELS = {"members": "Участники групп", "list": "Список"}  # what 🧹 offers to clear
@@ -441,7 +465,8 @@ async def _offer_clear(message: Message, state: FSMContext, project: projects.Pr
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prj_clr"))
-async def project_clear(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, scrapes: JobManager):
+async def project_clear(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
+                        workspaces: Workspaces):
     await callback.answer()
     data = await state.get_data()
     what, _, token = callback_data.value.rpartition(".")
@@ -452,6 +477,7 @@ async def project_clear(callback: CallbackQuery, callback_data: ChoiceCB, state:
     if what == "no":
         await _show_manage(callback.message, state, project)
         return
+    scrapes = workspaces.open(callback.message.chat.id, project).scrapes
     if scrapes.active:  # a members list of the project would be added to the base it clears
         await callback.message.answer(f"⛔ Идёт «{scrapes.label}» — очистите после её окончания.")
         return
@@ -460,12 +486,13 @@ async def project_clear(callback: CallbackQuery, callback_data: ChoiceCB, state:
     except (KeyError, ValueError, OSError) as err:
         await callback.message.answer(f"Не очищено: {err}")
         return
-    await _show_card(callback.message, state, project, edit=True,
+    await _show_card(callback.message, state, workspaces, project, edit=True,
                      note=f"✅ Очищено: {CLEAR_LABELS[what].lower()}. Файл — в {moved}.")
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "prj_del"))
-async def project_delete(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+async def project_delete(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
+                         workspaces: Workspaces):
     await callback.answer()
     data = await state.get_data()
     current = callback_data.value in ("no", f"y{data.get('delete_token')}")
@@ -475,10 +502,15 @@ async def project_delete(callback: CallbackQuery, callback_data: ChoiceCB, state
     if callback_data.value == "no":
         await _show_manage(callback.message, state, project)
         return
+    workspace = workspaces.get(project.id)
+    if workspace is not None and (busy := next((slot for slot in workspace.slots if slot.active), None)):
+        await callback.message.answer(f"⛔ Идёт «{busy.label}» — удалите проект после её окончания.")
+        return
     try:
         projects.remove(project.name)
     except (ValueError, OSError) as err:
         await menu_answer(callback.message, f"Не удалено: {err}")
         return
+    workspaces.remove(project.id)
     await _show_list(callback.message, state, note=f"Проект «{project.name}» удалён, файлы скрапа на месте.",
                      edit=True)

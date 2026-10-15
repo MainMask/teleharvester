@@ -1,5 +1,4 @@
 import asyncio
-import functools
 import logging
 import os
 import shutil
@@ -8,20 +7,18 @@ from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.types import BotCommand
 
-from modules import instance_lock
+from modules import instance_lock, projects as project_list
 from modules.config import load_env
 from modules.settings import Settings
-from modules.storages.functions_storage import FunctionsStorage
+from modules.storages.functions_storage import discover
 from modules.scraper_creds import PERSONAL_DIR, personal_storage
-from modules.storages.sessions_storage import SessionsStorage
 
 from bot.config import BotConfig
 from bot.middlewares.auth import AuthMiddleware
 from bot.services import autoreply, watchdog
 from bot.services.album import AlbumMiddleware
 from bot.services.capture import clear_orphan_temp
-from bot.services.delegation import WorkerPool
-from bot.services.jobs import JobManager
+from bot.services.workspaces import ProjectMiddleware, Workspaces
 from modules.registry import missing_classes
 from bot.routers import (
     accounts,
@@ -66,6 +63,9 @@ ROUTERS = (
     scraping,
     stale,  # last: a button nothing above took
 )
+# the work in a project (bot/services/workspaces.py): its handlers run on the chat's current project's workers
+IN_PROJECT = (accounts, login, spamblock, pm_broadcast, invite, join, profile, audience, activity, moderation,
+              service, broadcasts, scraping)
 
 
 BOT_API_RETRY = 10  # seconds between Bot API reachability checks at start
@@ -89,7 +89,7 @@ async def wait_for_bot_api(bot, delay=BOT_API_RETRY):
 RUNNING_MARKER = os.path.join("stats", "bot_running")
 
 
-async def announce_start(bot, admins, pool):
+async def announce_start(bot, admins, workspaces):
     """Bot startup: tell the admins it (re)started — after a crash, say so: systemd restarts it
     silently, and a crash loop would otherwise show only in journald."""
     crashed = os.path.exists(RUNNING_MARKER)
@@ -100,7 +100,8 @@ async def announce_start(bot, admins, pool):
               if crashed else "🔄 Бот запущен")
     for admin in admins:
         try:
-            await bot.send_message(admin, f"{status} · воркеров: {pool.count()}")
+            await bot.send_message(admin, f"{status} · проектов: {len(workspaces.all())} · "
+                                          f"воркеров: {workspaces.workers()}")
         except Exception as err:  # e.g. an admin who never opened the bot
             logging.warning("start notice to %s: %s", admin, err)
 
@@ -139,18 +140,14 @@ async def run_bot():
     shutil.rmtree(profile.PHOTO_TMP_DIR, ignore_errors=True)  # ...and the photo a profile job left
 
     settings = Settings()
-    storage = SessionsStorage("sessions", settings.api_id, settings.api_hash, initialize=False)
-    functions_storage = FunctionsStorage("functions", storage, settings)
-
-    # reuse the CLI's auto-discovery: class name -> a new instance for each run (resolve), so no run
-    # inherits another's state
-    functions = {type(instance).__name__: functools.partial(type(instance), storage, settings)
-                 for instance, _doc in functions_storage.functions}
+    project_list.migrate()  # before anything reads a project: each needs its id (its folder)
+    # reuse the CLI's auto-discovery: every project runs these classes on its own workers
+    classes = discover("functions")
 
     # fail fast with a clear message if the registry references a class that
     # auto-discovery didn't find (e.g. a renamed class), instead of a KeyError
     # deep inside a handler at first use.
-    absent = missing_classes(functions)
+    absent = missing_classes(classes)
     if absent:
         raise RuntimeError(
             "modules/registry.py lists function classes not found in functions/: "
@@ -158,21 +155,17 @@ async def run_bot():
             + ". Rename them back or update BOT_FUNCTIONS."
         )
 
-    pool = WorkerPool(storage)
+    workspaces = Workspaces(settings, classes)
+    for project in project_list.load():
+        workspaces.add(project)
 
     bot = Bot(config.token)
     dp = Dispatcher()
 
-    dp["pool"] = pool
-    dp["functions"] = functions
+    dp["workspaces"] = workspaces  # each project's pool and job slots
     dp["settings"] = settings
-    dp["manager"] = JobManager()
-    # the scraper's jobs run on their own client in their own slot, so a multi-day scrape
-    # doesn't hold up the other tasks; personal accounts are scraper-only, never workers
-    dp["scrapes"] = JobManager()
-    # the analysis reads files in a child process, no account: a mailing or a scrape doesn't hold it up
-    dp["analyses"] = JobManager()
     os.makedirs(PERSONAL_DIR, exist_ok=True)  # a personal account added by phone lands there
+    # personal accounts are scraper-only, never workers, and every project's
     dp["personal"] = personal_storage(settings.api_id, settings.api_hash)
     dp["admins"] = config.admins  # who autoreply notifies
     dp.startup.register(announce_start)  # first: before "continuing the scrape"
@@ -189,6 +182,13 @@ async def run_bot():
 
     for module in ROUTERS:
         dp.include_router(module.router)
+    in_project = ProjectMiddleware(workspaces)
+    for module in IN_PROJECT:
+        module.router.message.middleware(in_project)
+        module.router.callback_query.middleware(in_project)
+    # the main menu's screens of a project (🤖 Аккаунты, 💬 Активность) and /cancel: the current one's, if any
+    menu.router.message.middleware(ProjectMiddleware(workspaces, required=False))
+    menu.router.callback_query.middleware(ProjectMiddleware(workspaces, required=False))
 
     await wait_for_bot_api(bot)  # before start_polling: no startup handler runs offline
     await dp.start_polling(bot)

@@ -1,6 +1,7 @@
 """A permanently restricted worker's contacts go to the other workers only on the admin's button."""
 
 import asyncio
+import conftest
 import types
 
 from test_bases import FOREVER, _CheckedSession, _checked_storage
@@ -54,7 +55,7 @@ def test_waiting_lists_restricted_workers_with_contacts_until_released(monkeypat
 
     a, b, c = (_CheckedSession(1, tmp_path, reply=FOREVER), _CheckedSession(2, tmp_path, reply=FOREVER),
                _CheckedSession(3, tmp_path))
-    contacts_ledger.save({"10": 1, "11": 1, "12": 3})  # b has no contacts: nothing to decide
+    contacts_ledger.save(conftest.home(), {"10": 1, "11": 1, "12": 3})  # b has no contacts: nothing to decide
     storage = _checked_storage(monkeypatch, tmp_path, [a, b, c])
 
     fn, msgs = _scan(storage, [a, b, c])
@@ -138,7 +139,7 @@ def test_the_button_releases_the_contacts(tmp_path):
 
     restricted_workers.save(["sessions/a.jsession"])
     callback = _Callback()
-    asyncio.run(spamblock.release(callback, ReleaseCB(user_id=7), _pool("sessions/a.jsession", 7)))
+    asyncio.run(spamblock.release(callback, ReleaseCB(user_id=7), conftest.Workspaces(_pool("sessions/a.jsession", 7))))
 
     assert restricted_workers.load_released() == ["sessions/a.jsession"]
     (text, markup), = callback.message.edits
@@ -151,7 +152,7 @@ def test_the_button_does_nothing_for_a_worker_no_longer_restricted(tmp_path):
     from modules import restricted_workers
 
     callback = _Callback()  # the last check found it clean again
-    asyncio.run(spamblock.release(callback, ReleaseCB(user_id=7), _pool("sessions/a.jsession", 7)))
+    asyncio.run(spamblock.release(callback, ReleaseCB(user_id=7), conftest.Workspaces(_pool("sessions/a.jsession", 7))))
 
     assert restricted_workers.load_released() == []
     assert callback.message.edits[0][0] == "Воркер уже не ограничен бессрочно — передавать нечего."
@@ -166,7 +167,7 @@ def test_moving_restricted_sessions_keeps_the_ones_whose_people_wait(monkeypatch
     waiting, dated, released, alone = (
         _CheckedSession(1, tmp_path, reply=FOREVER), _CheckedSession(2, tmp_path, reply=UNTIL),
         _CheckedSession(3, tmp_path, reply=FOREVER), _CheckedSession(4, tmp_path, reply=FOREVER))
-    contacts_ledger.save({"10": 1, "11": 2, "12": 3})  # `alone` has no contacts
+    contacts_ledger.save(conftest.home(), {"10": 1, "11": 2, "12": 3})  # `alone` has no contacts
     storage = _checked_storage(monkeypatch, tmp_path, [waiting, dated, released, alone])
     restricted_workers.save([released.path])
     restricted_workers.save_released([released.path])
@@ -197,7 +198,7 @@ def test_the_ledger_is_read_once_per_check(monkeypatch, tmp_path):
     storage = _checked_storage(monkeypatch, tmp_path, workers)
     reads = []
     load = contacts_ledger.load
-    monkeypatch.setattr(contacts_ledger, "load", lambda: reads.append(1) or load())
+    monkeypatch.setattr(contacts_ledger, "load", lambda home: reads.append(1) or load(home))
 
     _scan(storage, workers)
 
@@ -246,7 +247,7 @@ def test_a_stale_button_releases_nothing(tmp_path):
     restricted_workers.save(["sessions/a.jsession"])
     callback = _Callback()
     callback.message.date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=25)
-    asyncio.run(spamblock.release(callback, ReleaseCB(user_id=7), _pool("sessions/a.jsession", 7)))
+    asyncio.run(spamblock.release(callback, ReleaseCB(user_id=7), conftest.Workspaces(_pool("sessions/a.jsession", 7))))
 
     assert restricted_workers.load_released() == []
     assert callback.message.edits == [] and "устарела" in callback.alert
@@ -262,6 +263,6 @@ def test_a_button_on_an_inaccessible_message_releases_nothing(tmp_path):
     restricted_workers.save(["sessions/a.jsession"])
     callback = _Callback()
     callback.message = InaccessibleMessage(chat={"id": 1, "type": "private"}, message_id=1, date=0)
-    asyncio.run(spamblock.release(callback, ReleaseCB(user_id=7), _pool("sessions/a.jsession", 7)))
+    asyncio.run(spamblock.release(callback, ReleaseCB(user_id=7), conftest.Workspaces(_pool("sessions/a.jsession", 7))))
 
     assert restricted_workers.load_released() == [] and "устарела" in callback.alert

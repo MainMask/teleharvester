@@ -1,3 +1,4 @@
+from bot.keyboards.common import PAGE_SIZE
 from bot.keyboards.menu import main_menu
 from bot.services import login as logins
 from bot.services.capture import capture
@@ -35,6 +36,21 @@ async def build_content(message, album):
     return content
 
 
+def marks_step(value: str, picked: list[int], page: int, total: int, presets: dict) -> tuple[list[int], int]:
+    """A tap on a marks_kb list: (the ticked indexes, the page) after it — an index ticks or unticks, ⬅️ / ➡️
+    turn the page round, a preset's value (☑️ Все…) ticks its own list."""
+    pages = max(1, -(-total // PAGE_SIZE))
+    if value in presets:
+        return list(presets[value]), page
+    if value == "prev":
+        return picked, (page - 1) % pages
+    if value == "next":
+        return picked, (page + 1) % pages
+    if value.isdigit() and int(value) < total:
+        return sorted(set(picked) ^ {int(value)}), page
+    return picked, page  # 📄: the page shown
+
+
 def resolve(functions: dict, key: str):
     """Return (a new instance, BotFunction) for a registry key: each run has its own.
 
@@ -48,7 +64,7 @@ def resolve(functions: dict, key: str):
 async def ensure_workers(callback, pool) -> bool:
     """True if there is at least one worker; otherwise alert the operator."""
     if pool.count() == 0:
-        await callback.message.answer(f"Нет воркер-аккаунтов. Добавьте: {menu_path('add')}.")
+        await callback.message.answer(f"У проекта нет воркер-аккаунтов. Добавьте: {menu_path('add')}.")
         return False
     return True
 

@@ -9,6 +9,8 @@ class MenuAction(str, Enum):
     PROXY = "proxy"            # open proxy setup on the workers screen
     ADD = "add"                # add an account: by phone number + code, or from tdata
     TDATA = "tdata"            # upload a tdata account (a choice of ADD)
+    FREE = "free"              # take accounts in no project into this one (a choice of ADD)
+    MOVE = "move"              # move the project's workers to another project or the free ones
     DELAY = "delay"            # set the delay between actions (config.toml)
     PROFILE_PAUSE = "ppause"   # set the pause between accounts for profile changes (config.toml)
     AUTOREPLY = "autoreply"    # the auto-reply to PM-mailing replies: on/off, text, stats

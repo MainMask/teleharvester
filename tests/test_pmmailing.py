@@ -5,7 +5,9 @@ recipient-prep refactor must preserve.
 """
 
 import asyncio
+import conftest
 import json
+import os
 import types
 from contextlib import asynccontextmanager
 from datetime import date
@@ -20,7 +22,7 @@ from modules.rich_message import RichContent
 
 
 def _fn():
-    storage = types.SimpleNamespace(sessions=[])
+    storage = types.SimpleNamespace(sessions=[], home=conftest.home())
     settings = types.SimpleNamespace(delay=[0], per_account_daily=30, account_pause=[0])
     return PmMailingFunc(storage, settings)
 
@@ -38,7 +40,7 @@ def _run_campaign(n_recipients, cap=10_000):
         return None
 
     session = types.SimpleNamespace(get_me=get_me, send_message=anoop)
-    storage = types.SimpleNamespace(sessions=[session], ainitialize_session=ctx)
+    storage = types.SimpleNamespace(sessions=[session], ainitialize_session=ctx, home=conftest.home())
     settings = types.SimpleNamespace(delay=[0], per_account_daily=cap, account_pause=[0])
     fn = PmMailingFunc(storage, settings)
 
@@ -51,7 +53,6 @@ class TestDailyCap:
     """per_account_daily goes through modules.account_limits.DailyCounter (tested there)."""
 
     def test_account_stops_at_its_cap_and_it_is_saved(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm_mailing.json"))
         monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "account_limits.json"))
 
         assert _run_campaign(3, cap=1) == ["user0"]
@@ -59,7 +60,6 @@ class TestDailyCap:
         assert saved == {"1": {"date": date.today().isoformat(), "count": 1}}
 
     def test_zero_means_unlimited(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm_mailing.json"))
         monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "account_limits.json"))
 
         assert len(_run_campaign(3, cap=0)) == 3
@@ -152,7 +152,6 @@ class TestStatsSaveBatching:
     and the tail is always persisted by run()."""
 
     def test_batches_saves_and_flushes_tail(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm_mailing.json"))
         monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "account_limits.json"))
 
         saves = []
@@ -169,7 +168,7 @@ class TestStatsSaveBatching:
         assert pm.STATS_SAVE_EVERY == 25
         assert len(saves) == 3  # not 60 (one per send)
 
-        data = json.loads((tmp_path / "pm_mailing.json").read_text())
+        data = json.loads(open(os.path.join(conftest.home(), "pm_mailing.json")).read())
         assert len(data) == 60  # tail flushed: every success persisted
 
 
@@ -211,7 +210,6 @@ class _Worker:
 
 def _run_workers(tmp_path, monkeypatch, recipients, workers, cap=0):
     """The workers mail `recipients`, in this order; returns (reports, stats)."""
-    monkeypatch.setattr(pm, "STATS_PATH", str(tmp_path / "pm_mailing.json"))
     monkeypatch.setattr(pm, "LIMITS_PATH", str(tmp_path / "account_limits.json"))
     reports = []
 
@@ -226,7 +224,7 @@ def _run_workers(tmp_path, monkeypatch, recipients, workers, cap=0):
     # worker_id() reads a worker's user id from its .jsession: the base's owner is found by it
     jsessions = {w.path: types.SimpleNamespace(account=types.SimpleNamespace(
         account=types.SimpleNamespace(user_id=w.uid))) for w in workers}
-    storage = types.SimpleNamespace(sessions=list(workers), ainitialize_session=ctx,
+    storage = types.SimpleNamespace(sessions=list(workers), ainitialize_session=ctx, home=conftest.home(),
                                     jsessions_paths=jsessions, get_session_path=lambda s: s.path)
     settings = types.SimpleNamespace(delay=[0], per_account_daily=cap, account_pause=[0])
     fn = PmMailingFunc(storage, settings)

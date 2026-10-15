@@ -14,8 +14,8 @@ from modules.registry import MAIN_MENU, SCREENS, button_title, by_category, chil
 
 
 def main_menu() -> ReplyKeyboardMarkup:
-    """The main-menu screens two to a row: the work — the projects and 💬 Активность — on top, the
-    accounts and the settings under it, 📊 Задачи last (registry SCREENS order)."""
+    """The main-menu screens two to a row: the projects and the settings on top, 📊 Задачи under them
+    (registry SCREENS order)."""
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=title) for title in MAIN_MENU[i:i + 2]] for i in range(0, len(MAIN_MENU), 2)],
         resize_keyboard=True,
@@ -71,8 +71,12 @@ def screen_kb(title: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def card_kb(rows: list[list[tuple[str, str]]], token: str) -> InlineKeyboardMarkup:
+def card_kb(rows: list[list[tuple[str, str]]], token: str, screens: tuple[str, ...] = ()) -> InlineKeyboardMarkup:
     """A card's (title, action) rows (registry.card_rows, then its ⬅️), each button carrying the card's
-    token: an older card's must not act on the one opened since."""
-    return choice_kb("prj_act", [(label, f"{action}.{token}") for row in rows for label, action in row],
-                     widths=tuple(len(row) for row in rows))
+    token: an older card's must not act on the one opened since; `screens`, the ones opened from it
+    (a project's 🤖 Аккаунты, 💬 Активность), on a row before its ⬅️."""
+    markup = choice_kb("prj_act", [(label, f"{action}.{token}") for row in rows for label, action in row],
+                       widths=tuple(len(row) for row in rows))
+    if screens:
+        markup.inline_keyboard.insert(len(markup.inline_keyboard) - 1, [screen_button(title) for title in screens])
+    return markup

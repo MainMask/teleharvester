@@ -91,6 +91,9 @@ WORKER_BUSY = ("⛔ Этот воркер сейчас занят задачей
 
 PERSONAL_BUSY = ("⛔ Бот сейчас читает коды входа или проверяет названия чатов на этом аккаунте — "
                  "повторите через несколько секунд.")
+# a personal account is every project's: another one's scrape may run on it
+PERSONAL_SCRAPING = ("⛔ На этом личном аккаунте идёт скрап другого проекта. Выберите другой аккаунт или "
+                     "дождитесь его окончания.")
 
 
 def _accounts(pool: WorkerPool, personal) -> list:
@@ -159,7 +162,7 @@ async def lookup(message: Message, pool: WorkerPool, personal, path: str, chats:
     if account is None:
         return None
     # one account, one job (see WorkerPool): not even a lookup on one that is busy
-    if pool.busy(path) or (pool.scraping is not None and pool.scraping.path == path):
+    if pool.busy(path) or pool.scraped(path):
         await message.answer("ℹ️ Названия не проверены: аккаунт сейчас занят.")
         return None
     status = await message.answer("🔎 Проверяю названия…")
@@ -222,6 +225,9 @@ async def take_slot(scrapes: JobManager, pool: WorkerPool, account, label: str, 
     if pool.busy(account.path):  # a personal account: only while borrow() uses it (codes, a names check)
         await menu(PERSONAL_BUSY if account.personal else WORKER_BUSY)
         return None
+    if pool.scraped(account.path) and not scrapes.active:  # active: the slot's own refusal says why
+        await menu(PERSONAL_SCRAPING)
+        return None
     if not scrapes.acquire(label, cancelable=False, timeout=0):
         await answer(f"⛔ Скрапер занят: {scrapes.label}. Дождитесь завершения.")
         return None
@@ -248,12 +254,3 @@ async def date_or_ask(message: Message, raw: str | None, end_of_day: bool = Fals
         await message.answer(f"{err} Пришлите дату ещё раз:")
         return False
     return True
-
-
-@router.callback_query(ChoiceCB.filter(F.scope == "scrape_stop"))
-async def scrape_stop(callback: CallbackQuery, scrapes: JobManager):
-    """⏹ under a scrape, a members list or a verify: the slot's job stops (see take_slot)."""
-    if await scrapes.stop():
-        await callback.answer("Останавливаю… собранное сохранится.")
-    else:
-        await callback.answer("Нечего останавливать.")

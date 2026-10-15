@@ -1,6 +1,7 @@
 """Offline tests for picking a scraped recipient base by button (pmmailing / addcontacts)."""
 
 import asyncio
+import conftest
 import os
 import types
 from pathlib import Path
@@ -164,6 +165,8 @@ class _Session:
 
 
 class _WorkerStorage:
+    home = property(lambda self: conftest.home())
+
     def __init__(self, sessions):
         self.sessions = sessions
         self.jsessions_paths = {
@@ -347,7 +350,7 @@ def test_contacts_ledger_records_and_skips_on_rerun(tmp_path):
     w = _Session(1, "w")
     rows = [{"ID": 10, "Access Hash": 1, "Username": "a"}, {"ID": 20, "Access Hash": 2, "Username": "b"}]
     _contacts([w], rows, tmp_path)
-    assert contacts_ledger.load() == {"10": 1, "20": 1}
+    assert contacts_ledger.load(conftest.home()) == {"10": 1, "20": 1}
 
     w.added.clear()
     msgs = _contacts([w], rows, tmp_path)
@@ -369,18 +372,18 @@ def test_contacts_summary_counts_the_adds_not_the_total_line(tmp_path):
 def test_contacts_of_a_removed_worker_are_added_again(tmp_path):
     from modules import contacts_ledger
 
-    contacts_ledger.save({"10": 555})  # 555 is no longer a worker
+    contacts_ledger.save(conftest.home(), {"10": 555})  # 555 is no longer a worker
     w = _Session(1, "w")
     _contacts([w], [{"ID": 10, "Access Hash": 1, "Username": "a"}], tmp_path)
 
-    assert len(w.added) == 1 and contacts_ledger.load() == {"10": 1}
+    assert len(w.added) == 1 and contacts_ledger.load(conftest.home()) == {"10": 1}
 
 
 def test_mailing_sends_to_a_contact_only_from_its_worker(monkeypatch, tmp_path):
     from modules import contacts_ledger
 
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
     _mailing([a, b], rows, monkeypatch, tmp_path)
 
@@ -391,7 +394,7 @@ def test_a_limited_worker_s_contacts_wait_for_it(monkeypatch, tmp_path):
     from modules import contacts_ledger
 
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
     monkeypatch.setattr("modules.account_limits.DailyCounter.reached",
                         lambda self, key: key == "2")  # b is out for today
@@ -407,7 +410,7 @@ def test_a_permanently_restricted_worker_s_contacts_wait_for_the_admin(monkeypat
 
     a, b = _Session(1, "a"), _Session(2, "b")
     monkeypatch.chdir(tmp_path)
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     restricted_workers.save(["b"])
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
     msgs, _ = _mailing([a, b], rows, monkeypatch, tmp_path)
@@ -422,7 +425,7 @@ def test_a_permanently_restricted_worker_s_contacts_go_to_others_once_released(m
 
     a, b = _Session(1, "a"), _Session(2, "b")
     monkeypatch.chdir(tmp_path)
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     restricted_workers.save(["b"])
     restricted_workers.save_released(["b"])
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
@@ -437,15 +440,15 @@ def test_a_permanently_restricted_worker_s_contacts_are_not_added_again_until_re
 
     a, b = _Session(1, "a"), _Session(2, "b")
     monkeypatch.chdir(tmp_path)
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     restricted_workers.save(["b"])
     rows = [{"ID": 10, "Access Hash": 1, "Username": "z"}]
     _contacts([a, b], rows, tmp_path)
-    assert a.added == [] and contacts_ledger.load() == {"10": 2}
+    assert a.added == [] and contacts_ledger.load(conftest.home()) == {"10": 2}
 
     restricted_workers.save_released(["b"])
     _contacts([a, b], rows, tmp_path)
-    assert len(a.added) == 1 and b.added == [] and contacts_ledger.load() == {"10": 1}
+    assert len(a.added) == 1 and b.added == [] and contacts_ledger.load(conftest.home()) == {"10": 1}
 
 
 def test_stats_are_keyed_by_id_but_reports_show_username(monkeypatch, tmp_path):
@@ -454,7 +457,7 @@ def test_stats_are_keyed_by_id_but_reports_show_username(monkeypatch, tmp_path):
     w = _Session(OWNER)
     msgs, _ = _mailing([w], [ROWS[0]], monkeypatch, tmp_path)
 
-    assert list(json.load(open(tmp_path / "stats" / "pm_mailing.json"))) == ["1"]
+    assert list(json.load(open(os.path.join(conftest.home(), "pm_mailing.json")))) == ["1"]
     assert any("отправлено" in m and "alice" in m for m in msgs)
 
     from functions.pmmailing import PmMailingFunc
@@ -513,7 +516,7 @@ def _checked_storage(monkeypatch, tmp_path, sessions):
 
     monkeypatch.setattr(BaseFunction, "check_workers", conftest.REAL_CHECK_WORKERS)
     (tmp_path / "sessions").mkdir(exist_ok=True)
-    storage = SessionsStorage(str(tmp_path / "sessions"), 1, "x", initialize=False)
+    storage = SessionsStorage(str(tmp_path / "sessions"), 1, "x", initialize=False, home=conftest.home())
     for s in sessions:
         open(s.path, "w").write("x")
         storage.full_sessions[s.path] = s
@@ -527,7 +530,7 @@ def test_preflight_excludes_a_permanently_restricted_worker(monkeypatch, tmp_pat
     from modules import contacts_ledger
 
     a, b = _CheckedSession(1, tmp_path), _CheckedSession(2, tmp_path, reply=FOREVER)
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
     storage = _checked_storage(monkeypatch, tmp_path, [a, b])
     msgs, _ = _mailing([a, b], rows, monkeypatch, tmp_path, storage)
@@ -536,7 +539,7 @@ def test_preflight_excludes_a_permanently_restricted_worker(monkeypatch, tmp_pat
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
     assert any("его контакты (1) ждут решения" in m for m in msgs)
     assert ("Контакты бессрочно ограниченных воркеров ждут решения (1 чел.): "
-            "🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)") in msgs
+            "📁 Проекты → 📁 Проект → 🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)") in msgs
     assert not any(m.startswith("✅") for m in msgs)
 
 
@@ -544,7 +547,7 @@ def test_preflight_holds_a_worker_restricted_until_a_date(monkeypatch, tmp_path)
     from modules import contacts_ledger, restricted_workers
 
     a, b = _CheckedSession(1, tmp_path), _CheckedSession(2, tmp_path, reply=UNTIL)
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"},
             {"user_id": 11, "access_hash": 1, "username": "yan"}]
     storage = _checked_storage(monkeypatch, tmp_path, [a, b])
@@ -571,7 +574,7 @@ def test_preflight_brings_a_clean_worker_back(monkeypatch, tmp_path):
     from modules import contacts_ledger, restricted_workers
 
     a, b = _CheckedSession(1, tmp_path), _CheckedSession(2, tmp_path)
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     restricted_workers.save([b.path])  # restricted last time, clean now
     rows = [{"user_id": 10, "access_hash": 1, "username": "zed"}]
     storage = _checked_storage(monkeypatch, tmp_path, [a, b])
@@ -586,11 +589,11 @@ def test_preflight_before_adding_to_contacts(monkeypatch, tmp_path):
     from modules import contacts_ledger
 
     a, b = _CheckedSession(1, tmp_path), _CheckedSession(2, tmp_path, reply=FOREVER)
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     storage = _checked_storage(monkeypatch, tmp_path, [a, b])
     _contacts([a, b], [{"ID": 10, "Access Hash": 1, "Username": "z"}], tmp_path, storage)
 
-    assert a.added == [] and b.added == [] and contacts_ledger.load() == {"10": 2}  # waits
+    assert a.added == [] and b.added == [] and contacts_ledger.load(conftest.home()) == {"10": 2}  # waits
 
 
 # --- verify: pick a posts file by button; the scrape's window makes it one click ------------
@@ -861,16 +864,17 @@ def test_analysis_links_by_button(tmp_path, monkeypatch):
 
 def test_the_analysis_has_a_slot_of_its_own():
     """It reads files in a child process, no account: a days-long mailing must not hold it up. aiogram
-    hands a handler the dispatcher's value of its parameter's name: `analyses` (bot/app.py), not `manager`."""
+    hands a handler the value of its parameter's name: the project's `analyses` (Workspace.deps), not `manager`."""
     import inspect
 
-    import bot.app as app
+    from bot.services.workspaces import Workspace
 
     for handler in (scraping_router.analysis.analysis_file_pick, scraping_router.analysis.analysis_file_text,
                     scraping_router.analysis.analysis_keywords):
         parameters = inspect.signature(handler).parameters
         assert "analyses" in parameters and "manager" not in parameters
-    assert 'dp["analyses"] = JobManager()' in inspect.getsource(app.run_bot)
+    workspace = Workspace(1, None, {})
+    assert workspace.deps()["analyses"] is workspace.analyses not in (workspace.manager, workspace.scrapes)
 
 
 def test_analysis_filter_asks_for_words(tmp_path, monkeypatch):
@@ -1000,7 +1004,7 @@ def test_a_gone_worker_s_people_go_to_the_others(monkeypatch, tmp_path):
     from modules import contacts_ledger
 
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"10": 2, "11": 2, "12": 2})  # all of them b's contacts
+    contacts_ledger.save(conftest.home(), {"10": 2, "11": 2, "12": 2})  # all of them b's contacts
     msgs, asked = _mailing_with_limit([a, b], _B_ROWS, b, monkeypatch, tmp_path, gone=True)
 
     assert asked == [b]
@@ -1012,7 +1016,7 @@ def test_a_worker_on_a_passing_limit_keeps_its_people(monkeypatch, tmp_path):
     from modules import contacts_ledger
 
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"10": 2, "11": 2, "12": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2, "11": 2, "12": 2})
     msgs, asked = _mailing_with_limit([a, b], _B_ROWS, b, monkeypatch, tmp_path, gone=False)
 
     assert asked == [b] and a.sent == []
@@ -1023,7 +1027,7 @@ def test_a_daily_cap_is_not_asked_about(monkeypatch, tmp_path):
     from modules import contacts_ledger
 
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"10": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2})
     monkeypatch.setattr("modules.account_limits.DailyCounter.reached",
                         lambda self, key: key == "2")
     _, asked = _mailing_with_limit([a, b], _B_ROWS[:1], None, monkeypatch, tmp_path, gone=True)
@@ -1061,7 +1065,7 @@ def test_mailing_progress_drops_people_waiting_for_their_worker(monkeypatch, tmp
     from modules import contacts_ledger
 
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"10": 2, "11": 2, "12": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2, "11": 2, "12": 2})
     progress = Progress()
     _mailing_with_limit([a, b], _B_ROWS, b, monkeypatch, tmp_path, gone=False, progress=progress)
     assert (progress.total, progress.done) == (1, 1)  # 2 wait for b: not this run
@@ -1072,7 +1076,7 @@ def test_mailing_progress_keeps_people_handed_to_others(monkeypatch, tmp_path):
     from modules import contacts_ledger
 
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"10": 2, "11": 2, "12": 2})
+    contacts_ledger.save(conftest.home(), {"10": 2, "11": 2, "12": 2})
     progress = Progress()
     _mailing_with_limit([a, b], _B_ROWS, b, monkeypatch, tmp_path, gone=True, progress=progress)
     assert (progress.total, progress.done) == (3, 3)  # b's rest went to a: still sent
@@ -1109,7 +1113,7 @@ def _w_scraping():
     """W (the base's owner, alice in its contacts) is scraping; V is free."""
     from modules import contacts_ledger
 
-    contacts_ledger.save({"1": OWNER})
+    contacts_ledger.save(conftest.home(), {"1": OWNER})
     w, v = _Session(OWNER, "sessions/w.jsession"), _Session(OTHER, "sessions/v.jsession")
     return w, v, _WorkerStorage([w, v])
 
@@ -1121,7 +1125,7 @@ def test_adding_contacts_leaves_a_worker_on_hold_its_people(tmp_path):
     msgs = _contacts([v], ROWS, tmp_path, storage=storage, on_hold=[w])
 
     assert v.added == [] and w.added == []  # alice is W's already; the no-username one is W's base
-    assert contacts_ledger.load() == {"1": OWNER}
+    assert contacts_ledger.load(conftest.home()) == {"1": OWNER}
     assert "Уже в контактах (пропущено): 1" in msgs
     assert "Ждут своего воркера (он не участвует в этом запуске): 1" in msgs
     assert not any("база другого аккаунта" in m or "Внимание" in m for m in msgs)
@@ -1180,7 +1184,7 @@ def test_a_worker_limited_on_its_own_queue_sends_no_more(monkeypatch, tmp_path):
 
     a, b = _Session(1, "a"), _Session(2, "b")
     a.sent = _Flooded()
-    contacts_ledger.save({"10": 1})
+    contacts_ledger.save(conftest.home(), {"10": 1})
     rows = [{"user_id": 10, "access_hash": 1, "username": "x"},
             {"user_id": 20, "access_hash": 2, "username": "y"}]
     _mailing([a, b], rows, monkeypatch, tmp_path)
@@ -1235,7 +1239,7 @@ def test_cli_subset_mailing_leaves_unpicked_workers_contacts(monkeypatch, tmp_pa
 
     monkeypatch.chdir(tmp_path)
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"1": 2})  # alice is in b's contacts
+    contacts_ledger.save(conftest.home(), {"1": 2})  # alice is in b's contacts
     fn = _picked_first_of([a, b], PmMailingFunc,
                           ns(delay=[0], per_account_daily=100, account_pause=[0]), monkeypatch)
 
@@ -1260,7 +1264,7 @@ def test_cli_subset_contacts_skip_unpicked_workers_people(monkeypatch, tmp_path)
     path = tmp_path / "base.parquet"
     pd.DataFrame({"ID": [1], "Access Hash": [11], "Username": ["alice"]}).to_parquet(path)
     a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save({"1": 2})
+    contacts_ledger.save(conftest.home(), {"1": 2})
     fn = _picked_first_of([a, b], AddContactsFunc,
                           ns(delay=[0], contacts_per_account_daily=0), monkeypatch)
 
@@ -1268,7 +1272,7 @@ def test_cli_subset_contacts_skip_unpicked_workers_people(monkeypatch, tmp_path)
         pass
 
     asyncio.run(fn.run(str(path), [0], report))
-    assert a.added == [] and contacts_ledger.load() == {"1": 2}
+    assert a.added == [] and contacts_ledger.load(conftest.home()) == {"1": 2}
 
 
 def test_a_project_s_files_are_not_crowded_out_by_another_name_starting_with_it(tmp_path, monkeypatch):

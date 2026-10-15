@@ -21,6 +21,12 @@ class PickWorkers(StatesGroup):
     choose = State()
 
 
+class MoveWorkers(StatesGroup):
+    free = State()    # the free accounts ticked into the project
+    out = State()     # the project's workers ticked to move out
+    target = State()  # where they go
+
+
 class ChangeName(StatesGroup):
     manual = State()
 

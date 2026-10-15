@@ -16,7 +16,7 @@ class _Bot:
         self.sent.append((chat_id, text))
 
 
-POOL = types.SimpleNamespace(count=lambda: 3)
+POOL = types.SimpleNamespace(all=lambda: [1, 2], workers=lambda: 3)  # every project's workers (Workspaces)
 
 
 def test_clean_start_is_announced_and_marked(tmp_path, monkeypatch):
@@ -24,7 +24,7 @@ def test_clean_start_is_announced_and_marked(tmp_path, monkeypatch):
     bot = _Bot()
     asyncio.run(app.announce_start(bot, {1}, POOL))
 
-    assert bot.sent == [(1, "🔄 Бот запущен · воркеров: 3")]
+    assert bot.sent == [(1, "🔄 Бот запущен · проектов: 2 · воркеров: 3")]
     assert (tmp_path / app.RUNNING_MARKER).exists()
 
 

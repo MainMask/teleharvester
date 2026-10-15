@@ -291,7 +291,7 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: Worke
 
     # finish() drops the Progress / Stop buttons with the markup
     reporter = TelegramReporter(
-        bot, chat_id, header="Жалоба…", reply_markup=stop_kb(),
+        bot, chat_id, header="Жалоба…", reply_markup=stop_kb(manager.key),
         job_label="Жалоба", workers=len(flow["rest"]) + 1, final_markup=main_menu(),
         progress=manager.progress,
     )

@@ -1,12 +1,17 @@
 import pytest
 
+HOME = None  # the test's project folder (projects.home): see home()
+
+
+def home() -> str:
+    """The project folder of the test's fake storages: their mailing stats, contacts ledger, proxies."""
+    return HOME
+
 
 @pytest.fixture(autouse=True)
-def _isolated_contacts_ledger(monkeypatch, tmp_path):
-    """No test may write the real stats/contacts.json."""
-    from modules import contacts_ledger
-
-    monkeypatch.setattr(contacts_ledger, "LEDGER_PATH", str(tmp_path / "contacts.json"))
+def _project_home(tmp_path):
+    global HOME
+    HOME = str(tmp_path / "home")
 
 
 @pytest.fixture(autouse=True)
@@ -37,10 +42,15 @@ def _isolated_broadcast_temp(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _isolated_projects(monkeypatch, tmp_path):
-    """No test may read or write the real stats/projects.json."""
+    """No test may read or write the real stats/projects.json, projects/ (the projects' workers, stats,
+    proxies), the free workers in sessions/ or the shared stats a migration copies."""
     from modules import projects
 
     monkeypatch.setattr(projects, "PATH", str(tmp_path / "projects.json"))
+    monkeypatch.setattr(projects, "PROJECTS_DIR", str(tmp_path / "projects"))
+    monkeypatch.setattr(projects, "FREE_DIR", str(tmp_path / "free_sessions"))
+    monkeypatch.setattr(projects, "LEGACY_STATS", {"pm_mailing.json": str(tmp_path / "legacy_pm_mailing.json"),
+                                                   "contacts.json": str(tmp_path / "legacy_contacts.json")})
 
 
 @pytest.fixture(autouse=True)
@@ -137,3 +147,40 @@ def _no_chat_lookup(monkeypatch):
 
     monkeypatch.setattr(common, "lookup", no_lookup)
     monkeypatch.setattr(scraper, "_lookup", lambda account, chats: None)
+
+
+class Workspaces:
+    """bot/services/workspaces.Workspaces holding one workspace — of `pool` and these slots —, whichever
+    project is opened in it (the bot's routers take the project's from it)."""
+
+    def __init__(self, pool=None, scrapes=None, manager=None, analyses=None):
+        import types
+
+        from bot.services.delegation import WorkerPool
+        from bot.services.jobs import JobManager
+        from bot.services.workspaces import Workspace
+
+        pool = pool or WorkerPool(types.SimpleNamespace(sessions=[], jsessions_paths={}, home=home(),
+                                                        get_session_path=lambda client: None))
+        self.workspace = Workspace(1, pool, {}, manager or JobManager(), scrapes or JobManager(),
+                                   analyses or JobManager())
+        self.current, self.removed = {}, []
+
+    def open(self, chat_id, project):
+        self.workspace.project_id = self.current[chat_id] = project.id
+        return self.workspace
+
+    def get(self, project_id):
+        return self.workspace if project_id == self.workspace.project_id else None
+
+    def remove(self, project_id):
+        self.removed.append(project_id)
+
+    def all(self):
+        return [self.workspace]
+
+    def of_chat(self, chat_id):
+        return self.workspace if chat_id in self.current else None
+
+    def slot(self, key):
+        return next((slot for slot in self.workspace.slots if slot.key == key), None)

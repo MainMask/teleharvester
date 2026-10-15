@@ -7,6 +7,7 @@ from bot.callbacks import FunctionCB, ReleaseCB
 from bot.routers._common import ensure_workers, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.workspaces import Workspaces
 from functions.spamblock import worker_name
 from modules import restricted_workers
 
@@ -50,8 +51,9 @@ async def run_status(callback: CallbackQuery, pool: WorkerPool, functions: dict,
     )
 
 
-@router.callback_query(ReleaseCB.filter())
-async def release(callback: CallbackQuery, callback_data: ReleaseCB, pool: WorkerPool):
+# the worker's project, whichever the chat is in now (or none, after a restart): the button is 24 h old at most
+@router.callback_query(ReleaseCB.filter(), flags={"any_project": True})
+async def release(callback: CallbackQuery, callback_data: ReleaseCB, workspaces: Workspaces):
     message = callback.message  # inaccessible: too old for the bot to read, its date is 0
     if isinstance(message, InaccessibleMessage) or \
             datetime.datetime.now(datetime.timezone.utc) - message.date > BUTTON_TTL:
@@ -59,15 +61,16 @@ async def release(callback: CallbackQuery, callback_data: ReleaseCB, pool: Worke
                               show_alert=True)
         return
 
-    path = next((path for path, js in pool.storage.jsessions_paths.items()
-                 if js.account.account.user_id == callback_data.user_id), None)
+    storage, path = next(((workspace.pool.storage, path) for workspace in workspaces.all()
+                          for path, js in workspace.pool.storage.jsessions_paths.items()
+                          if js.account.account.user_id == callback_data.user_id), (None, None))
     # checked again since the message: clean now, or the session is gone
     if path is None or path not in restricted_workers.load():
         await callback.message.edit_text("Воркер уже не ограничен бессрочно — передавать нечего.")
     else:
         restricted_workers.release(path)
         await callback.message.edit_text(
-            f"✅ Контакты {worker_name(pool.storage, path)} переданы: со следующего запуска им "
+            f"✅ Контакты {worker_name(storage, path)} переданы: со следующего запуска им "
             "напишут другие воркеры, а «📇 В контакты» добавит их заново."
         )
     await callback.answer()

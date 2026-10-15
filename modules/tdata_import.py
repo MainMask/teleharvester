@@ -2,8 +2,8 @@
 
 Each account lives in `tdata_import/<name>/tdata`, optionally next to a
 `Пароль 2фа*.txt` file holding its two-step password. Proxies (one per
-account) come from `assets/proxies.txt`. Converted accounts are written to
-`sessions/<phone>.jsession` and the source folder is marked so a later run
+account) come from the project's `proxies.txt`. Converted accounts are written to
+the project's `sessions/<phone>.jsession` and the source folder is marked so a later run
 does not reconnect it again.
 """
 
@@ -17,22 +17,21 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.account import UpdatePersonalChannelRequest
 from telethon.tl.types import InputChannelEmpty
 
-from modules import atomic_file, scraper_creds
+from modules import atomic_file, projects, scraper_creds
 from modules.console import console
 from modules.types.account_settings import AccountSettings
 from modules.types.proxy import ACCOUNTS_PER_PROXY, Proxy, parse_proxies
 
-PROXIES_FILE = "assets/proxies.txt"  # the proxy pool, one `scheme://[user:pass@]ip:port` per line
-
-
-def save_proxies(text: str) -> None:
-    """Make `text` (one proxy per line) the pool: the phone login and the tdata import take theirs from it."""
+def save_proxies(text: str, path: str) -> None:
+    """Make `text` (one proxy per line) a project's pool (projects.proxies_path): its phone logins and
+    tdata imports take theirs from it."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     # owner-only, as a session's key: its lines hold the proxies' logins and passwords
-    atomic_file.write(PROXIES_FILE, "\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n",
+    atomic_file.write(path, "\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n",
                       mode=0o600)
 
 
-def load_proxies(path: str = PROXIES_FILE) -> list[Proxy]:
+def load_proxies(path: str) -> list[Proxy]:
     """Read proxies (one per line, `scheme://[user:pass@]ip:port`) from `path`.
 
     A missing file means "no proxies" (empty list); blank lines and `#`
@@ -161,8 +160,8 @@ def _worker_phone(user_id: int, sessions_dir: str) -> str | None:
 
 
 async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
-                  sessions_dir: str = "sessions") -> str | None:
-    """Convert one `tdata` folder to `sessions/<phone>.jsession`.
+                  sessions_dir: str) -> str | None:
+    """Convert one `tdata` folder to `<sessions_dir>/<phone>.jsession`.
 
     Returns the phone number on success, or None if the session is not
     authorized. The device model, app/system version, system language and API
@@ -170,7 +169,8 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
     are not reproduced on later loads (Telethon takes no `lang_pack`, and
     SessionsStorage reuses `system_lang_code` as `lang_code`). An account already in `sessions_dir` is
     found offline and left as is (its phone is returned): it isn't connected from the pool's proxy,
-    and its file keeps its stored 2FA password and proxy.
+    and its file keeps its stored 2FA password and proxy. One that is a worker elsewhere (another
+    project's, a free one): ValueError — an account is in one place only.
     """
     tdesktop = TDesktop(tdata_dir)
     # read offline, before connecting: its key must not show up from a worker's proxy
@@ -179,6 +179,8 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
     # already a worker: its key must not show up from another proxy either
     if (phone := _worker_phone(tdesktop.mainAccount.UserId, sessions_dir)) is not None:
         return phone
+    if (elsewhere := projects.find_account(user_id=tdesktop.mainAccount.UserId)) is not None:
+        raise ValueError(f"этот аккаунт {projects.taken(elsewhere)}")
 
     client = await tdesktop.ToTelethon(
         session=StringSession(),
@@ -212,8 +214,10 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
     return me.phone
 
 
-async def import_all(workers_dir: str = "tdata_import", sessions_dir: str = "sessions",
-                     proxies_path: str = PROXIES_FILE) -> int:
+IMPORT_DIR = "tdata_import"  # the tdata folders to import: <name>/tdata
+
+
+async def import_all(workers_dir: str, sessions_dir: str, proxies_path: str) -> int:
     """Convert every not-yet-imported `tdata` folder under `workers_dir`.
 
     A worker is skipped once a `.imported` marker sits in its folder; one that turns out to be
@@ -254,7 +258,7 @@ async def import_all(workers_dir: str = "tdata_import", sessions_dir: str = "ses
             new.append(worker_dir)
             continue
         open(os.path.join(worker_dir, ".imported"), "w").close()
-        console.print(f"[bold white]Уже воркер:[/] {worker_dir} — sessions/{phone}.jsession не изменён")
+        console.print(f"[bold white]Уже воркер:[/] {worker_dir} — {sessions_dir}/{phone}.jsession не изменён")
     pending = new
     if not pending:
         return 0
@@ -307,7 +311,7 @@ async def import_all(workers_dir: str = "tdata_import", sessions_dir: str = "ses
             continue
 
         open(os.path.join(worker_dir, ".imported"), "w").close()
-        console.print(f"[bold green]Импортирован[/] {worker_dir} -> sessions/{phone}.jsession")
+        console.print(f"[bold green]Импортирован[/] {worker_dir} -> {sessions_dir}/{phone}.jsession")
         imported += 1
 
     return imported

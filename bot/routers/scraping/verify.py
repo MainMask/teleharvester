@@ -221,7 +221,7 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
     interrupted = False
     bad_input = None
     try:
-        status = await message.answer("Верификация запущена…", reply_markup=scrape_kb())
+        status = await message.answer("Верификация запущена…", reply_markup=scrape_kb(scrapes.key))
 
         # Drop a stale <input>_missed from an earlier run first, so the file existing after
         # the run cleanly means THIS run wrote it (mtime can't tell two runs in one second apart).

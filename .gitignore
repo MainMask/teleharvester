@@ -153,3 +153,5 @@ tmp/
 # IDE
 .vscode/
 .idea/
+# each project's own folder: its workers' session keys, proxies, mailing stats
+/projects/

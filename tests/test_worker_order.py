@@ -1,6 +1,7 @@
 """Workers go by username (Curator1, Curator2, … Curator10) in the pool and in reports."""
 
 import asyncio
+import conftest
 import contextlib
 import json
 import types
@@ -37,7 +38,7 @@ def _write_jsession(directory, phone, username):
 def _storage(tmp_path, accounts):
     for phone, username in accounts:
         _write_jsession(tmp_path, phone, username)
-    return SessionsStorage(str(tmp_path), 1, "x", initialize=False)
+    return SessionsStorage(str(tmp_path), 1, "x", initialize=False, home=conftest.home())
 
 
 def _usernames(storage):
@@ -61,7 +62,7 @@ def test_remember_username_reorders_and_persists(tmp_path):
     assert _usernames(storage) == ["Curator1", "Curator2"]
     saved = json.loads((tmp_path / "2.jsession").read_text())
     assert saved["account"]["username"] == "Curator1"
-    assert SessionsStorage(str(tmp_path), 1, "x", initialize=False).usernames[
+    assert SessionsStorage(str(tmp_path), 1, "x", initialize=False, home=conftest.home()).usernames[
         str(tmp_path / "2.jsession")] == "Curator1"
 
 
@@ -218,6 +219,7 @@ def test_status_check_reports_in_username_order(tmp_path, monkeypatch):
     workers = [_Worker(n) for n in range(1, 6)]
     storage = ns(
         sessions=workers,
+        home=conftest.home(),
         get_session_path=lambda s: None,
         remember_username=lambda s, u: None,
         remember_name=lambda s, first, last: names.append((first, last)),

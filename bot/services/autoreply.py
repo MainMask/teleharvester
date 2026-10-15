@@ -247,7 +247,7 @@ def make_notify(bot, admins):
     return notify
 
 
-async def _loop(bot, pool, settings, admins):
+async def _loop(bot, workspaces, settings, admins):
     replied = load_replied()
     notify = make_notify(bot, admins)
 
@@ -255,17 +255,18 @@ async def _loop(bot, pool, settings, admins):
         await asyncio.sleep(settings.autoreply_interval)
         if not (settings.autoreply_enabled and settings.autoreply_text):
             continue  # off from the bot or config: checked again next round
-        try:
-            await poll_once(pool, settings.autoreply_text, replied, notify)
-        except Exception as err:  # never let one bad round end the loop
-            log.warning("autoreply: round failed: %s", err)
+        for workspace in workspaces.all():  # every project's workers: projects deleted meanwhile are gone
+            try:
+                await poll_once(workspace.pool, settings.autoreply_text, replied, notify)
+            except Exception as err:  # never let one bad round end the loop
+                log.warning("autoreply: round failed: %s", err)
 
 
-async def start(bot, pool, settings, admins):
+async def start(bot, workspaces, settings, admins):
     """Bot startup: run the loop in the background; it idles while auto-reply is off."""
     global _task
     # kept referenced, or the loop's weak ref lets GC drop it
-    _task = asyncio.create_task(_loop(bot, pool, settings, admins))
+    _task = asyncio.create_task(_loop(bot, workspaces, settings, admins))
 
 
 async def stop():

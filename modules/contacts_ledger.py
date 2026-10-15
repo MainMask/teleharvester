@@ -1,17 +1,18 @@
-"""Who added whom to contacts: {"<user_id>": <worker user_id>} in stats/contacts.json.
+"""Who added whom to contacts: {"<user_id>": <worker user_id>} in the project's contacts.json.
 
 Each person is added to one worker's contacts; the mailing then routes them to that worker.
+A project keeps its own: its workers are its own (modules/projects.py).
 """
 import os
 
 from modules import json_file
 
-LEDGER_PATH = os.path.join("stats", "contacts.json")
+NAME = "contacts.json"  # in the project's folder (projects.home)
 
 
-def load() -> dict:
-    return json_file.load(LEDGER_PATH, {})
+def load(home: str) -> dict:
+    return json_file.load(os.path.join(home, NAME), {})
 
 
-def save(ledger: dict):
-    json_file.save(LEDGER_PATH, ledger)
+def save(home: str, ledger: dict):
+    json_file.save(os.path.join(home, NAME), ledger)

@@ -17,7 +17,7 @@ from modules.account_limits import DailyCounter
 from modules.rich_message import RichContent
 
 
-STATS_PATH = os.path.join("stats", "pm_mailing.json")
+STATS_NAME = "pm_mailing.json"  # who was written to, in the project's folder: a project keeps its own
 LIMITS_PATH = os.path.join("stats", "account_limits.json")
 
 # The stats ledger grows by one entry per unique recipient ever messaged and is
@@ -38,10 +38,10 @@ class PmMailingFunc(TelethonFunction):
     """Mailing to PM (with stats)"""
 
     def load_stats(self):
-        self.stats = json_file.load(STATS_PATH, {})
+        self.stats = json_file.load(os.path.join(self.storage.home, STATS_NAME), {})
 
     def save_stats(self):
-        json_file.save(STATS_PATH, self.stats)
+        json_file.save(os.path.join(self.storage.home, STATS_NAME), self.stats)
 
     def record_success(self, recipient):
         entry = self.stats.setdefault(self.recipient_key(recipient), {"count": 0})
@@ -326,7 +326,7 @@ class PmMailingFunc(TelethonFunction):
 
         try:
             processed = waiting = 0
-            queues = self.split_queues(recipients, contacts_ledger.load())
+            queues = self.split_queues(recipients, contacts_ledger.load(self.storage.home))
             # where each base row stands in its queue: a requirements check takes the people after it
             self._positions = {id(row): (rows, i) for _, rows in queues
                                for i, row in enumerate(rows) if isinstance(row, dict)}

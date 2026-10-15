@@ -4,7 +4,7 @@ from rich.prompt import Prompt
 from modules.console import console
 
 from functions.base import TelethonFunction
-from modules import tdata_import
+from modules import projects, tdata_import
 from modules.types.proxy import ACCOUNTS_PER_PROXY
 
 
@@ -15,7 +15,7 @@ class SetProxiesFunc(TelethonFunction):
         path = Prompt.ask(
             f"[bold red]файл прокси (по одному scheme://user:pass@ip:port на строку; "
             f"{ACCOUNTS_PER_PROXY} аккаунта на прокси)[/]",
-            default=tdata_import.PROXIES_FILE,
+            default=projects.proxies_path(self.storage.home),
         )
         try:
             proxies = tdata_import.load_proxies(path)
@@ -44,11 +44,12 @@ class SetProxiesFunc(TelethonFunction):
             f"[bold green]Прокси назначены аккаунтам: {summary['accounts']}[/] "
             f"(использовано прокси: {summary['proxies_used']})"
         )
-        # as the bot's: the pool the phone login and the tdata import take their proxies from
-        if os.path.abspath(path) != os.path.abspath(tdata_import.PROXIES_FILE):
+        # as the bot's: the project's pool its phone logins and tdata imports take their proxies from
+        pool = projects.proxies_path(self.storage.home)
+        if os.path.abspath(path) != os.path.abspath(pool):
             with open(path, encoding="utf-8") as fileobj:
-                tdata_import.save_proxies(fileobj.read())
-            console.print(f"[bold white]Список сохранён в {tdata_import.PROXIES_FILE}[/]")
+                tdata_import.save_proxies(fileobj.read(), pool)
+            console.print(f"[bold white]Список сохранён в {pool}[/]")
         if summary["string_sessions_skipped"]:
             console.print("[yellow]Пропущено .session-аккаунтов (без метаданных): "
                           f"{summary['string_sessions_skipped']}[/]")

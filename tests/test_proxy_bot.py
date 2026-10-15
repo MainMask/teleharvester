@@ -1,6 +1,7 @@
 """Offline tests for the bot proxy-setup handler (bot/routers/accounts.py)."""
 
 import asyncio
+import conftest
 import types
 
 from bot.routers import accounts
@@ -35,6 +36,8 @@ class _Pool:
 
 
 class _Storage:
+    home = property(lambda self: conftest.home())  # the project's folder: its proxies.txt
+
     def __init__(self):
         self.applied = None
 
@@ -55,7 +58,7 @@ def test_text_proxies_applied_and_file_written(tmp_path, monkeypatch):
 
     assert len(storage.applied) == 2
     assert state.cleared is True
-    assert (tmp_path / "assets" / "proxies.txt").read_text().strip().splitlines() == [
+    assert (tmp_path / "home" / "proxies.txt").read_text().strip().splitlines() == [
         "socks5://u:p@1.1.1.1:1080",
         "http://2.2.2.2:3128",
     ]
@@ -74,7 +77,7 @@ def test_refuses_while_job_active(tmp_path, monkeypatch):
 
     assert storage.applied is None  # nothing applied
     assert state.cleared is False
-    assert not (tmp_path / "assets" / "proxies.txt").exists()
+    assert not (tmp_path / "home" / "proxies.txt").exists()
 
 
 def test_bad_proxy_line_reports(tmp_path, monkeypatch):

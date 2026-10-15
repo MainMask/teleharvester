@@ -1,6 +1,7 @@
 """Regression tests for the bugs confirmed in the project-wide code review."""
 
 import asyncio
+import conftest
 import contextlib
 import html
 import types
@@ -28,6 +29,7 @@ def collect():
 
 class _Storage:
     initialize = False
+    home = property(lambda self: conftest.home())
 
     def __init__(self, sessions=()):
         self.sessions = list(sessions)
@@ -157,13 +159,13 @@ class TestSessionsStorage:
         from modules.storages.sessions_storage import SessionsStorage
 
         (tmp_path / "sqlite.session").write_bytes(b"SQLite format 3\x00\xff\xfe\x80")
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False)
+        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
         assert storage.sessions == []
 
     def test_authorization_check_error_skips_session(self, tmp_path):
         from modules.storages.sessions_storage import SessionsStorage
 
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False)
+        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
 
         class _S:
             async def connect(self):
@@ -419,7 +421,7 @@ class TestSpamBlockUnusableWorkers:
         from modules.storages.sessions_storage import SessionsStorage
 
         (tmp_path / "sessions").mkdir(exist_ok=True)
-        storage = SessionsStorage("sessions", 1, "x", initialize=False)
+        storage = SessionsStorage("sessions", 1, "x", initialize=False, home=conftest.home())
         for s in sessions:
             (tmp_path / s.path).write_text("x")
             storage.full_sessions[s.path] = s
@@ -482,7 +484,7 @@ class TestSpamBlockUnusableWorkers:
         from modules import contacts_ledger, restricted_workers
 
         monkeypatch.chdir(tmp_path)
-        contacts_ledger.save({"1": 7, "2": 7, "3": 8})
+        contacts_ledger.save(conftest.home(), {"1": 7, "2": 7, "3": 8})
         s = self._S("sessions/a.jsession", reply="Unfortunately...\nyou are limited forever.")
         storage = self._storage(tmp_path, [s])
 
@@ -1578,7 +1580,7 @@ class TestSessionFiles:
         (tmp_path / "v6.session").write_text(v6)
         (tmp_path / "junk.session").write_text("x" * 100)
 
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False)
+        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
         assert list(storage.full_sessions) == [str(tmp_path / "v6.session")]
 
     def test_string_session_has_entities_set(self):
@@ -1592,7 +1594,7 @@ class TestSessionFiles:
         from modules.storages.sessions_storage import SessionsStorage
 
         (tmp_path / "broken.jsession").write_text("{not json")
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False)
+        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
         assert storage.sessions == []
 
 
@@ -1842,7 +1844,7 @@ class TestCheckSessionDisconnects:
 
         path = tmp_path / "a.session"
         path.write_text("x")
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False)
+        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
 
         class _S:
             disconnected = False

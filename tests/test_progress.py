@@ -1,6 +1,7 @@
 """The 📊 Progress button: Progress rendering, the function hooks that step it, the handler."""
 
 import asyncio
+import conftest
 import contextlib
 import types
 from unittest.mock import patch
@@ -133,15 +134,17 @@ class TestHandler:
         manager.progress.start(3)
         callback = _Callback()
 
-        asyncio.run(show_progress(callback, _slot("show"), manager, JobManager()))
+        asyncio.run(show_progress(callback, _slot(str(manager.key)), conftest.Workspaces(manager=manager)))
 
         text, alert = callback.answers[0]
         assert alert and "0 / 3" in text and text.startswith("Рассылка в ЛС")
 
     def test_no_active_job(self):
         callback = _Callback()
-        asyncio.run(show_progress(callback, _slot("show"), JobManager(), JobManager()))
-        assert callback.answers == [("Нет активной задачи.", False)]
+        manager = JobManager()
+        asyncio.run(show_progress(callback, _slot(str(manager.key)), conftest.Workspaces(manager=manager)))
+        asyncio.run(show_progress(callback, _slot("999999"), conftest.Workspaces()))  # a slot gone (a restart)
+        assert callback.answers == [("Нет активной задачи.", False)] * 2
 
     def test_the_scraper_button_reads_the_scraper_slot(self):
         manager, scrapes = JobManager(), JobManager()
@@ -150,7 +153,8 @@ class TestHandler:
         scrapes.progress.set(0.5, None, "Постов: 7")
         callback = _Callback()
 
-        asyncio.run(show_progress(callback, _slot("scrape"), manager, scrapes))
+        asyncio.run(show_progress(callback, _slot(str(scrapes.key)),
+                                  conftest.Workspaces(scrapes=scrapes, manager=manager)))
         text, alert = callback.answers[0]
         assert alert and text.startswith("Скрап") and "Постов: 7" in text
 

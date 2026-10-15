@@ -101,7 +101,7 @@ def pick_session(storage, personal=None) -> ScrapeAccount | None:
     accounts = scrape_accounts(storage, personal)
 
     if not accounts:
-        console.print("[bold red]Нет аккаунтов в sessions/. Сначала добавьте аккаунт.[/]")
+        console.print("[bold red]Нет аккаунтов: ни воркеров проекта, ни личных. Сначала добавьте аккаунт.[/]")
         return None
 
     for index, account in enumerate(accounts):

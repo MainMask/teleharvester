@@ -1,6 +1,7 @@
 """Offline tests for scraper.members: a group's member list into a participants base."""
 
 import types
+import conftest
 
 import pytest
 from telethon.errors import ChatAdminRequiredError, FloodWaitError
@@ -214,7 +215,7 @@ def test_bot_flow_runs_with_progress_and_sends_the_base(monkeypatch, tmp_path):
     [(chats, name, popup)] = seen
     assert chats == ["@grp", "@chan"] and name == "grp" and "1 / 2" in popup
     button = msg.answers[0][1].inline_keyboard[0][0]
-    assert button.text == "📊 Прогресс" and button.callback_data.endswith(":scrape")
+    assert button.text == "📊 Прогресс" and button.callback_data.endswith(f":{manager.key}")  # this slot's
     assert msg.status.markup_dropped and not manager.active and manager.progress is None
     assert bot.documents == [str(base)]
     assert any("@chan" in text for text, _ in msg.answers)  # the problem is shown
@@ -304,7 +305,8 @@ def test_a_stop_keeps_the_members_listed_so_far(fake, tmp_path, monkeypatch):
 def test_bot_members_stop_says_the_base_is_saved(monkeypatch, tmp_path):
     import asyncio
 
-    from bot.routers import scraping as router
+    from bot.callbacks import ChoiceCB
+    from bot.routers import menu, scraping as router
     from bot.services import scraping
     from bot.services.jobs import JobManager
 
@@ -314,7 +316,9 @@ def test_bot_members_stop_says_the_base_is_saved(monkeypatch, tmp_path):
     scrapes = JobManager()
 
     async def do_members(creds, params):
-        await router.common.scrape_stop(types.SimpleNamespace(answer=_noop), scrapes)  # the operator's ⏹
+        await menu.scrape_stop(types.SimpleNamespace(answer=_noop),  # the operator's ⏹
+                               ChoiceCB(scope="scrape_stop", value=str(scrapes.key)),
+                                                                       conftest.Workspaces(scrapes=scrapes))
         assert params.stop.is_set()
         return base, [("@grp", "остановлено — собранные участники сохранены")]
 

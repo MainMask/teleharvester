@@ -1,54 +1,16 @@
-import asyncio
 import locale
+import os
 import sys
 
 from modules.console import console
 from rich.markup import escape
 
-from modules.registry import NOT_MENU_ITEMS, RISK_NOTE, RISKY, cli_menu
-
-from modules import instance_lock, updater
+from modules import instance_lock, projects, updater
+from modules.cli_menu import menu_entries, print_menu
 from modules.config import load_env
 from modules.settings import Settings
 from modules.storages.functions_storage import FunctionsStorage
 from modules.storages.sessions_storage import SessionsStorage
-from modules.tdata_import import import_all
-
-
-def menu_entries(functions) -> list:
-    """[(section, instance, title, hint, risky, group)] in the bot's order and words; a function
-    the registry doesn't know goes to «Прочее» under its docstring (one run from another item only,
-    NOT_MENU_ITEMS, nowhere)."""
-    by_class = {type(instance).__name__: (instance, doc) for instance, doc in functions}
-    entries = []
-    for section, items in cli_menu():
-        for item in items:
-            if item.classname in by_class:
-                instance, _ = by_class.pop(item.classname)
-                entries.append((section, instance, item.title, item.hint, item.risk == RISKY, item.group))
-    for classname, (instance, doc) in by_class.items():
-        if classname not in NOT_MENU_ITEMS:
-            entries.append(("Прочее", instance, doc or type(instance).__name__, "", False, ""))
-    return entries
-
-
-def print_menu(entries) -> None:
-    # a section whose every item is risky: ⚠️ once, on its title, as in the bot (registry.risk_marker)
-    all_risky = {}
-    for entry_section, _, _, _, risky, _ in entries:
-        all_risky[entry_section] = all_risky.get(entry_section, True) and risky
-    section = group = None
-    for number, (entry_section, _, title, hint, risky, entry_group) in enumerate(entries, 1):
-        if entry_section != section:
-            section, group = entry_section, ""
-            console.print(f"\n[bold magenta]{escape(section)}[/]" + (" ⚠️" if all_risky[section] else ""))
-        if entry_group != group:  # a subheading, as in the bot's section message
-            group = entry_group
-            console.print(f"  [italic]{escape(group)}[/]")
-        marker = "⚠️ " if risky and not all_risky[entry_section] else ""
-        line = f"  \\[{number}] {marker}[bold white]{escape(title)}[/]"
-        console.print(line + (f" — {escape(hint)}" if hint else ""))
-    console.print(f"\n[italic]{escape(RISK_NOTE)}[/]")
 
 
 def main() -> None:
@@ -96,29 +58,17 @@ def main() -> None:
     settings = Settings()
 
     try:
-        with console.status("Импорт воркеров из tdata..."):
-            imported = asyncio.run(import_all())
-        if imported:
-            console.print(f"[bold green]Импортировано аккаунтов из tdata_import/: {imported}[/]")
-    except Exception as err:
-        console.print(f"[bold yellow]ВНИМАНИЕ:[/] импорт tdata не удался: {escape(str(err))}")
+        projects.migrate()  # before anything reads a project: each needs its id (its folder)
+    except ValueError as err:  # the projects' file can't be read: 📁 Проекты says so
+        console.print(f"[bold yellow]ВНИМАНИЕ:[/] {escape(str(err))}")
 
-    initialize = console.input("Подключить сессии сейчас? (y/n) ") == "y"
-
-    sessions_storage = SessionsStorage(
-        "sessions",
-        settings.api_id,
-        settings.api_hash,
-        initialize=initialize
-    )
-
+    # the main menu's items work on no account: each project's card loads its own workers
+    # (functions/projects.py)
     functions_storage = FunctionsStorage(
         "functions",
-        sessions_storage,
+        SessionsStorage(os.devnull, settings.api_id, settings.api_hash, initialize=False),
         settings
     )
-
-    console.print("[bold white]аккаунтов: %d[/]" % len(sessions_storage))
 
     entries = menu_entries(functions_storage.functions)
     print_menu(entries)

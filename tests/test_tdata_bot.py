@@ -1,6 +1,7 @@
 """Offline tests for the bot tdata-upload flow (bot/routers/accounts.py)."""
 
 import asyncio
+import conftest
 import io
 import types
 import zipfile
@@ -65,6 +66,9 @@ class _Msg:
 
 
 class _Storage:
+    directory = "sessions"  # the project's (projects.sessions_dir)
+    home = property(lambda self: conftest.home())
+
     def __init__(self, phones=()):
         self.jsessions_paths = {}
         self.added = None

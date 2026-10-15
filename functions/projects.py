@@ -4,8 +4,10 @@ from rich.prompt import Confirm, Prompt
 # the modules, not their *Func classes: an imported *Func would be a second menu entry
 from functions import add_contacts, pmmailing, scraper, scraper_analysis
 from functions.base import TelethonFunction
-from modules.registry import PROJECT_CARD, PROJECT_MANAGE, card_rows
+from modules.cli_menu import menu_entries, print_menu
+from modules.registry import CARD, PROJECT_CARD, PROJECT_MANAGE, card_rows, children, trail
 from modules import projects, scraped_files
+from modules.storages.functions_storage import FunctionsStorage
 from scraper.scrape import bad_channels, bad_channels_text, parse_channels
 
 
@@ -24,7 +26,6 @@ class ProjectsFunc(TelethonFunction):
         console.print(f"  [{len(items) + 1}] ➕ Новый проект", markup=False, highlight=False)
         console.print(f"  [{len(items) + 2}] 📥 Из готового скрапа", markup=False, highlight=False)
         choice = self.ask_int("[bold red]проект[/]", min_value=1)
-        # a card's mailing or contacts is a coroutine: run_instance awaits it on the sessions' loop
         if choice == len(items) + 1:
             return self._new(items)
         elif choice == len(items) + 2:
@@ -107,7 +108,11 @@ class ProjectsFunc(TelethonFunction):
         return self._card(project)
 
     def _card(self, project):
-        console.print(projects.card(project), markup=False, highlight=False)
+        """The project's card, on its own workers — each connected for the work it is in, as in the bot —:
+        one action, then back to the menu."""
+        storage = projects.storage(project, self.settings.api_id, self.settings.api_hash)
+        functions = FunctionsStorage("functions", storage, self.settings)
+        console.print(projects.card(project, len(storage)), markup=False, highlight=False)
         # a top-up while a scrape is unfinished would drop its checkpoint: ▶️ continues that first
         plan = projects.topup(project) if projects.unfinished(project.name) is None else None
         # the bases only ever added to: a group's members, the uploaded list
@@ -118,40 +123,45 @@ class ProjectsFunc(TelethonFunction):
         hidden = ([] if plan else ["topup"]) + ([] if clearable else ["clear"])
         actions = [button.action for rows in (PROJECT_CARD, PROJECT_MANAGE) for row in rows for button in row
                    if button.action != "manage"]
+        actions += children(CARD)  # its screens: 🤖 Аккаунты, 💬 Активность
         number = {action: index for index, action in enumerate(actions, 1)}
         card, manage = ("  ".join(f"[{number[action]}] {title}"
                                   for row in card_rows(rows, hidden, bool(project.channels))
                                   for title, action in row if action in number)
                         for rows in (PROJECT_CARD, PROJECT_MANAGE))
-        console.print(f"  {card}\n  ⚙️ Управление проектом:  {manage}  (пусто — выход)", markup=False, highlight=False)
+        sections = "  ".join(f"[{number[title]}] {title} ›" for title in children(CARD))
+        console.print(f"  {card}\n  ⚙️ Управление проектом:  {manage}\n  {sections}  (пусто — выход)", markup=False,
+                      highlight=False)
         shown = {str(number[action]): action for action in actions if action not in hidden}
         action = shown.get(Prompt.ask("[bold red]действие[/]", default=""))
+        if action in children(CARD):
+            return self._section(action, functions)
         checked = ("scrape", "contacts", "mail", "verify", "analysis")
         if action in checked and (why := projects.missing(project, action)):
             console.print(why, style="bold yellow", markup=False)
             return
-        # each runs the function's own flow on the project's files only
+        # each runs the function's own flow on the project's files only, on its workers
         if action == "scrape":
-            scraper.ScrapeFunc(self.storage, self.settings).scrape(project.name, project.channels)
+            scraper.ScrapeFunc(storage, self.settings).scrape(project.name, project.channels)
         elif action == "topup":
-            scraper.ScrapeFunc(self.storage, self.settings).topup(project.name, plan)
+            scraper.ScrapeFunc(storage, self.settings).topup(project.name, plan)
         elif action == "members":  # the base is named after the project: one of its bases
-            scraper.MembersFunc(self.storage, self.settings).execute(project=project.name)
+            scraper.MembersFunc(storage, self.settings).execute(project=project.name)
         elif action == "contacts":  # the contacts need a base's IDs
             bases = scraped_files.project_files(project.name, kinds=("participants",))
-            return add_contacts.AddContactsFunc(self.storage, self.settings).execute(bases=bases)
+            functions.run(add_contacts.AddContactsFunc(storage, self.settings).execute(bases=bases))
         elif action == "mail":  # the mailing takes the uploaded list too
             recipients = scraped_files.project_files(project.name, kinds=("participants", "list"))
-            return pmmailing.PmMailingFunc(self.storage, self.settings).execute(bases=recipients)
+            functions.run(pmmailing.PmMailingFunc(storage, self.settings).execute(bases=recipients))
         elif action == "upload":
             self._upload(project)
         elif action == "clear":
             self._clear(project, clearable)
         elif action == "verify":
             posts = scraped_files.project_files(project.name, kinds=("posts",))
-            scraper.VerifyFunc(self.storage, self.settings).execute(posts=posts, project=project.name)
+            scraper.VerifyFunc(storage, self.settings).execute(posts=posts, project=project.name)
         elif action == "analysis":
-            scraper_analysis.ScraperAnalysisFunc(self.storage, self.settings).execute(project=project.name)
+            scraper_analysis.ScraperAnalysisFunc(storage, self.settings).execute(project=project.name)
         elif action == "rename":
             new = Prompt.ask(f"[bold red]новое имя проекта '{self.safe(project.name)}' "
                              "(файлы проекта переименуются вместе с ним)[/]")
@@ -173,7 +183,8 @@ class ProjectsFunc(TelethonFunction):
                 return
             console.print("[bold green]Каналы проекта сохранены.[/]")
         elif action == "delete" and Confirm.ask(
-            f"[bold red]удалить проект '{self.safe(project.name)}'? файлы скрапа останутся[/]", default=False,
+            f"[bold red]удалить проект '{self.safe(project.name)}'? файлы скрапа останутся; проект с аккаунтами не "
+            "удаляется — сначала перенесите их[/]", default=False,
         ):
             try:
                 projects.remove(project.name)
@@ -181,3 +192,13 @@ class ProjectsFunc(TelethonFunction):
                 console.print(f"[bold red]Не удалено:[/] {self.safe(err)}")
                 return
             console.print("[bold green]Проект удалён, файлы скрапа на месте.[/]")
+
+    @staticmethod
+    def _section(title, functions):
+        """A project's screen (🤖 Аккаунты with 👤 Профиль, 🛠 Обслуживание; 💬 Активность): its items, one run
+        on the project's workers."""
+        entries = [entry for entry in menu_entries(functions.functions, project=True) if title in trail(entry[0])]
+        print_menu(entries)
+        raw = Prompt.ask("[bold red]пункт (пусто — выход)[/]", default="")
+        if raw.isdigit() and 1 <= int(raw) <= len(entries):
+            functions.run_instance(entries[int(raw) - 1][1])

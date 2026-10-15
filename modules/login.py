@@ -4,7 +4,7 @@ alike: an account's login codes from Telegram, adding an account by phone, remov
 Login codes: Telegram (777000) sends them to the account's own chats; they are read on request.
 Adding by phone: a worker or a personal account (role). The code is requested from a fresh
 client with a random official app's device, and the signed-in account is saved as
-sessions/<phone>.jsession and joins the pool — a personal one goes to personal_sessions/,
+<phone>.jsession in its project's sessions/ and joins its pool — a personal one goes to personal_sessions/,
 without a proxy and without its 2FA password. The bot's own side (a sign-in waiting for its
 code in a chat, the codes of a pool worker) is bot/services/login.py.
 """
@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 
-from modules import scraper_creds, tdata_import
+from modules import projects, scraper_creds, tdata_import
 from modules.generators.linux import LinuxAPI
 from modules.generators.telegram_android import TelegramAppAPI
 from modules.storages.sessions_storage import connect_client
@@ -110,28 +110,32 @@ def known(storage, phone: str) -> bool:
 
 
 def refusal(role: str, phone: str, workers, personal) -> str | None:
-    """Why the number gets no code: it is already loaded (as this role or the other one)."""
+    """Why the number gets no code: it is already loaded (as this role or the other one), or it is
+    another project's worker or a free one (an account is in one place only)."""
+    elsewhere = projects.find_account(phone=phone)
     if role == PERSONAL:
         if known(personal, phone):
             return f"ℹ️ Аккаунт +{phone} уже есть среди личных."
-        if known(workers, phone):
+        if known(workers, phone) or elsewhere is not None:
             return f"⛔ +{phone} — воркер: личным аккаунтом он не станет."
         return None
     if known(workers, phone):
         return f"ℹ️ Аккаунт +{phone} уже есть среди воркеров."
+    if elsewhere is not None:
+        return f"⛔ +{phone} {projects.taken(elsewhere)}."
     if known(personal, phone):
         return f"⛔ +{phone} — ваш личный аккаунт (personal_sessions/): воркером он не станет."
     return None
 
 
 def role_proxy(role: str, workers):
-    """The new account's proxy: a worker's from the pool, as the tdata import (at most
+    """The new account's proxy: a worker's from its project's pool, as the tdata import (at most
     ACCOUNTS_PER_PROXY accounts per proxy; ValueError if all are full); a personal account
     has none, as the ones put in by hand — no worker proxy ties it to the workers."""
     if role == PERSONAL:
         return None
     used = [js.account.proxy for js in workers.jsessions_paths.values()]
-    return tdata_import.choose_pool_proxy(used, tdata_import.load_proxies(tdata_import.PROXIES_FILE))
+    return tdata_import.choose_pool_proxy(used, tdata_import.load_proxies(projects.proxies_path(workers.home)))
 
 
 async def request_code(client, phone: str):
@@ -155,9 +159,10 @@ def send_error(err: Exception) -> str:
 
 
 def already_known(me, workers, personal) -> bool:
-    """The signed-in account turned out to be loaded already (under another number format)."""
+    """The signed-in account turned out to be loaded already (under another number format), or to be a
+    worker elsewhere."""
     personal_ids = {js.account.account.user_id for js in personal.json_sessions} if personal is not None else set()
-    return me.id in personal_ids or known(workers, me.phone)
+    return me.id in personal_ids or known(workers, me.phone) or projects.find_account(user_id=me.id) is not None
 
 
 async def log_out(client) -> bool:
@@ -183,7 +188,7 @@ def store(login, me, role: str, workers, personal) -> str:
         path = save_account(login, me, scraper_creds.PERSONAL_DIR, keep_password=False)
         personal.add_jsession(path)
     else:
-        path = save_account(login, me)
+        path = save_account(login, me, workers.directory)
         workers.add_jsession(path)
     return path
 
@@ -199,7 +204,7 @@ def added_text(login, me, role: str, workers_count: int) -> str:
             f"📱 Номер: +{me.phone}\n"
             f"🔐 2FA: {'да' if login.password else 'нет'}\n"
             f"🌐 Прокси: {proxy.label() if proxy else 'без прокси'}\n"
-            f"🤖 Всего воркеров: {workers_count}")
+            f"🤖 Воркеров в проекте: {workers_count}")
 
 
 async def remove_personal(personal, account) -> bool:
@@ -214,8 +219,8 @@ async def remove_personal(personal, account) -> bool:
     return logged_out
 
 
-def save_account(login, me, sessions_dir: str = "sessions", keep_password: bool = True) -> str:
-    """Write the signed-in account to sessions/<phone>.jsession; returns its path."""
+def save_account(login, me, sessions_dir: str, keep_password: bool = True) -> str:
+    """Write the signed-in account to <sessions_dir>/<phone>.jsession; returns its path."""
     path = os.path.join(sessions_dir, f"{me.phone}.jsession")
     # an account not loaded (e.g. its connect failed at the menu's start) may still be on disk:
     # its file holds a live key, its proxy and 2FA password; as the tdata import, it is kept

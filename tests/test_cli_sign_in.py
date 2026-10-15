@@ -2,6 +2,7 @@
 the bot's rules (modules/login.py)."""
 
 import asyncio
+import conftest
 import contextlib
 import json
 import types
@@ -78,6 +79,9 @@ class _Client:
 
 
 class _Workers:
+    directory = "sessions"
+    home = property(lambda self: conftest.home())
+
     def __init__(self, phones=()):
         self.phones, self.added, self.initialize = set(phones), [], False
         self.jsessions_paths, self.json_sessions = {}, []
@@ -271,7 +275,7 @@ def test_no_removal_with_an_unfinished_bot_scrape(monkeypatch, tmp_path):
     from modules import scraped_files
 
     personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "2", "y"])
-    json_file.save(scraped_files.SCRAPE_MARKER, {"account": path})
+    json_file.save(scraped_files.SCRAPE_MARKER, {"1": {"account": path}})
     _list_and_remove(console)
     assert "незавершённый скрап" in console.printed[-1] and not me.logged_out and (tmp_path / path).exists()
 

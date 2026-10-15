@@ -1,7 +1,11 @@
 """Projects: named sets of scrape sources, kept in stats/projects.json and shared by the bot
 and the CLI. A project's name is the name its scrapes run under, so its files are the
 <name>_posts / _reactors / _participants ones in the bases folder (scraped_files.project_files)
-and an interrupted scrape of it is continued by that name (scraper.scrape.pending_resume)."""
+and an interrupted scrape of it is continued by that name (scraper.scrape.pending_resume).
+
+All the work is a project's: its workers, proxies, mailing stats and contacts ledger live in its own
+folder, projects/<id>/ (home), named by its id so a rename moves none of them. An account is in one
+project only; one in none is free (FREE_DIR) and works nowhere until moved into one (move_account)."""
 import html as html_text
 import os
 import re
@@ -10,11 +14,19 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
-from modules import atomic_file, json_file, scraped_files
+from modules import atomic_file, json_file, restricted_workers, scraped_files
+from modules.storages.sessions_storage import SessionsStorage
 from scraper.datafiles import read_attrs
 from scraper.scrape import ChatInfo, chat_block, pending_resume
 
 PATH = os.path.join("stats", "projects.json")
+PROJECTS_DIR = "projects"  # projects/<id>/: a project's own folder (home)
+FREE_DIR = "sessions"  # accounts in no project (the workers from before projects had their own)
+# the shared mailing stats and contacts ledger from before projects had their own: each project there
+# then got a copy (migrate), so none of them writes again to someone already written to
+# ({its name in a project's folder: the shared file})
+LEGACY_STATS = {"pm_mailing.json": os.path.join("stats", "pm_mailing.json"),
+                "contacts.json": os.path.join("stats", "contacts.json")}
 MAX_NAME = 40  # a project's name is a button label and a file name prefix
 # the card must stay within a Telegram message (4096): the channels' text and the files listed
 MAX_CHANNELS_TEXT = 1500
@@ -35,6 +47,7 @@ class Project:
     # (remember): its channels, and every other chat checked in its work (a list corrected for one
     # scrape, the groups of 👥, a verify's channel), so each is shown by name; one never checked is not here
     chats: dict[str, dict] = field(default_factory=dict)
+    id: int = 0  # its folder's name (home): never changes, a rename keeps it; 0 until migrate() gives one
 
     def chat(self, raw: str) -> ChatInfo:
         """The chat as last checked (no problem kept: it is the checking account's), else as typed."""
@@ -47,8 +60,8 @@ def load() -> list[Project]:
     ValueError, with the reason, if the file can't be read: it is never overwritten then."""
     try:
         data = json_file.load(PATH, [])
-        return [Project(name=item["name"], channels=list(item["channels"]), chats=dict(item.get("chats", {})))
-                for item in data]
+        return [Project(name=item["name"], channels=list(item["channels"]), chats=dict(item.get("chats", {})),
+                        id=item.get("id", 0)) for item in data]
     except (OSError, ValueError, TypeError, KeyError) as err:
         raise ValueError(f"{PATH} не читается ({type(err).__name__}: {err}) — исправьте или удалите его; "
                          f"предыдущая версия: {PATH}.bak") from err
@@ -79,7 +92,7 @@ def add(name: str, channels: list[str]) -> Project:
     name = name.strip()
     if problem := name_problem(name, projects):
         raise ValueError(problem)
-    project = Project(name, list(channels))
+    project = Project(name, list(channels), id=max((project.id for project in projects), default=0) + 1)
     _save([*projects, project])
     return project
 
@@ -134,11 +147,8 @@ def rename(old: str, new: str) -> tuple[Project, int]:
     new = new.strip()
     if problem := rename_problem(old, new, projects):
         raise ValueError(problem)
-    try:  # the bot's scrape (running, or continued after its restart) writes the old name's files
-        marker = json_file.load(scraped_files.SCRAPE_MARKER, None)
-    except (OSError, ValueError):
-        marker = None
-    if marker is not None and marker.get("name") == old:
+    if home(project) in scraped_files.scrape_markers():  # the bot's scrape (running, or continued
+        # after its restart) writes the old name's files
         raise ValueError("по проекту идёт скрап бота (или бот продолжит его после перезапуска) — "
                          "переименуйте, когда он закончится")
     moves = [(path, path.with_name(new + path.name[len(old):])) for path in scraped_files.project_entries(old)]
@@ -177,8 +187,12 @@ def _rename_checkpoint(old: str, new: str):
 
 
 def remove(name: str):
-    """Drop the project; its scraped files stay where they are."""
+    """Drop the project; its scraped files and its folder stay where they are. ValueError while it has
+    workers: an account in no project must be one moved out of it on purpose (move_account)."""
     projects = load()
+    project = next((project for project in projects if project.name == name), None)
+    if project is not None and (count := len(account_files(sessions_dir(project)))):
+        raise ValueError(f"у проекта аккаунтов: {count} — сначала перенесите их в другой проект или в свободные")
     kept = [project for project in projects if project.name != name]
     if len(kept) != len(projects):
         _save(kept)
@@ -323,6 +337,138 @@ def find(name: str | None) -> Project | None:
         return None
 
 
+def home(project: Project) -> str:
+    """The project's own folder: its workers (sessions/), proxies.txt, pm_mailing.json, contacts.json."""
+    return os.path.join(PROJECTS_DIR, str(project.id))
+
+
+def sessions_dir(project: Project) -> str:
+    """Where the project's workers' session files are (a dead one goes to its inactive/, as before)."""
+    return os.path.join(home(project), "sessions")
+
+
+def storage(project: Project, api_id, api_hash, initialize: bool = False) -> SessionsStorage:
+    """The project's workers, its folder as their home (their mailing stats, ledger, proxies)."""
+    return SessionsStorage(sessions_dir(project), api_id, api_hash, initialize, home=home(project))
+
+
+def proxies_path(project_home: str) -> str:
+    """The project's proxy list: its new accounts take theirs from it, 🌐 Прокси deals it out to its workers."""
+    return os.path.join(project_home, "proxies.txt")
+
+
+def account_files(directory: str) -> list[str]:
+    """The session files right in `directory` (not in its inactive/ or restricted/), by name."""
+    if not os.path.isdir(directory):
+        return []
+    return [os.path.join(directory, name) for name in sorted(os.listdir(directory))
+            if name.endswith((".session", ".jsession"))]
+
+
+def migrate():
+    """Bring the projects from before they had their own accounts up to date; at every start of the
+    bot and the CLI, a no-op once done. A project without an id gets one, and a copy of the shared
+    mailing stats and contacts ledger (LEGACY_STATS) as its own; the shared ones stay as they are. The
+    bot's scrape marker of then becomes its project's (scraped_files.scrape_markers). The workers stay
+    in FREE_DIR: they are moved into projects by hand. ValueError if the projects' file can't be read
+    (load)."""
+    projects = load()
+    old = [project for project in projects if not project.id]
+    if not old:
+        return
+    next_id = max((project.id for project in projects), default=0) + 1
+    for project in old:
+        project.id, next_id = next_id, next_id + 1
+        os.makedirs(home(project), exist_ok=True)
+        for name, path in LEGACY_STATS.items():
+            if os.path.exists(path):
+                shutil.copy2(path, os.path.join(home(project), name))
+    try:  # a bot scrape a restart interrupted, from when there was one: continued as its project's
+        marker = json_file.load(scraped_files.SCRAPE_MARKER, None)
+    except (OSError, ValueError):
+        marker = None
+    if isinstance(marker, dict) and "out_dir" in marker:
+        owner = next((project for project in projects if project.name == marker.get("name")), None)
+        json_file.save(scraped_files.SCRAPE_MARKER, {home(owner): marker} if owner is not None else {})
+    _save(projects)
+
+
+def _worker_dirs() -> list[str]:
+    """Every folder a worker's session file can be in: the free ones', then each project's."""
+    return [FREE_DIR, *sorted(str(path) for path in Path(PROJECTS_DIR).glob("*/sessions"))]
+
+
+def _account(path: str) -> dict | None:
+    """A .jsession's "account" part (read offline), None for a broken file or a .session (no metadata)."""
+    if not path.endswith(".jsession"):
+        return None
+    try:
+        return dict(json_file.load(path, {})["account"])
+    except (OSError, ValueError, KeyError, TypeError):  # a broken file is skipped by SessionsStorage too
+        return None
+
+
+def find_account(phone: str | None = None, user_id: int | None = None) -> str | None:
+    """The session file of the worker with this phone (with or without the +) or user id, wherever it
+    is — free or in any project —, read offline; None if there is none. An account is in one place only."""
+    phones = {phone.lstrip("+"), "+" + phone.lstrip("+")} if phone else set()
+    for directory in _worker_dirs():
+        for path in account_files(directory):
+            account = _account(path)
+            if account is not None and (account.get("phone_number") in phones
+                                        or (user_id is not None and account.get("user_id") == user_id)):
+                return path
+    return None
+
+
+def place(path: str) -> str:
+    """Where a worker's session file is, for a message: «в проекте «X»» or «среди свободных (sessions/)»."""
+    directory = os.path.dirname(os.path.normpath(path))
+    if directory == os.path.normpath(FREE_DIR):
+        return f"среди свободных ({FREE_DIR}/)"
+    try:
+        project = next((project for project in load() if os.path.normpath(sessions_dir(project)) == directory),
+                       None)
+    except ValueError:
+        project = None
+    return f"в проекте «{project.name}»" if project is not None else f"в {directory}/"
+
+
+def taken(path: str) -> str:
+    """Why an account can't be added here: it is a worker elsewhere, and how to bring it over."""
+    if os.path.dirname(os.path.normpath(path)) == os.path.normpath(FREE_DIR):
+        how = "возьмите его: «➕ Добавить» → «📦 Из свободных»"
+    else:
+        how = "перенесите его оттуда: «🤖 Аккаунты» → «↪️ Перенести»"
+    return f"уже воркер {place(path)} — {how}"
+
+
+def account_label(path: str) -> str:
+    """A worker's file in a list, read offline: @username, else the name, and the phone."""
+    account = _account(path) or {}
+    name = (f"@{account['username']}" if account.get("username")
+            else " ".join(filter(None, (account.get("first_name"), account.get("last_name")))))
+    phone = account.get("phone_number")
+    phone = f"+{phone.lstrip('+')}" if phone else os.path.basename(path)
+    return f"{name} · {phone}" if name else phone
+
+
+def move_account(path: str, target_dir: str) -> str:
+    """Move a worker's session file to another project's sessions/ (or FREE_DIR), its restrictions
+    (restricted_workers, keyed by the file's path) with it; returns its new path. ValueError, nothing
+    moved, if a scrape on it is left to continue (its checkpoint names the old path) or the target
+    has a file of that name. The caller takes it out of its live pool first, and checks it is not busy."""
+    if scraped_files.unfinished_scrape(path):
+        raise ValueError("на аккаунте незавершённый скрап — сначала завершите его")
+    target = os.path.join(target_dir, os.path.basename(path))
+    if os.path.exists(target):
+        raise ValueError(f"там уже есть {os.path.basename(path)}")
+    os.makedirs(target_dir, exist_ok=True)
+    os.replace(path, target)
+    restricted_workers.rename(path, target)
+    return target
+
+
 def chat_list(project: Project | None, raws: list[str], html: bool = False, problems: dict | None = None,
               limit: int = MAX_CARD_CHANNELS, budget: int | None = None) -> str:
     """The chats, numbered, one block each as the card lists its channels (scraper.scrape.chat_block): the
@@ -348,12 +494,15 @@ def label(project: Project) -> str:
     return f"📁 {project.name} · {channels}{' ⏸' if unfinished(project.name) else ''}"
 
 
-def card(project: Project, html: bool = False) -> str:
-    """The project's card (bot and CLI): its channels as the accounts list shows accounts (the
-    names the last check found: remember), an interrupted scrape or the top-up, its files.
-    `html`: for the bot — escaped, the ids in <code>; without it plain text, for the terminal."""
+def card(project: Project, workers: int, html: bool = False) -> str:
+    """The project's card (bot and CLI): how many workers it has, its channels as the accounts list
+    shows accounts (the names the last check found: remember), an interrupted scrape or the top-up,
+    its files. `html`: for the bot — escaped, the ids in <code>; without it plain text, for the terminal."""
     esc = html_text.escape if html else str
-    head = [f"📁 {esc(project.name)}", f"📢 Каналы — {len(project.channels)}" if project.channels else
+    head = [f"📁 {esc(project.name)}",
+            f"🤖 Воркеров: {workers}" if workers else
+            "🤖 Воркеров нет — добавьте их: «🤖 Аккаунты» → «➕ Добавить» (по номеру, из tdata или из свободных).",
+            f"📢 Каналы — {len(project.channels)}" if project.channels else
             "📢 Каналов нет: база — из участников групп (👥) или списка; для скрапа — «➕ Добавить каналы»."]
     blocks = []  # after the channels
     meta = unfinished(project.name)

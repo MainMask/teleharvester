@@ -13,7 +13,8 @@ from scraper.datafiles import read_table
 from scraper.scrape import _channel_ref, group_channel
 
 BASES_DIR = "assets/databases"  # default scrape output; holds the <name>_participants bases
-# a bot scrape in progress, continued after a bot restart (bot/routers/scraping/scrape.py)
+# the bot's scrapes in progress, continued after a bot restart (bot/routers/scraping/scrape.py):
+# {<project's folder, projects.home>: marker}, a project scrapes one at a time
 SCRAPE_MARKER = os.path.join("stats", "bot_scrape.json")
 # 🧩 Объединить's file of a project's posts files: <name>_posts_combined (see combined_output)
 COMBINED = "_combined"
@@ -186,14 +187,20 @@ def missed_path(input_path: str, channel: str) -> str:
     return str(folder / f"{_channel_ref(channel).slug}_missed.parquet")
 
 
+def scrape_markers() -> dict:
+    """The bot's scrapes to continue, {<project's folder>: marker}; none from a broken file."""
+    try:
+        markers = json_file.load(SCRAPE_MARKER, {})
+    except (OSError, ValueError):  # a half-written / broken marker: nothing to continue
+        return {}
+    return markers if isinstance(markers, dict) and "out_dir" not in markers else {}  # "out_dir": one from
+    # before projects scraped each on their own, until projects.migrate() makes it its project's
+
+
 def unfinished_scrape(path: str) -> bool:
     """A scrape on the account (session path) is left to continue, on it only: the bot's marker, or
     a checkpoint in BASES_DIR (one stopped with ⏹, by an error or in the terminal menu has no marker)."""
-    try:
-        marker = json_file.load(SCRAPE_MARKER, None)
-    except (OSError, ValueError):  # a half-written / broken marker: nothing to continue
-        marker = None
-    if marker is not None and marker.get("account") == path:
+    if any(marker.get("account") == path for marker in scrape_markers().values()):
         return True
     for resume in Path(BASES_DIR).glob("*_partial/checkpoint/resume.json"):
         try:

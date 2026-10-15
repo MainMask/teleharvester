@@ -1,7 +1,7 @@
 """Workers the last status check found permanently restricted: session file paths
 in stats/restricted.json.
 
-They stay in sessions/, but the mailing and adding to contacts leave them out, so
+They stay in their project's sessions/, but the mailing and adding to contacts leave them out, so
 their people go to other workers. Each status check rewrites the list: a worker found
 clean again is back in the next run.
 
@@ -57,6 +57,17 @@ def classify(path, forever: set, status: dict) -> tuple[int, str]:
     if status[path] == "active":
         return 0, "✅ без ограничений"
     return 1, f"🚫 ЛС ограничены до {status[path]}"
+
+
+def rename(old: str, new: str):
+    """A worker's file moved to another project (projects.move_account): its state goes with it."""
+    if old in (restricted := load()):
+        save(sorted(new if path == old else path for path in restricted))
+    if old in (released := load_released()):
+        save_released(sorted(new if path == old else path for path in released))
+    if old in (status := load_status()):
+        status[new] = status.pop(old)
+        save_status(status)
 
 
 def release(path: str):

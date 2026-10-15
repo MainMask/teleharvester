@@ -74,7 +74,7 @@ class AddContactsFunc(TelethonFunction):
 
     def flush_ledger(self):
         if self._unsaved:
-            contacts_ledger.save(self.ledger)
+            contacts_ledger.save(self.storage.home, self.ledger)
             self._unsaved = 0
 
     async def run(self, path, delay, report):
@@ -103,7 +103,7 @@ class AddContactsFunc(TelethonFunction):
             await report("База пуста!")
             return
 
-        self.ledger = contacts_ledger.load()
+        self.ledger = contacts_ledger.load(self.storage.home)
         await self.check_workers(report)
         # already in a current worker's contacts (one on hold too): skip; a removed worker's
         # people are re-added
