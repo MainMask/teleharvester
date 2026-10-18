@@ -3,12 +3,13 @@ import datetime
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InaccessibleMessage, InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.callbacks import FunctionCB, ReleaseCB
-from bot.routers._common import ensure_workers, resolve
+from bot.callbacks import ChoiceCB, FunctionCB, ReleaseCB
+from bot.keyboards.common import choice_kb
+from bot.routers._common import ensure_workers, proxies_busy, rehome_now, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.services.workspaces import Workspaces
-from functions.spamblock import worker_name
+from bot.services.workspaces import Workspace, Workspaces
+from functions.spamblock import rehome, worker_name
 from modules import restricted_workers
 
 router = Router()
@@ -34,8 +35,30 @@ async def offer_release(bot, chat_id, func):
         )
 
 
+async def offer_rehome(bot, chat_id, workspace):
+    """After a status check: the button that moves the project's permanently restricted workers onto its
+    proxies for them (and the ones clean again back), when there are any to move. Not mid-check: a proxy
+    change rebuilds the clients a job holds. The button names its project: pressed from another one later,
+    it still moves this project's workers."""
+    try:
+        pending = rehome(workspace.pool.storage, dry_run=True)
+    except ValueError as err:  # a list edited by hand
+        await bot.send_message(chat_id, f"⚠️ Пересадка ограниченных невозможна: {err}. Исправьте — 🌐 Прокси.")
+        return
+    if not (pending["out"] or pending["back"]):
+        return
+    await bot.send_message(
+        chat_id,
+        f"🔁 Бессрочно ограниченных — на их прокси: {len(pending['out'])}; остальных вне основного пула "
+        f"(сняты с ограничения или перенесены из другого проекта) — в пул: {len(pending['back'])}. "
+        "Пересадить? Кнопка действует сутки.",
+        reply_markup=choice_kb("rehome", [("🔁 Пересадить", str(workspace.project_id))]),
+    )
+
+
 @router.callback_query(FunctionCB.filter(F.key == "status"))
-async def run_status(callback: CallbackQuery, pool: WorkerPool, functions: dict, manager: JobManager):
+async def run_status(callback: CallbackQuery, pool: WorkerPool, functions: dict, manager: JobManager,
+                     workspace: Workspace):
     await callback.answer()
     if not await ensure_workers(callback, pool):
         return
@@ -43,6 +66,7 @@ async def run_status(callback: CallbackQuery, pool: WorkerPool, functions: dict,
     async def status(func, report):
         await func.run(report, replies=True)
         await offer_release(callback.bot, callback.message.chat.id, func)
+        await offer_rehome(callback.bot, callback.message.chat.id, workspace)
 
     instance, bot_function = resolve(functions, "status")
     await manager.run(
@@ -74,3 +98,21 @@ async def release(callback: CallbackQuery, callback_data: ReleaseCB, workspaces:
             "напишут другие воркеры, а «📇 В контакты» добавит их заново."
         )
     await callback.answer()
+
+
+# the project the button names, whichever the chat is in now (or none, after a restart)
+@router.callback_query(ChoiceCB.filter(F.scope == "rehome"), flags={"any_project": True})
+async def rehome_restricted(callback: CallbackQuery, callback_data: ChoiceCB, workspaces: Workspaces):
+    message = callback.message  # inaccessible: too old for the bot to read, its date is 0
+    # a project id; "go" on a button sent before it carried one
+    workspace = workspaces.get(int(callback_data.value)) if callback_data.value.isdigit() else None
+    if isinstance(message, InaccessibleMessage) or workspace is None or \
+            datetime.datetime.now(datetime.timezone.utc) - message.date > BUTTON_TTL:
+        await callback.answer("Кнопка устарела: запустите «Проверку статуса» заново.", show_alert=True)
+        return
+    await callback.answer()
+    pool = workspace.pool
+    if await proxies_busy(message, pool, workspace.manager):
+        return
+    if report := await rehome_now(message, pool):
+        await message.edit_text(report)

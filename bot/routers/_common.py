@@ -4,6 +4,7 @@ from bot.services import login as logins
 from bot.services.capture import capture
 from modules.registry import BOT_FUNCTIONS_BY_KEY, menu_path
 from functions.base.base import POST_LINK_HINT, BaseFunction
+from functions.spamblock import rehome, rehome_report
 from scraper.scrape import bad_channels, bad_channels_text, parse_channels
 
 # a stale tap: a button of an old message; a stale step: text sent to a step whose flow is gone
@@ -59,6 +60,30 @@ def resolve(functions: dict, key: str):
     """
     bot_function = BOT_FUNCTIONS_BY_KEY[key]
     return functions[bot_function.classname](), bot_function
+
+
+async def proxies_busy(message, pool, manager) -> bool:
+    """A proxy change now would rebuild clients in use (a job, the autoreply poll): told, True."""
+    if manager.active:  # a job may have started since the prompt or the button
+        await message.answer(f"⛔ Занят: {manager.label}. Дождитесь завершения задачи и повторите.")
+        return True
+    if pool.polling is not None:  # its old client is connected through the old proxy until the poll ends
+        await message.answer("⛔ Идёт проверка автоответа. Повторите через минуту.")
+        return True
+    return False
+
+
+async def rehome_now(message, pool) -> str | None:
+    """Move the restricted workers onto their proxies and the others off the pool back into it now
+    (functions.spamblock.rehome), but the ones in use outside the job slot (a scrape, 🔑 Код входа): their
+    clients must not change under them, the next status check offers them. The report, or None once a bad
+    proxy list is told."""
+    busy = {path for path in pool.storage.jsessions_paths if pool.busy(path) or pool.scraped(path)}
+    try:
+        return rehome_report(rehome(pool.storage, busy=busy))
+    except ValueError as err:  # a list edited by hand
+        await message.answer(f"⚠️ Пересадка невозможна: {err}. Исправьте — 🌐 Прокси.")
+        return None
 
 
 async def ensure_workers(callback, pool) -> bool:

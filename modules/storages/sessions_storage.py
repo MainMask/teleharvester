@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import weakref
+from collections import Counter
 from contextlib import asynccontextmanager
 from typing import Dict, List, Union
 
@@ -193,15 +194,19 @@ class SessionsStorage:
             self.usernames[path] = session.account.account.username
         return session
 
-    def apply_proxies(self, proxies: List[Proxy]) -> dict:
+    def apply_proxies(self, proxies: List[Proxy], spare: List[Proxy] = (), restricted=()) -> dict:
         """Distribute `proxies` across the `.jsession` accounts (one proxy per
         ACCOUNTS_PER_PROXY accounts), persisting each to its file and rebuilding its
-        client so the new proxy takes effect immediately.
+        client so the new proxy takes effect immediately. With `spare` (the project's
+        proxies for permanently restricted workers), the `restricted` paths take those,
+        evenly and with no cap, and the ratio counts the others only.
 
         Raises ValueError if there are too few proxies for the ratio. `.session`
         (StringSession) accounts can't store a proxy and are left untouched.
         """
         paths = sorted(self.jsessions_paths)
+        aside = [p for p in paths if p in restricted] if spare else []
+        paths = [p for p in paths if p not in aside]
         required = -(-len(paths) // ACCOUNTS_PER_PROXY)  # ceil division
 
         if len(proxies) < required:
@@ -210,18 +215,76 @@ class SessionsStorage:
                 f"(нужно {required} — по {ACCOUNTS_PER_PROXY} аккаунта на прокси)"
             )
 
+        for index, path in enumerate(aside):
+            self._set_proxy(path, spare[index % len(spare)])
         for index, path in enumerate(paths):
-            session = self.jsessions_paths[path]
-            session.account.proxy = proxies[index // ACCOUNTS_PER_PROXY]
-            session.account.save(path)
-
-            self.full_sessions[path] = self.build_jsession_client(session)
+            self._set_proxy(path, proxies[index // ACCOUNTS_PER_PROXY])
 
         return {
             "accounts": len(paths),
             "proxies_used": required,
-            "string_sessions_skipped": len(self.full_sessions) - len(paths),
+            "restricted": len(aside),
+            "string_sessions_skipped": len(self.full_sessions) - len(self.jsessions_paths),
         }
+
+    def _set_proxy(self, path: str, proxy: Proxy | None):
+        """Persist the account's new proxy and rebuild its client, so it takes effect at once."""
+        session = self.jsessions_paths[path]
+        session.account.proxy = proxy
+        session.account.save(path)
+        self.full_sessions[path] = self.build_jsession_client(session)
+
+    def rehome_restricted(self, restricted, main: List[Proxy], spare: List[Proxy], dry_run=False,
+                          busy=()) -> dict:
+        """Move only the workers whose proxy no longer fits their state, the others' IPs untouched:
+        a permanently restricted one (`restricted` paths) off the project's pool onto the least
+        used `spare` proxy (no cap: they are past losing), freeing its place for a new account; then one
+        off the pool (`main`) but not restricted (clean again, the list for the restricted replaced or
+        cleared, or moved here from another project with its proxy) back into it, at most
+        ACCOUNTS_PER_PROXY per proxy, or `stuck` while it is full. A `busy` path (its client in use) stays
+        as it is and is told among "busy" if it would move.
+        Returns {"out": [paths], "back": [paths], "stuck": [paths], "busy": [paths]}."""
+        from modules import tdata_import  # it imports modules.projects, which imports this module
+
+        moves = {"out": [], "back": [], "stuck": [], "busy": []}
+        if not spare:  # not separated: the restricted come back into the pool too
+            restricted = set()
+        proxies = {path: js.account.proxy for path, js in self.jsessions_paths.items()}
+        pool = {proxy.key() for proxy in main}
+
+        def off_pool(path):
+            return proxies[path] is not None and proxies[path].key() not in pool
+
+        def move(path, proxy, kind):
+            if path in busy:
+                moves["busy"].append(path)
+                return
+            proxies[path] = proxy
+            moves[kind].append(path)
+            if not dry_run:
+                self._set_proxy(path, proxy)
+
+        leaving = sorted(p for p in proxies if p not in restricted and off_pool(p))
+        if spare:  # first: the places they free may take the ones coming back
+            current = {proxy.key() for proxy in spare}
+            load = Counter(proxy.key() for p, proxy in proxies.items()  # the ones leaving it aside
+                           if p not in leaving and proxy is not None and proxy.key() in current)
+            for path in sorted(p for p in proxies if p in restricted):
+                if proxies[path] is None or proxies[path].key() not in current:
+                    proxy = min(spare, key=lambda candidate: load[candidate.key()])
+                    load[proxy.key()] += path not in busy  # a busy one stays where it is
+                    move(path, proxy, "out")
+        for path in leaving:
+            try:
+                proxy = tdata_import.choose_pool_proxy(
+                    [proxy for p, proxy in proxies.items() if not off_pool(p)], main)
+            except ValueError:  # every pool proxy full
+                proxy = None
+            if proxy is None:
+                moves["stuck"].append(path)
+            else:
+                move(path, proxy, "back")
+        return moves
 
     def forget_session(self, path: str):
         """Drop a session from every index, so no stale reference survives a removal."""

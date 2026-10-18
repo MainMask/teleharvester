@@ -141,7 +141,7 @@ class TestResolvePeer:
         imported_user = object()
 
         async def session(request):  # telethon client is called with the request
-            return types.SimpleNamespace(users=[imported_user])
+            return types.SimpleNamespace(users=[imported_user], retry_contacts=[])
 
         result = asyncio.run(fn.resolve_peer(session, "+15551234567"))
         assert result is imported_user
@@ -286,6 +286,149 @@ class TestContactRequirements:
             tmp_path, monkeypatch, ["bob"], refuse=errors.ForbiddenError(None, "PRIVACY_PREMIUM_REQUIRED"))
         assert sent == [] and stats == {}
         assert "[A] не отправлено: bob — пишут только контакты и Premium" in reports
+
+
+class TestGoneRecipients:
+    """A deleted account or a username nobody has is kept in stats: the next mailing skips it."""
+
+    def test_a_deleted_account_is_kept_and_skipped_next_time(self, tmp_path, monkeypatch):
+        _checks, sent, reports, stats = _run_base(
+            tmp_path, monkeypatch, _rows(1), lambda ids: [tl_types.RequirementToContactEmpty()],
+            refuse=errors.InputUserDeactivatedError(request=None))
+
+        assert sent == [] and stats["1"]["count"] == 0 and stats["1"]["gone"]
+        assert f"[A] не отправлено: 1 — {pm.GONE}" in reports
+        fn = _fn()
+        fn.load_stats()
+        assert "gone" in fn.stats["1"]  # saved: the next run() drops them (see the test below)
+
+    def test_a_username_nobody_has_is_kept(self, tmp_path, monkeypatch):
+        _checks, _sent, _reports, stats = _run_base(
+            tmp_path, monkeypatch, ["@nobody"], refuse=ValueError('No user has "nobody" as username'))
+        assert "gone" in stats["@nobody"]
+
+    def test_a_refusal_that_may_pass_later_is_not_kept(self, tmp_path, monkeypatch):
+        _checks, _sent, _reports, stats = _run_base(
+            tmp_path, monkeypatch, ["bob"], refuse=errors.UserPrivacyRestrictedError(request=None))
+        assert stats == {}
+
+    def test_an_invalid_peer_is_not_kept(self, tmp_path, monkeypatch):
+        """An older base without Owner ID: its hash may be another account's, the person alive."""
+        _checks, _sent, _reports, stats = _run_base(
+            tmp_path, monkeypatch, _rows(1), lambda ids: [tl_types.RequirementToContactEmpty()],
+            refuse=errors.PeerIdInvalidError(request=None))
+        assert stats == {}
+
+    def test_a_worker_out_of_imports_hands_the_number_on(self, tmp_path, monkeypatch):
+        """At its import limit a worker's number isn't "not found" (nor gone): the next worker takes it."""
+        class _Importing(_Worker):
+            def __init__(self, uid, name, limited):
+                super().__init__(uid, name)
+                self.limited = limited
+
+            async def __call__(self, request):  # contacts.importContacts
+                contact = request.contacts[0]
+                if self.limited:
+                    return types.SimpleNamespace(users=[], retry_contacts=[contact.client_id])
+                return types.SimpleNamespace(users=[tl_types.InputPeerUser(7, 70)], retry_contacts=[])
+
+        first, second = _Importing(1, "A", limited=True), _Importing(2, "B", limited=False)
+        reports, stats = _run_workers(tmp_path, monkeypatch, ["+79990000000"], [first, second])
+
+        assert first.sent == [] and second.sent == [7]
+        assert stats["+79990000000"]["count"] == 1 and "gone" not in stats["+79990000000"]
+
+    def test_an_invalid_peer_falls_back_to_the_username_only_if_it_is_still_theirs(self, tmp_path, monkeypatch):
+        class _Renamed(_Worker):
+            def __init__(self, owner_now):
+                super().__init__(1, "A", answer=lambda ids: [tl_types.RequirementToContactEmpty()] * len(ids))
+                self.owner_now = owner_now
+
+            async def get_input_entity(self, username):
+                return tl_types.InputPeerUser(self.owner_now, 0)
+
+            async def send_message(self, peer, text, **kwargs):
+                if peer.access_hash:  # the base's hash: refused, the username's peer is sent to
+                    raise errors.PeerIdInvalidError(request=None)
+                self.sent.append(peer.user_id)
+
+        rows = [{"user_id": 1, "access_hash": 11, "username": "alice"}]
+        still, taken = _Renamed(owner_now=1), _Renamed(owner_now=99)
+        reports, _stats = _run_workers(tmp_path, monkeypatch, rows, [still])
+        assert still.sent == [1] and "[A] отправлено (по username): alice, всего: 1" in reports
+        reports, stats = _run_workers(tmp_path, monkeypatch, [dict(rows[0], user_id=2)], [taken])
+        assert taken.sent == [] and "2" not in stats
+        assert "[A] не отправлено: alice @alice теперь у другого аккаунта" in reports
+
+    def test_a_base_row_s_username_nobody_has_is_not_kept(self, tmp_path, monkeypatch):
+        """An older base's hash refused, its username gone: the person renamed, not deleted."""
+        class _Renamed(_Worker):
+            async def get_input_entity(self, username):
+                raise errors.UsernameNotOccupiedError(request=None)
+
+        worker = _Renamed(1, "A", answer=lambda ids: [tl_types.RequirementToContactEmpty()] * len(ids),
+                          refuse=errors.PeerIdInvalidError(request=None))
+        _reports, stats = _run_workers(tmp_path, monkeypatch, [{"user_id": 1, "access_hash": 11,
+                                                                 "username": "alice"}], [worker])
+        assert stats == {}
+
+    def test_gone_ones_are_not_counted_as_already_sent(self):
+        """filter_unsent leaves them to run() (counted there as unreachable); a gone @name taken since is new."""
+        fn = _fn()
+        fn.stats = {"@bob": {"count": 0, "gone": "2026-01-01 00:00:00"}}
+        new_bob = {"user_id": 555, "access_hash": 1, "username": "bob"}
+        assert fn.filter_unsent(["@bob", new_bob]) == ["@bob", new_bob]
+
+    def test_one_written_to_before_it_went_is_still_sent(self):
+        """@bob mailed, renamed, then his @name gone: his base row (by id, old username) is not mailed again."""
+        fn = _fn()
+        fn.stats = {"@bob": {"count": 1, "gone": "2026-01-01 00:00:00"}}
+        assert fn.filter_unsent([{"user_id": 123, "access_hash": 1, "username": "bob"}]) == []
+
+    def test_a_phone_is_never_kept_as_gone(self, tmp_path, monkeypatch):
+        """Telegram gives a number to someone new: a deleted account's phone isn't skipped for good."""
+        class _Phone(_Worker):
+            async def __call__(self, request):  # contacts.importContacts: found
+                return types.SimpleNamespace(users=[tl_types.InputPeerUser(7, 70)], retry_contacts=[])
+
+        worker = _Phone(1, "A", refuse=errors.InputUserDeactivatedError(request=None))
+        _reports, stats = _run_workers(tmp_path, monkeypatch, ["+79990000000"], [worker])
+        assert stats == {}
+
+    def test_a_deleted_account_s_old_username_is_someone_new_s(self):
+        """Gone by id (deleted): it can't rename, so whoever holds its old @name now is someone else."""
+        fn = _fn()
+        fn.stats = {"5": {"count": 1, "username": "bob", "gone": "2026-01-01 00:00:00"}}
+        new_bob = {"user_id": 77, "access_hash": 1, "username": "bob"}
+        assert fn.filter_unsent(["@bob", new_bob]) == ["@bob", new_bob]
+
+    def test_a_formatted_phone_is_a_phone_too(self, tmp_path, monkeypatch):
+        class _Phone(_Worker):
+            async def __call__(self, request):  # contacts.importContacts: found
+                return types.SimpleNamespace(users=[tl_types.InputPeerUser(7, 70)], retry_contacts=[])
+
+        worker = _Phone(1, "A", refuse=errors.InputUserDeactivatedError(request=None))
+        _reports, stats = _run_workers(tmp_path, monkeypatch, ["+7 999 123-45-67"], [worker])
+        assert stats == {}  # as resolve_peer took it: a number, never kept as gone
+
+    def test_drop_gone_leaves_out_the_kept_ones_a_list_s_in_any_case(self):
+        fn = _fn()
+        fn.stats = {"@Bob": {"count": 0, "gone": "2026-01-01 00:00:00"},
+                    "5": {"count": 0, "gone": "2026-01-01 00:00:00"}, "@ann": {"count": 1}}
+        rows = [{"user_id": 5, "access_hash": 1, "username": "x"}, {"user_id": 6, "access_hash": 1, "username": "bob"}]
+
+        assert fn.drop_gone(["@Bob", "@bob", "@ann", *rows]) == ["@ann", rows[1]]  # a base row: by its id
+
+    def test_the_stats_table_marks_the_gone_ones(self, monkeypatch):
+        from rich.console import Console
+
+        console = Console(width=160)
+        monkeypatch.setattr(pm, "console", console)
+        fn = _fn()
+        fn.stats = {"7": {"count": 2, "last_date": "2026-05-01 10:00:00", "gone": "2026-10-01 10:00:00"}}
+        with console.capture() as capture:
+            fn.print_stats()
+        assert "недоступен с 2026-10-01" in capture.get()  # mailed before, gone since: still marked
 
 
 def _premium_only_for(*ids):

@@ -66,18 +66,13 @@ def choose_pool_proxy(used: list[Proxy | None], available: list[Proxy]) -> Proxy
     if not available:
         return None
 
-    def key(proxy: Proxy):
-        # credentials too: rotating providers expose many proxies on one host:port.
-        # "" and None are the same no-auth proxy (as_telethon treats them alike)
-        return (proxy.proxy_type, proxy.ip, proxy.port, proxy.user or None, proxy.password or None)
-
     counts: dict = {}
     for proxy in used:
         if proxy is not None:
-            counts[key(proxy)] = counts.get(key(proxy), 0) + 1
+            counts[proxy.key()] = counts.get(proxy.key(), 0) + 1
 
     for proxy in available:
-        if counts.get(key(proxy), 0) < ACCOUNTS_PER_PROXY:
+        if counts.get(proxy.key(), 0) < ACCOUNTS_PER_PROXY:
             return proxy
 
     raise ValueError(

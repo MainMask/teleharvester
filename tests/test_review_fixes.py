@@ -968,7 +968,7 @@ class TestJoinReturnsTarget:
 
 
 class TestAddContactsUsernameFallback:
-    def _add(self, row):
+    def _add(self, row, owner_now=1):
         from telethon.tl.types import InputUser
         from functions.add_contacts import AddContactsFunc
 
@@ -981,7 +981,7 @@ class TestAddContactsUsernameFallback:
                 added_ids.append(request.id)
 
             async def get_input_entity(self, username):
-                return ns(username=username)
+                return ns(username=username, user_id=owner_now)  # whom the username names now
 
             async def get_me(self):
                 return ns(id=7)
@@ -996,6 +996,10 @@ class TestAddContactsUsernameFallback:
     def test_falls_back_to_username(self):
         added, ids, _ = self._add({"user_id": 1, "access_hash": 2, "username": "bob"})
         assert added == 1 and ids[0].username == "bob"
+
+    def test_a_username_taken_by_someone_else_is_not_added(self):
+        added, ids, msgs = self._add({"user_id": 1, "access_hash": 2, "username": "bob"}, owner_now=99)
+        assert added == 0 and ids == [] and any("@bob теперь у другого аккаунта" in m for m in msgs)
 
     def test_no_username_is_skipped(self):
         added, _, msgs = self._add({"user_id": 1, "access_hash": 2})

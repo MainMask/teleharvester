@@ -158,7 +158,7 @@ class _Session:
         return ns(id=self.uid, first_name=f"w{self.uid}")
 
     async def get_input_entity(self, username):
-        return ns(username=username)
+        return ns(username=username, user_id=USER_IDS.get(username))  # the person a base row names
 
     async def __call__(self, request):
         self.added.append(request.id)
@@ -187,6 +187,8 @@ class _WorkerStorage:
 
         return cm()
 
+
+USER_IDS = {"alice": 1, "carol": 30, "zed": 10, "yan": 11, "u3": 3, "u4": 4}  # usernames' owners as Telegram resolves them
 
 ROWS = [
     {"user_id": 1, "access_hash": 11, "username": "alice", "owner_id": OWNER},
@@ -227,10 +229,19 @@ def test_mailing_foreign_base_uses_username_and_skips_the_rest(monkeypatch, tmp_
     # the skipped row first: a real send would be followed by a delay, a skip must not be
     msgs, delays = _mailing([other], ROWS[::-1], monkeypatch, tmp_path)
 
-    assert other.sent == ["alice"]  # straight by username, no attempt with the foreign hash
+    assert [p.username for p in other.sent] == ["alice"]  # straight by username, no attempt with the foreign hash
     assert "Пропущено без username (база другого аккаунта): 1" in msgs
     assert not any("not sent" in m for m in msgs)  # the skip is silent
     assert delays == []  # nothing waits after a skipped row
+
+
+def test_mailing_by_username_skips_a_username_taken_by_someone_else(monkeypatch, tmp_path):
+    other = _Session(OTHER)
+    rows = [dict(ROWS[0], user_id=99)]  # the base's alice was 99: @alice is someone else's now
+    msgs, _ = _mailing([other], rows, monkeypatch, tmp_path)
+
+    assert other.sent == []
+    assert any("@alice теперь у другого аккаунта" in m for m in msgs)
 
 
 def test_mailing_owner_uses_hash_for_everyone(monkeypatch, tmp_path):
@@ -250,7 +261,7 @@ def test_mailing_owner_takes_only_people_without_username(monkeypatch, tmp_path)
     _mailing([other, owner], ROWS, monkeypatch, tmp_path)
 
     assert [p.user_id for p in owner.sent] == [2] and isinstance(owner.sent[0], tl.InputPeerUser)
-    assert other.sent == ["alice"]  # people with a username go to the other workers
+    assert [p.username for p in other.sent] == ["alice"]  # people with a username go to the other workers
 
 
 def test_mailing_base_without_owner_keeps_old_behaviour(monkeypatch, tmp_path):
@@ -1148,7 +1159,7 @@ def test_a_released_restricted_worker_on_hold_is_out_for_good(monkeypatch, tmp_p
     restricted_workers.save_released(["sessions/w.jsession"])
     msgs, _ = _mailing([v], ROWS, monkeypatch, tmp_path, storage=storage, on_hold=[w])
 
-    assert v.sent == ["alice"]  # W's people go to the others; the no-username one only W could reach
+    assert [p.username for p in v.sent] == ["alice"]  # W's people go to the others; the no-username one only W could reach
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
 
 

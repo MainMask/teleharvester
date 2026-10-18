@@ -3,7 +3,9 @@ import os
 from datetime import datetime
 
 from telethon import types
-from telethon.errors import PeerIdInvalidError
+from telethon.errors import (
+    InputUserDeactivatedError, PeerIdInvalidError, UsernameInvalidError, UsernameNotOccupiedError,
+)
 from telethon.tl.functions.users import GetRequirementsToContactRequest
 from rich.prompt import Prompt, Confirm
 from modules.console import console
@@ -33,6 +35,19 @@ STATS_SAVE_EVERY = 25
 # limit; a failed call leaves its batch unchecked (reported once), see check_requirements).
 REQUIREMENTS_BATCH = 100
 
+GONE = "аккаунт удалён или недоступен, больше не пишу"
+GONE_SKIPPED = "Пропущено недоступных (удалены или нет такого username)"
+
+
+def gone(err) -> bool:
+    """The recipient can't be reached by any worker, now or later: a deleted (or Telegram-banned)
+    account, or a username nobody has. Kept in stats, so no later mailing writes to them.
+    Not PeerIdInvalid (an older base's hash may be another account's) nor a phone not found
+    (contacts.importContacts answers so at its limit too): a live person would be dropped."""
+    if isinstance(err, (InputUserDeactivatedError, UsernameNotOccupiedError, UsernameInvalidError)):
+        return True
+    return isinstance(err, ValueError) and str(err).startswith("No user has")  # Telethon's unknown username
+
 
 class PmMailingFunc(TelethonFunction):
     """Mailing to PM (with stats)"""
@@ -43,14 +58,23 @@ class PmMailingFunc(TelethonFunction):
     def save_stats(self):
         json_file.save(os.path.join(self.storage.home, STATS_NAME), self.stats)
 
+    def _record(self, recipient) -> dict:
+        """The recipient's stats entry, counted towards the next save (see STATS_SAVE_EVERY)."""
+        self._unsaved += 1
+        return self.stats.setdefault(self.recipient_key(recipient), {"count": 0})
+
     def record_success(self, recipient):
-        entry = self.stats.setdefault(self.recipient_key(recipient), {"count": 0})
+        entry = self._record(recipient)
         entry["count"] += 1
         if isinstance(recipient, dict) and recipient.get("username"):  # a list's @name finds them by it
             entry["username"] = recipient["username"]
         entry["last_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if self._unsaved >= STATS_SAVE_EVERY:
+            self.flush_stats()
 
-        self._unsaved += 1
+    def record_gone(self, recipient):
+        """A recipient no one can write to (see gone): kept with no sends, so it is skipped next time."""
+        self._record(recipient)["gone"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if self._unsaved >= STATS_SAVE_EVERY:
             self.flush_stats()
 
@@ -80,10 +104,10 @@ class PmMailingFunc(TelethonFunction):
     async def resolve_peer(self, session, recipient, foreign=False):
         if isinstance(recipient, dict):
             if foreign:  # the base's access hash belongs to another account: it can't work here
-                return recipient["username"]
+                return await self.by_username(session, recipient)
             return types.InputPeerUser(recipient["user_id"], recipient["access_hash"])
 
-        if recipient.startswith("+") or recipient.lstrip("+").isdigit():
+        if self._is_phone(recipient):
             users = await self.import_phone_contact(session, recipient)
             if not users:
                 raise ValueError(f"номер {recipient} не найден")
@@ -236,8 +260,8 @@ class PmMailingFunc(TelethonFunction):
                 await self._deliver(session, peer)
             except PeerIdInvalidError:
                 if isinstance(recipient, dict) and recipient.get("username"):
-                    await self._deliver(session, recipient["username"])
                     fallback = True
+                    await self._deliver(session, await self.by_username(session, recipient))
                 else:
                     raise
         except AccountLimited:
@@ -248,6 +272,12 @@ class PmMailingFunc(TelethonFunction):
                 await self._report(f"[{name}] не отправлено: {self.recipient_label(recipient)} "
                                    f"— {reason}, передаю Premium-воркеру")
                 return
+            # by a base row's username: a renamed person isn't gone (its owner, or the hash, may reach them);
+            # a phone isn't either: Telegram gives a number to someone new
+            phone = isinstance(recipient, str) and self._is_phone(recipient)
+            if reason is None and not fallback and not phone and gone(err):
+                self.record_gone(recipient)
+                reason = GONE
             self.progress_failed()
             await self._report(f"[{name}] не отправлено: {self.recipient_label(recipient)} "
                                + (f"— {reason}" if reason else str(err)))
@@ -280,21 +310,45 @@ class PmMailingFunc(TelethonFunction):
             return self.parse_list(fileobj)
 
     @staticmethod
+    def _is_phone(recipient: str) -> bool:
+        """A list's line resolved as a phone number (an id too, as typed digits)."""
+        return recipient.startswith("+") or recipient.lstrip("+").isdigit()
+
+    @staticmethod
     def _username(text) -> str | None:
         """A username as compared across a base and a list (@Alice = alice); None for an id or a phone."""
         name = str(text or "").lstrip("@").casefold()
         return name if name and not name.lstrip("+").isdigit() else None
 
+    def drop_gone(self, recipients) -> list:
+        """The recipients not kept as gone (requires load_stats first): no one can write to those. Before a
+        limit, so the gone ones take no place in it. A list's @name in any case (Telegram's usernames have none)."""
+        gone = {key for key, entry in self.stats.items() if "gone" in entry}
+        names = {self._username(key) for key in gone} - {None}
+
+        def alive(recipient):
+            if self.recipient_key(recipient) in gone:
+                return False
+            return isinstance(recipient, dict) or self._username(recipient) not in names
+
+        return [r for r in recipients if alive(r)]
+
     def filter_unsent(self, recipients):
         """Drop recipients already recorded in stats (requires load_stats first): by their key, or by
-        their username, so a person mailed from a list (@name) and from a base (user id) is mailed once."""
+        their username, so a person mailed from a list (@name) and from a base (user id) is mailed once.
+        Not the gone ones: never written to, drop_gone drops them (its callers count them). A base row whose username
+        a list's gone @name held is someone new (a base row is its user id), so it is not taken for sent."""
+        # gone, never written to: not sent; one written to before it went still is (the same person by id)
+        sent_to = {key: entry for key, entry in self.stats.items() if entry.get("count") or "gone" not in entry}
         # a list's keys (@name), a base row's entry username; older stats kept a base's people by username
-        usernames = {self._username(key) for key in self.stats}
-        usernames |= {self._username(entry.get("username")) for entry in self.stats.values()}
+        usernames = {self._username(key) for key in sent_to}
+        # a base row's: not once gone (a deleted account can't rename: its old @name's holder is someone new)
+        usernames |= {self._username(entry.get("username")) for key, entry in sent_to.items()
+                      if not (key.isdigit() and "gone" in entry)}
         usernames.discard(None)
 
         def sent(recipient):
-            if self.recipient_key(recipient) in self.stats:
+            if self.recipient_key(recipient) in sent_to:
                 return True
             username = recipient.get("username") if isinstance(recipient, dict) else recipient
             return self._username(username) in usernames
@@ -319,7 +373,7 @@ class PmMailingFunc(TelethonFunction):
         self.delay_range = delay
         self.progress_prepare()
 
-        self.load_stats()
+        self.load_stats()  # the gone ones its callers dropped (drop_gone, before their limit)
         self._limits = DailyCounter(LIMITS_PATH, self.settings.per_account_daily)  # 0: unlimited
         await self.check_workers(report)
         self.progress_total(len(recipients))
@@ -387,7 +441,8 @@ class PmMailingFunc(TelethonFunction):
 
         for recipient, entry in self.stats.items():
             table.add_row(
-                self.safe(recipient), str(entry["count"]), entry.get("last_date", "—")
+                self.safe(recipient), str(entry["count"]),
+                "недоступен с " + entry["gone"] if "gone" in entry else entry.get("last_date", "—")
             )
 
         console.print(table)
@@ -416,6 +471,13 @@ class PmMailingFunc(TelethonFunction):
             return
 
         self.load_stats()
+        before = len(recipients)
+        recipients = self.drop_gone(recipients)
+        if before > len(recipients):
+            console.print(f"[bold white]{GONE_SKIPPED}: {before - len(recipients)}[/]")
+            if not recipients:
+                console.print("[bold red]Отправлять некому!")
+                return
 
         if Confirm.ask("[bold red]пропускать тех, кому уже писали?", default=True):
             before = len(recipients)

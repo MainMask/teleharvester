@@ -34,6 +34,11 @@ class Proxy:
             unquote(parsed.password) if parsed.password else None,
         )
 
+    def key(self) -> tuple:
+        """The same proxy whatever its spelling: credentials too (rotating providers expose many
+        proxies on one host:port); "" and None are the same no-auth proxy (as_telethon treats them alike)."""
+        return (self.proxy_type, self.ip, self.port, self.user or None, self.password or None)
+
     def label(self) -> str:
         """How lists and cards show it: no credentials."""
         return f"{self.proxy_type}://{self.ip}:{self.port}"
@@ -50,6 +55,11 @@ class Proxy:
             )
 
         return (self.proxy_type, self.ip, self.port)
+
+
+def overlap(proxies, others) -> bool:
+    """Any proxy of `proxies` in `others` (by Proxy.key): the pool and the restricted workers' lists must not share one."""
+    return bool({p.key() for p in proxies} & {p.key() for p in others})
 
 
 def parse_proxies(text: str) -> list["Proxy"]:

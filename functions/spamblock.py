@@ -13,7 +13,7 @@ from telethon.tl.functions.contacts import UnblockRequest
 
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-from modules import contacts_ledger, restricted_workers
+from modules import contacts_ledger, projects, restricted_workers, tdata_import
 from modules.storages.sessions_storage import release_client
 
 # the report's groups, in order: working first, then the ones restricted, dead, unchecked
@@ -49,6 +49,42 @@ def release_date(text: str):
     if year is None:
         return None
     return next((m.group() for m in (d.search(text) for d in DATES) if m), year.group())
+
+
+def set_restricted_proxies(storage, raw: str | None):
+    """Replace (`raw`, one proxy per line, saved as sent, as the pool's) or clear (None) the project's
+    proxies for its restricted workers. The workers on the old ones are off the pool still: the next rehome
+    finds them (see SessionsStorage.rehome_restricted)."""
+    path = projects.restricted_proxies_path(storage.home)
+    if raw:
+        tdata_import.save_proxies(raw, path)
+    elif os.path.exists(path):
+        os.remove(path)
+
+
+def rehome(storage, dry_run: bool = False, busy=()) -> dict:
+    """The project's permanently restricted workers onto its proxies for them, the others off its pool (and,
+    with no such list, the restricted too) back into it: SessionsStorage.rehome_restricted by the project's
+    lists. ValueError naming the list with a bad line."""
+    lists = []
+    for path in (projects.proxies_path(storage.home), projects.restricted_proxies_path(storage.home)):
+        try:
+            lists.append(tdata_import.load_proxies(path))
+        except ValueError as err:
+            raise ValueError(f"ошибка в {os.path.basename(path)}: {err}") from err
+    main, spare = lists
+    return storage.rehome_restricted(set(restricted_workers.load()), main, spare, dry_run, busy)
+
+
+def rehome_report(moves: dict) -> str:
+    lines = [f"🔁 На прокси для ограниченных: {len(moves['out'])}, в основной пул: {len(moves['back'])}."]
+    if moves["stuck"]:
+        lines.append(f"⚠️ В основном пуле нет мест: {len(moves['stuck'])} остаются на прежних прокси. "
+                     "Добавьте прокси (🌐 Прокси) — вернуть их можно после следующей проверки статуса.")
+    if moves["busy"]:
+        lines.append(f"⏳ Заняты сейчас (сбор или вход): {len(moves['busy'])} — пересадить их можно после "
+                     "следующей проверки статуса.")
+    return "\n".join(lines)
 
 
 def _context(home: str):
@@ -282,4 +318,22 @@ class SpamBlockFunc(TelethonFunction):
         if Confirm.ask("[bold magenta]Перенести ограниченные сессии в отдельные папки?[/]"):
             if kept := await self.move_restricted(blocks):
                 await console_report(f"Оставлены в проекте — их контакты ждут: {', '.join(kept)}")
+
+        # after the move to folders: it finds the workers by the clients this rebuilds
+        try:
+            pending = rehome(self.storage, dry_run=True)
+        except ValueError as err:
+            await console_report(f"⚠️ Пересадка ограниченных невозможна: {err}")
+            return
+        if (pending["out"] or pending["back"]) and Confirm.ask(
+                f"[bold magenta]Пересадить на их прокси бессрочно ограниченных: {len(pending['out'])}, "
+                f"вернуть в основной пул остальных вне его: {len(pending['back'])}?[/]", default=True):
+            old = dict(self.storage.full_sessions)
+            try:
+                moves = rehome(self.storage)
+            except ValueError as err:  # a list edited while the question waited
+                await console_report(f"⚠️ Пересадка ограниченных невозможна: {err}")
+                return
+            await self.reconnect_rebuilt(old)
+            await console_report(rehome_report(moves))
 

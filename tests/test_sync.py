@@ -916,7 +916,8 @@ def test_cli_set_proxies_reconnects_rebuilt_clients(tmp_path, monkeypatch):
     from functions import set_proxies
 
     (tmp_path / "proxies.txt").write_text("socks5://u:p@1.2.3.4:1080\n")
-    monkeypatch.setattr(set_proxies.Prompt, "ask", lambda *a, **k: str(tmp_path / "proxies.txt"))
+    monkeypatch.setattr(set_proxies.Prompt, "ask", lambda prompt, **k:  # no list for the restricted
+                        k["default"] if "ограниченных" in prompt else str(tmp_path / "proxies.txt"))
     monkeypatch.setattr(set_proxies.console, "print", lambda *a, **k: None)
 
     class _Client:
@@ -930,13 +931,14 @@ def test_cli_set_proxies_reconnects_rebuilt_clients(tmp_path, monkeypatch):
     class _Storage:
         initialize = True
         sessions = []
+        jsessions_paths = {}
         full_sessions = {"a.jsession": old}
         home = str(tmp_path)  # its pool: the file given
 
-        def apply_proxies(self, proxies):
+        def apply_proxies(self, proxies, spare=(), restricted=()):
             assert proxies[0].ip == "1.2.3.4"
             self.full_sessions = {"a.jsession": new}
-            return {"accounts": 1, "proxies_used": 1, "string_sessions_skipped": 0}
+            return {"accounts": 1, "proxies_used": 1, "restricted": 0, "string_sessions_skipped": 0}
 
         async def check_session(self, client, path):
             checked.append((client, path))
@@ -950,16 +952,18 @@ def test_cli_set_proxies_from_another_file_become_the_pool(tmp_path, monkeypatch
 
     pool = tmp_path / "home" / "proxies.txt"  # the project's
     (tmp_path / "new.txt").write_text("socks5://u:p@1.2.3.4:1080\n\n  socks5://5.6.7.8:1080  \n")
-    monkeypatch.setattr(set_proxies.Prompt, "ask", lambda *a, **k: str(tmp_path / "new.txt"))
+    monkeypatch.setattr(set_proxies.Prompt, "ask", lambda prompt, **k:  # no list for the restricted
+                        k["default"] if "ограниченных" in prompt else str(tmp_path / "new.txt"))
     monkeypatch.setattr(set_proxies.console, "print", lambda *a, **k: None)
 
     class _Storage:
         sessions = []
+        jsessions_paths = {}
         full_sessions = {}
         home = str(tmp_path / "home")
 
-        def apply_proxies(self, proxies):
-            return {"accounts": 2, "proxies_used": 2, "string_sessions_skipped": 0}
+        def apply_proxies(self, proxies, spare=(), restricted=()):
+            return {"accounts": 2, "proxies_used": 2, "restricted": 0, "string_sessions_skipped": 0}
 
     asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
     # as the bot saves it: the project's phone logins and tdata imports take this list from now on
@@ -1680,3 +1684,39 @@ def test_a_mid_flow_button_works_at_its_own_step(module, handler, value, step, e
     state.state = getattr(getattr(states, group), name)
     replies = _mid_flow_call(module, handler, value, state, extra)
     assert replies and "устарел" not in replies[0]
+
+
+def test_cli_set_proxies_without_a_list_for_the_restricted_stops_separating_them(tmp_path, monkeypatch):
+    from functions import set_proxies
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "proxies.txt").write_text("socks5://1.2.3.4:1080\n")
+    (home / "proxies_restricted.txt").write_text("socks5://9.9.9.9:1080\n")  # set before
+    answers = iter([str(home / "proxies.txt"), "-"])  # no list for them now
+    monkeypatch.setattr(set_proxies.Prompt, "ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(set_proxies.console, "print", lambda *a, **k: None)
+    applied = []
+
+    class _Storage:
+        sessions = []
+        full_sessions = {}
+
+        jsessions_paths = {}
+
+        def __init__(self):
+            self.home = str(home)
+
+        def apply_proxies(self, proxies, spare=(), restricted=()):
+            applied.append(list(spare))
+            return {"accounts": 1, "proxies_used": 1, "restricted": 0, "string_sessions_skipped": 0}
+
+    asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
+    # all in the pool now; the next status check mustn't offer the old list again
+    assert applied == [[]] and not (home / "proxies_restricted.txt").exists()
+
+    # a typo is not "no list": nothing applied, the list kept
+    (home / "proxies_restricted.txt").write_text("socks5://9.9.9.9:1080\n")
+    answers = iter([str(home / "proxies.txt"), str(home / "proxies_restriced.txt")])
+    asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
+    assert applied == [[]] and (home / "proxies_restricted.txt").exists()

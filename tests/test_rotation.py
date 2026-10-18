@@ -122,13 +122,25 @@ class TestSafeCall:
             calls.append(1)
             if len(calls) == 1:
                 raise FloodWaitError(request=None, capture=5)
-            return types.SimpleNamespace(users=["u"])
+            return types.SimpleNamespace(users=["u"], retry_contacts=[])
 
         fn = _fn([session])
         with patch("functions.base.base.asyncio.sleep", new=_noop_sleep()):
             assert asyncio.run(fn.import_phone_contact(session, "+100")) == ["u"]
 
         assert len(calls) == 2
+
+    def test_import_phone_contact_out_of_imports_is_account_limited(self):
+        async def session(request):  # Telegram's answer at the import limit: no error, the number to retry
+            return types.SimpleNamespace(users=[], retry_contacts=[request.contacts[0].client_id])
+
+        fn = _fn([session])
+        try:
+            asyncio.run(fn.import_phone_contact(session, "+100"))
+        except AccountLimited as err:
+            assert "лимит импорта контактов" in str(err)
+        else:
+            raise AssertionError("no AccountLimited")
 
 
 class TestRunWithRotation:

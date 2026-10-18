@@ -144,10 +144,28 @@ class TelethonFunction(BaseFunction):
             _report_console.print("[bold red]Никого не выбрано: номера из списка или all — все.[/]")
         self.sessions = [accounts[i].client for i in picked]
 
+    async def reconnect_rebuilt(self, old: dict):
+        """After a proxy change (`old`: full_sessions before it): the CLI keeps clients connected, so
+        drop the ones a new client replaced and connect the rebuilt ones."""
+        for path, client in old.items():
+            if self.storage.full_sessions.get(path) is not client:
+                await client.disconnect()
+                if self.storage.initialize:
+                    await self.storage.check_session(self.storage.full_sessions[path], path)
+
+    async def by_username(self, session, row):
+        """A base row's peer by its username, if the username is still that person's: an old base's
+        username may have been taken by someone else since, who must not be written to or added."""
+        peer = await self.safe_call(lambda: session.get_input_entity(row["username"]))
+        if getattr(peer, "user_id", None) != row["user_id"]:
+            raise ValueError(f"@{row['username']} теперь у другого аккаунта")
+        return peer
+
     async def import_phone_contact(self, session, phone):
         """Resolve a phone number to users via ImportContactsRequest.
 
-        Returns the resolved users list (empty if Telegram found no account).
+        Returns the resolved users list (empty if Telegram found no account). AccountLimited when
+        the worker is out of imports: Telegram then puts the number in retry_contacts, not an error.
         """
         result = await self.safe_call(lambda: session(functions.contacts.ImportContactsRequest(
             contacts=[types.InputPhoneContact(
@@ -158,4 +176,6 @@ class TelethonFunction(BaseFunction):
             )]
         )))
 
+        if result.retry_contacts:
+            raise AccountLimited("лимит импорта контактов")
         return result.users

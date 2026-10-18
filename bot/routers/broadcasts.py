@@ -11,7 +11,7 @@ from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, build_content,
                                  require_post_link, require_text, resolve)
 from bot.services.delegation import WorkerPool
 from functions.broadcast import MENTION_ADMINS, MENTION_USERS
-from functions.pmmailing import PmMailingFunc
+from functions.pmmailing import GONE_SKIPPED, PmMailingFunc
 from bot.services.jobs import JobManager
 from bot.states import BroadcastOptions, ChatBroadcast, Comments, Instant, PmMailing
 from modules.settings import Settings
@@ -144,12 +144,19 @@ async def mail_run(
             await message.answer(f"Файл не прочитан: {err}")
             return
 
+    def drop_gone(rows):  # the gone ones out before the limit: they take no place in it
+        instance.load_stats()
+        return instance.drop_gone(rows)
+
+    before = len(recipients)
+    try:  # off the event loop, as the base: the stats grow with every recipient ever mailed
+        recipients = await asyncio.to_thread(drop_gone, recipients)
+    except Exception as err:
+        await message.answer(f"Статистика не прочитана: {err}")
+        return
+    if gone := before - len(recipients):
+        await message.answer(f"{GONE_SKIPPED}: {gone}")
     if data.get("skip"):
-        try:
-            instance.load_stats()
-        except Exception as err:
-            await message.answer(f"Статистика не прочитана: {err}")
-            return
         recipients = instance.filter_unsent(recipients)
 
     if data.get("limit"):

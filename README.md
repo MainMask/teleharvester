@@ -98,6 +98,15 @@ python sessions/import_tdata.py          # import tdata_import/<name>/tdata fold
 - **Proxies.** Each project's own list, `projects/<id>/proxies.txt` (set with **🌐 Прокси**), one per line,
   `scheme://[user:pass@]ip:port` (`socks5`, `socks4`, `http`), up to 3 accounts per proxy; the project's
   new accounts take theirs from it. Personal accounts use no proxy.
+  Optionally, `projects/<id>/proxies_restricted.txt` (the second step of **🌐 Прокси**): proxies for the
+  permanently restricted workers, no cap per proxy, none of the pool's. They stay workers (they still answer
+  replies and can scrape) but leave the pool, so its places go to new accounts and no fresh account shares
+  an IP with a restricted one. After each status check the bot offers **🔁 Пересадить** for a day (the
+  terminal asks): the restricted ones go onto these proxies, the ones clean again back into the pool (or
+  stay, reported, while it is full); the other workers keep their proxies, and one busy right now (a scrape,
+  a login) is left for the next check. **🗑 Не отделять** at that step
+  (in the terminal: `-`) drops the list and brings them back into the pool. Any other worker not on a pool
+  proxy (clean again, its list replaced, or moved here from another project) is offered back into it too.
 - Session files put in by hand are read when the bot starts (or the terminal opens the project's card).
 
 ## Usage
@@ -125,13 +134,20 @@ Applied identically in the bot and the terminal, within each project.
 
 - **Contacts ledger.** *Add to contacts* records which worker added each person
   (the project's `contacts.json`); the mailing writes to that person only from that worker. People without
-  a username go to the account whose scrape listed them (access hashes are per account).
+  a username go to the account whose scrape listed them (access hashes are per account). A base row
+  mailed or added to contacts by its username is skipped if that username now belongs to someone else.
 - **@SpamBot check** before every mailing and contact run: dead sessions move to
   `inactive/` next to them and their people are reassigned; permanently restricted workers are excluded
   and their people wait until the admin releases them (**Передать контакты**); temporarily
   restricted ones sit the run out.
 - **Mid-run failures.** A dead worker's remaining people go to other workers in the same run; a
-  restriction or daily cap defers them to the next run.
+  restriction or daily cap defers them to the next run. A worker out of contact imports (a phone
+  recipient) sits the run out and the next worker takes the number.
+- **Unreachable recipients.** A deleted (or Telegram-banned) account and a username nobody has are kept
+  in the project's `pm_mailing.json` (`"gone"`, no sends) and skipped by every later mailing, with
+  «skip those already messaged» or without. Not kept: privacy refusals, an invalid peer (an older base's
+  hash may be another account's), a phone not found, a base row's username nobody has (renamed, not gone). A recipient who blocked the worker can't be told
+  apart: Telegram accepts the message, and it counts as sent.
 - **Order.** Workers are ordered by username in the pool and in reports.
 - **Settings** (`config.toml`: delays, daily caps, auto-reply) are shared by all projects; the daily caps
   count per account.
@@ -195,6 +211,7 @@ Scraping more than ~150–200 communities in one block may trigger a 24-hour sof
 | `assets/contacts.parquet` | Base for *Add to contacts* (`user_id`, `access_hash`). |
 | `projects/<id>/sessions/` | The project's workers (`inactive/`, `restricted/` inside). |
 | `projects/<id>/proxies.txt`, `pm_mailing.json`, `contacts.json` | The project's proxy pool, mailing statistics and contacts ledger. |
+| `projects/<id>/proxies_restricted.txt` | Optional: the project's proxies for its permanently restricted workers. |
 | `sessions/` | Free accounts: workers in no project. |
 | `stats/account_limits.json`, `invite_limits.json`, `contacts_limits.json` | Daily per-account counters (mailing, invites, contact adds). |
 | `stats/released.json` | Released workers. |

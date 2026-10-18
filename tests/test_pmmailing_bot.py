@@ -107,6 +107,9 @@ def test_mail_run_uses_inline_recipients(monkeypatch):
         def load_stats(self):
             pass
 
+        def drop_gone(self, recipients):
+            return recipients
+
         async def run(self, recipients, content, delay, reporter):
             captured["recipients"] = recipients
 
@@ -138,6 +141,45 @@ def test_mail_run_uses_inline_recipients(monkeypatch):
 
 async def _fake_content(obj):
     return obj
+
+
+def test_mail_run_drops_the_gone_before_the_limit(monkeypatch):
+    """The gone take no place in the limit, and none left alive starts no job."""
+    from functions.pmmailing import PmMailingFunc
+
+    captured = {}
+
+    class _Inst(PmMailingFunc):
+        def __init__(self):
+            pass
+
+        def load_stats(self):
+            self.stats = {"@a": {"count": 0, "gone": "2026-01-01 00:00:00"}}
+
+        async def run(self, recipients, content, delay, reporter):
+            captured["recipients"] = recipients
+
+    class _Manager:
+        active, label = False, ""
+
+        async def run(self, bot, chat_id, pool, instance, bot_function, job, header, done, **kw):
+            await job(instance, ns())
+            return True
+
+    monkeypatch.setattr(broadcasts, "resolve", lambda functions, key: (_Inst(), ns(risk="risky")))
+    monkeypatch.setattr(broadcasts, "build_content", lambda message, album: _fake_content(ns(cleanup=lambda: None)))
+
+    msg = _Msg()
+    state = _State({"recipients": ["@a", "@b", "@c"], "skip": False, "limit": 1})
+    asyncio.run(broadcasts.mail_run(msg, state, None, ns(), {}, _Manager(), ns(delay=[0])))
+    assert captured["recipients"] == ["@b"]  # @a gone: the limit's place goes to @b
+    assert any("Пропущено недоступных" in r and ": 1" in r for r in msg.replies)
+
+    captured.clear()
+    msg = _Msg()
+    state = _State({"recipients": ["@a"], "skip": False, "limit": None})
+    asyncio.run(broadcasts.mail_run(msg, state, None, ns(), {}, _Manager(), ns(delay=[0])))
+    assert captured == {} and any("пуст" in r for r in msg.replies)  # no empty job
 
 
 def test_mail_start_drops_stale_recipients_from_an_abandoned_run():

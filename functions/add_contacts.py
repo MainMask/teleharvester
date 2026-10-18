@@ -25,8 +25,7 @@ class AddContactsFunc(TelethonFunction):
         )))
 
     async def _add_by_username(self, session, row):
-        user = await self.safe_call(lambda: session.get_input_entity(row["username"]))
-        await self._add(session, user, row)
+        await self._add(session, await self.by_username(session, row), row)
 
     async def add_one(self, session, row):
         aid = (await self.cached_me(session)).id

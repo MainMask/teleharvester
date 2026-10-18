@@ -50,6 +50,7 @@ class SetPassword(StatesGroup):
 
 class SetProxy(StatesGroup):
     input = State()
+    spare = State()  # the optional proxies for the permanently restricted workers, after the pool's
 
 
 class SetDelay(StatesGroup):

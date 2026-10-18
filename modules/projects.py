@@ -357,6 +357,12 @@ def proxies_path(project_home: str) -> str:
     return os.path.join(project_home, "proxies.txt")
 
 
+def restricted_proxies_path(project_home: str) -> str:
+    """The project's proxies for its permanently restricted workers (see SessionsStorage.rehome_restricted):
+    off the pool, so their places go to new accounts. None set: they keep their pool proxies."""
+    return os.path.join(project_home, "proxies_restricted.txt")
+
+
 def account_files(directory: str) -> list[str]:
     """The session files right in `directory` (not in its inactive/ or restricted/), by name."""
     if not os.path.isdir(directory):
