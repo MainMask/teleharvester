@@ -1,14 +1,15 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb, choice_kb, stop_kb
-from bot.keyboards.menu import main_menu
-from bot.routers._common import STALE_BUTTON, STALE_STEP, ensure_workers, left_flow, require_text, resolve
+from bot.keyboards.menu import back_kb
+from modules.registry import ACTIVITY, BOT_FUNCTIONS_BY_KEY
+from bot.routers._common import (STALE_BUTTON, STALE_STEP, back_answer, left_flow, require_text, resolve,
+                                 stale_tap, start_form)
 from bot.services.delegation import WorkerPool
-from bot.services.jobs import JobManager
+from bot.services.jobs import JobManager, busy
 from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
 from bot.states import ReportMessage, ReportUser
@@ -17,8 +18,9 @@ from modules.storages.sessions_storage import connect_client, release_client
 
 router = Router()
 
+REPORT = BOT_FUNCTIONS_BY_KEY["report"]
 POSTS_ASK = "Номера постов через запятую — это число в конце ссылки на пост (t.me/name/123 → 123):"
-COMMENT_ASK = "Комментарий для модераторов Telegram (необязательно, «-» — без него):"
+COMMENT_ASK = "Комментарий для модераторов Telegram — пришлите текст или нажмите «⏭ Без комментария»:"
 
 # chat_id -> (instance, flow-state dict, current options list) for the dynamic report flow
 _FLOWS: dict[int, tuple] = {}
@@ -28,12 +30,8 @@ _FLOWS: dict[int, tuple] = {}
 
 @router.callback_query(FunctionCB.filter(F.key == "reportuser"))
 async def ru_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await state.clear()
-    await state.set_state(ReportUser.username)
-    await callback.message.answer("Username/ссылка на пользователя:", reply_markup=cancel_kb(ReportUser.username))
+    await start_form(callback, state, ReportUser.username,
+                     "🚫 Жалоба на пользователя — пришлите @username или ссылку на него:", pool)
 
 
 @router.message(ReportUser.username)
@@ -44,12 +42,8 @@ async def ru_username(message: Message, state: FSMContext, functions: dict):
     await state.update_data(username=username)
 
     instance, _ = resolve(functions, "reportuser")
-    builder = InlineKeyboardBuilder()
-    for index, (label, _reason) in enumerate(instance.reasons):
-        builder.button(text=label, callback_data=ChoiceCB(scope="reason", value=str(index)))
-    builder.adjust(1)
-
-    await message.answer("Причина:", reply_markup=builder.as_markup())
+    await message.answer("🚫 Жалоба на пользователя — причина:", reply_markup=cancel_kb(ReportUser.username, choice_kb(
+        "reason", [(label, str(index)) for index, (label, _reason) in enumerate(instance.reasons)])))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "reason"))
@@ -58,31 +52,45 @@ async def ru_reason(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
         return
     await state.update_data(reason_index=int(callback_data.value))
     await state.set_state(ReportUser.comment)
-    await callback.message.answer(COMMENT_ASK, reply_markup=cancel_kb(ReportUser.comment))
+    await callback.message.edit_text(COMMENT_ASK, reply_markup=_comment_kb(ReportUser.comment))
     await callback.answer()
+
+
+def _comment_kb(step):
+    return cancel_kb(step, choice_kb("rpt_nocomment", [("⏭ Без комментария", "go")]))
+
+
+async def _typed_comment(message: Message) -> str | None:
+    """The comment typed; None after asking again (no text). «-»: none, as before its button."""
+    if not message.text:
+        await message.answer("Нужен текст — или «⏭ Без комментария» выше. Пришлите ещё раз:")
+        return None
+    return "" if message.text.strip() == "-" else message.text
 
 
 @router.message(ReportUser.comment)
 async def ru_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
-    if not message.text:
-        await message.answer("Ожидается текст (или «-» для пустого).")
-        return
+    comment = await _typed_comment(message)
+    if comment is not None:
+        await _report_user(message, state, pool, functions, manager, comment)
 
+
+async def _report_user(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager,
+                       comment: str):
     data = await state.get_data()
     await state.clear()
 
     if "username" not in data or "reason_index" not in data:  # stale flow after a state clear
-        await message.answer(STALE_STEP)
+        await back_answer(message, STALE_STEP, ACTIVITY, manager.project_id)
         return
 
-    comment = "" if message.text.strip() == "-" else message.text
     instance, bot_function = resolve(functions, "reportuser")
     reason_type = instance.reasons[data["reason_index"]][1]
 
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(data["username"], reason_type, comment, r),
-        "Жалоба на пользователя…", "Готово ✅",
+        "Жалоба на пользователя…",
     )
 
 
@@ -104,13 +112,8 @@ async def _abort(chat_id: int, pool: WorkerPool):
 
 @router.callback_query(FunctionCB.filter(F.key == "report"))
 async def rm_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await state.clear()
-    await state.set_state(ReportMessage.link)
-    await callback.message.answer("Ссылка на канал или чат — или сразу на пост:",
-                                  reply_markup=cancel_kb(ReportMessage.link))
+    await start_form(callback, state, ReportMessage.link,
+                     "🚩 Жалоба на пост — пришлите ссылку на канал или чат, или сразу на пост:", pool)
 
 
 @router.message(ReportMessage.link)
@@ -132,11 +135,11 @@ async def rm_link(message: Message, state: FSMContext):
 
 @router.callback_query(ReportMessage.ids, ChoiceCB.filter(F.scope == "rm_post"))
 async def rm_post(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
     post = (await state.get_data()).get("post")
     if post is None:  # a stale button
-        await callback.message.answer(STALE_BUTTON)
+        await stale_tap(callback)
         return
+    await callback.answer()
     await _ask_comment(callback.message, state, [post])
 
 
@@ -144,7 +147,7 @@ async def rm_post(callback: CallbackQuery, state: FSMContext):
 async def rm_ids(message: Message, state: FSMContext):
     parts = [p.strip() for p in (message.text or "").split(",") if p.strip()]
     if not parts or not all(p.isdecimal() for p in parts):
-        await message.answer("Введите числовые id через запятую:")
+        await message.answer("Нужны номера постов через запятую, например 12, 15. Пришлите ещё раз:")
         return
     await _ask_comment(message, state, [int(p) for p in parts])
 
@@ -152,32 +155,48 @@ async def rm_ids(message: Message, state: FSMContext):
 async def _ask_comment(message: Message, state: FSMContext, ids: list[int]):
     await state.update_data(ids=ids)
     await state.set_state(ReportMessage.comment)
-    await message.answer(COMMENT_ASK, reply_markup=cancel_kb(ReportMessage.comment))
+    await message.answer(COMMENT_ASK, reply_markup=_comment_kb(ReportMessage.comment))
 
 
 @router.message(ReportMessage.comment)
 async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
-    if not message.text:
-        await message.answer("Ожидается текст (или «-» для пустого).")
-        return
+    comment = await _typed_comment(message)
+    if comment is not None:
+        await _report_posts(message, state, pool, functions, manager, comment)
 
+
+@router.callback_query(ChoiceCB.filter(F.scope == "rpt_nocomment"))
+async def no_comment(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
+                     manager: JobManager):
+    """⏭ Без комментария: the report (a user's or posts') goes on without one, only from its own step."""
+    run = {ReportUser.comment.state: _report_user, ReportMessage.comment.state: _report_posts}.get(
+        await state.get_state())
+    if run is None:
+        await stale_tap(callback)
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)  # pressed once: one report
+    await run(callback.message, state, pool, functions, manager, "")
+
+
+async def _report_posts(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager,
+                        comment: str):
     data = await state.get_data()
     await state.clear()
 
     chat_id = message.chat.id
 
-    if not manager.acquire("Жалоба", on_abort=lambda: _abort(chat_id, pool), timeout=600):
-        await message.answer(f"⛔ Занят: {manager.label}. Остановите текущую задачу.")
+    if not manager.acquire(REPORT.title, on_abort=lambda: _abort(chat_id, pool), timeout=600):
+        await back_answer(message, busy(manager.label), ACTIVITY, manager.project_id)
         return
 
-    comment = "" if message.text.strip() == "-" else message.text
     instance, _ = resolve(functions, "report")
     workers = pool.delegate(instance)
     pool.in_job = workers  # the flow drives them until _free / _abort: no scrape starts on them
 
     if not workers:  # guard: never index into an empty pool with the slot held
         _free(manager, pool)
-        await message.answer("Нет воркеров.")
+        await back_answer(message, "Нет воркеров.", ACTIVITY, manager.project_id)
         return
 
     first = workers[0]
@@ -207,7 +226,7 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
         _FLOWS.pop(chat_id, None)
         _free(manager, pool)  # before any await: a /cancel meanwhile must not free a foreign slot
         await release_client(first)
-        await message.answer(f"Ошибка: {err}")
+        await back_answer(message, f"⚠️ Ошибка: {err}", ACTIVITY, manager.project_id)
         return
 
     if _FLOWS.get(chat_id) is not entry:
@@ -215,7 +234,8 @@ async def rm_begin(message: Message, state: FSMContext, pool: WorkerPool, functi
 
     if status == "choose":
         _FLOWS[chat_id] = (instance, flow, options)
-        await message.answer("Выберите вариант:", reply_markup=_options_kb(options))
+        await message.answer(f"{REPORT.title} — выберите вариант (его повторят остальные воркеры):",
+                             reply_markup=_options_kb(options))
     else:
         await _finish(instance, flow, message.bot, chat_id, manager, pool)
 
@@ -228,6 +248,12 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
         await callback.answer(STALE_BUTTON, show_alert=True)
         return
 
+    if callback_data.value == STOP:  # ✖️: as /cancel — the slot freed, the held worker let go (_abort)
+        await callback.answer()
+        await manager.stop()
+        await callback.message.edit_text("Жалоба отменена.", reply_markup=back_kb(ACTIVITY, manager.project_id,
+                                                                                  fresh=False))
+        return
     instance, flow, options = entry
     idx = int(callback_data.value)
     # concurrent updates: a double tap (or a stale keyboard) must not run a second step
@@ -253,7 +279,7 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
         _FLOWS.pop(chat_id, None)
         _free(manager, pool)  # before any await: a /cancel meanwhile must not free a foreign slot
         await release_client(flow["session"])
-        await callback.message.answer(f"Ошибка: {err}")
+        await back_answer(callback.message, f"⚠️ Ошибка: {err}", ACTIVITY, manager.project_id)
         return
 
     if _FLOWS.get(chat_id) is not entry:
@@ -262,18 +288,19 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
     if status == "choose":
         flow["busy"] = False
         _FLOWS[chat_id] = (instance, flow, options)
-        await callback.message.answer("Выберите вариант:", reply_markup=_options_kb(options))
+        await callback.message.edit_text(f"{REPORT.title} — выберите вариант:",  # the next level
+                                         reply_markup=_options_kb(options))
     else:
         _FLOWS.pop(chat_id, None)
         await _finish(instance, flow, callback.bot, chat_id, manager, pool)
 
 
+STOP = "stop"  # the options' ✖️
+
+
 def _options_kb(options):
-    builder = InlineKeyboardBuilder()
-    for index, option in enumerate(options):
-        builder.button(text=option.text, callback_data=ChoiceCB(scope="report_opt", value=str(index)))
-    builder.adjust(1)
-    return builder.as_markup()
+    return choice_kb("report_opt", [*((option.text, str(index)) for index, option in enumerate(options)),
+                                    ("✖️ Отмена", STOP)])
 
 
 async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: WorkerPool):
@@ -292,7 +319,8 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: Worke
     # finish() drops the Progress / Stop buttons with the markup
     reporter = TelegramReporter(
         bot, chat_id, header="Жалоба…", reply_markup=stop_kb(manager.key),
-        job_label="Жалоба", workers=len(flow["rest"]) + 1, final_markup=main_menu(),
+        job_label=REPORT.title, workers=len(flow["rest"]) + 1,
+        final_markup=back_kb(REPORT.category, manager.project_id),
         progress=manager.progress,
     )
     try:
@@ -302,7 +330,7 @@ async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: Worke
             flow["rest"], flow["peer"], flow["ids"], flow["comment"], flow["selections"], reporter, stop
         )
         # by what replay_rest skipped, not stop.is_set(): a ⏹ after the last account stopped nothing
-        await reporter.finish("⏹ Остановлено" if skipped else "Жалоба отправлена ✅")
+        await reporter.finish("⏹ Остановлено" if skipped else "✅ Жалоба отправлена")
     except Exception as err:
         try:
             if reporter.message_id is not None:  # close the status message itself, like JobManager

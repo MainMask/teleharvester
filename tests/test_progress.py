@@ -12,6 +12,10 @@ from bot.services.jobs import JobManager
 from bot.services.progress import Progress
 from functions.base.telethon import TelethonFunction
 
+from modules.registry import BOT_FUNCTIONS_BY_KEY
+
+_STATUS = BOT_FUNCTIONS_BY_KEY["status"]  # a job's function: its ⬅️ leads to its screen
+
 
 def _storage(sessions=()):
     @contextlib.asynccontextmanager
@@ -179,7 +183,7 @@ class TestHandler:
             seen.append((f.progress, manager.progress))
 
         async def scenario():
-            await manager.run(_Bot(), 1, _Pool(), instance, None, job, "H", "done")
+            await manager.run(_Bot(), 1, _Pool(), instance, _STATUS, job, "H", "done")
             await asyncio.sleep(0.05)
 
         manager = JobManager()

@@ -11,14 +11,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from bot.callbacks import ChoiceCB
-from bot.keyboards.common import cancel_kb, choice_kb, paged_kb
-from bot.routers._common import STALE_BUTTON, menu_answer, send_chunked
+from bot.keyboards.common import cancel_kb, choice_kb, page_of, paged_kb
+from bot.keyboards.menu import back_kb
+from bot.routers._common import pick_from, send_chunked, stale_tap
 from bot.services import scraping
 from bot.services.delegation import WorkerPool, borrow
-from bot.services.jobs import JobManager
+from bot.services.jobs import JobManager, busy
 from bot.services.progress import Progress
 from modules import projects, scraped_files
-from modules.registry import menu_path
+from modules.registry import COLLECT, menu_path, title
 from modules.scraper_creds import find_account, scrape_accounts
 from scraper.scrape import (
     CHAT_LOOKUP_TIMEOUT, chat_block, chat_label,
@@ -29,6 +30,9 @@ router = Router()
 
 # the step each flow goes on to once its account is chosen (see choose_account); filled by the flows
 FLOW_NEXT = {}
+# each flow's title, in its account's question
+FLOW_TITLES = {"project": title("scrape"), "scrape_resume": title("scrape"), "topup": title("topup"),
+               "members": title("members"), "verify": title("verify")}
 # the step a flow goes on to from its chat list's ▶️ (see check_chats); filled by the flows, called as FLOW_NEXT's
 CHATS_NEXT = {}
 # the bot is stopping (scrape.stop_for_shutdown): a job stopped now is not the operator's ⏹
@@ -36,6 +40,14 @@ shutting_down = False
 
 
 DEFAULT_OUT = scraped_files.BASES_DIR
+# a scrape's and a verify's period, asked the same way
+DATE_MIN_ASK = "Пришлите дату «с» (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):"
+DATE_MAX_ASK = "Пришлите дату «по» (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):"
+
+
+async def to_collect(message: Message, text: str, slot: JobManager):
+    """A scraper flow's last message: ⬅️ under it leads back to its project's 📥 Сбор (`slot`: the project's)."""
+    await message.answer(text, reply_markup=back_kb(COLLECT, slot.project_id))
 
 
 async def drop_button(status):
@@ -70,15 +82,13 @@ async def send_files(bot, chat_id, paths):
 # account (personal_sessions/, never a worker), with its own client, in its own job slot
 # (`scrapes`): it never drives the worker pool, so it doesn't hold up the other tasks.
 
-PERSONAL_WARNING = ("⚠️ Это ваш личный аккаунт. Скрапер только читает, но большой скрап "
-                    "с реакциями может вызвать временные лимиты Telegram на этом аккаунте.")
+PERSONAL_WARNING = ("⚠️ Это ваш личный аккаунт: скрапер только читает, но большой скрап с реакциями может "
+                    "дать ему лимиты.")
 
 
 # a base scraped by an account holds access hashes valid for that account only: the workers
 # reach its people by username alone (the mailing skips the rest as "another account's base")
-BASE_NOTE = ("\n\nБаза людей с этого аккаунта для рассылки через воркеров дойдёт только до тех, "
-             "у кого есть username: access hash действует только для собравшего аккаунта. "
-             "Для полной базы выберите воркера.")
+BASE_NOTE = " Воркеры напишут по его базе только тем, у кого есть username; для полной базы выберите воркера."
 
 
 _BASE_FLOWS = {"scrape_resume", "project", "topup", "members"}  # the flows that build a base
@@ -106,39 +116,43 @@ async def choose_account(message: Message, state: FSMContext, flow: str, **deps)
     accounts = _accounts(deps["pool"], deps["personal"])
     if not accounts:
         await state.clear()
-        await menu_answer(message, f"Нет аккаунтов: добавьте воркера или личный аккаунт — {menu_path('add')}.")
+        await to_collect(message, f"Нет аккаунтов: добавьте воркера или личный аккаунт — {menu_path('add')}.",
+                         deps["scrapes"])
         return
     if len(accounts) == 1:
         await _account_chosen(message, state, accounts[0], flow, deps)
         return
     labels = [f"{'👤' if a.personal else '🤖'} {a.label}" for a in accounts]
     await state.update_data(account_flow=flow, account_paths=[a.path for a in accounts], account_labels=labels)
-    await message.answer("На каком аккаунте?", reply_markup=_accounts_kb(labels, 0))
+    await message.edit_text(f"{FLOW_TITLES[flow]} — на каком аккаунте?",  # in 📥 Сбор's place
+                            reply_markup=_accounts_kb(labels, 0, deps["scrapes"].project_id))
 
 
-def _accounts_kb(labels: list[str], page: int):
-    """The accounts to pick, a page of them (keyboards.paged_kb)."""
-    return paged_kb("scr_acc", [(label, str(i)) for i, label in enumerate(labels)], page)
+def _accounts_kb(labels: list[str], page: int, project: int):
+    """The accounts to pick, a page of them (keyboards.paged_kb); ⬅️ to `project`'s 📥 Сбор."""
+    markup = paged_kb("scr_acc", [(label, str(i)) for i, label in enumerate(labels)], page)
+    markup.inline_keyboard.append(back_kb(COLLECT, project, fresh=False).inline_keyboard[0])
+    return markup
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "scr_acc"))
 async def account_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
                        pool: WorkerPool, personal, scrapes: JobManager):
-    await callback.answer()
     data = await state.get_data()
-    if callback_data.value.startswith("pg.") and "account_flow" in data:  # ⬅️ · 📄 · ➡️: another page
-        try:
-            await callback.message.edit_reply_markup(
-                reply_markup=_accounts_kb(data["account_labels"], int(callback_data.value[3:])))
-        except Exception:  # 📄, the page shown: "message is not modified"
-            pass
+    if (page := page_of(callback_data.value)) is not None and "account_flow" in data:  # ◀️ · 📄 · ▶️
+        await callback.answer()
+        await callback.message.edit_reply_markup(reply_markup=_accounts_kb(data["account_labels"], page,
+                                                                           scrapes.project_id))
         return
-    paths = data.get("account_paths", [])
-    index = int(callback_data.value) if callback_data.value.isdigit() else -1  # pg. of a flow gone: stale
-    account = find_account(_accounts(pool, personal), paths[index]) if 0 <= index < len(paths) else None
+    path = pick_from(data.get("account_paths", []), callback_data.value)  # pg. of a flow gone: stale
+    account = find_account(_accounts(pool, personal), path) if path is not None else None
     if account is None or "account_flow" not in data:  # a stale button
-        await callback.message.answer(STALE_BUTTON)
+        await stale_tap(callback)
         return
+    # chosen once: the picker says which, its buttons gone, so a second tap can't run the next step again
+    await callback.answer()
+    label = data["account_labels"][data["account_paths"].index(path)]
+    await callback.message.edit_text(f"{FLOW_TITLES[data['account_flow']]} — аккаунт: {label}")
     await _account_chosen(callback.message, state, account, data["account_flow"],
                           dict(pool=pool, personal=personal, scrapes=scrapes))
 
@@ -210,17 +224,17 @@ async def check_chats(message: Message, state: FSMContext, pool: WorkerPool, per
 
 @router.callback_query(ChoiceCB.filter(F.scope == "chats_ok"))
 async def chats_ok(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, personal, scrapes: JobManager):
-    await callback.answer()
     step = CHATS_NEXT.get(await state.get_state())
     if step is None:  # a stale button
-        await callback.message.answer(STALE_BUTTON)
+        await stale_tap(callback)
         return
+    await callback.answer()
     await step(callback.message, state, dict(pool=pool, personal=personal, scrapes=scrapes))
 
 
-async def take_slot(scrapes: JobManager, pool: WorkerPool, account, label: str, menu, answer) -> Progress | None:
+async def take_slot(scrapes: JobManager, pool: WorkerPool, account, label: str, menu) -> Progress | None:
     """The scraper's slot for a job on `account` (a worker is kept out of bot jobs meanwhile):
-    the job's 📊 Progress, or None after telling why (menu: with the main menu). Its ⏹ is the
+    the job's 📊 Progress, or None after telling why (menu: with ⬅️ to 📥 Сбор). Its ⏹ is the
     slot's soft stop: the job takes it with scrapes.soft_stop()."""
     if pool.busy(account.path):  # a personal account: only while borrow() uses it (codes, a names check)
         await menu(PERSONAL_BUSY if account.personal else WORKER_BUSY)
@@ -229,7 +243,7 @@ async def take_slot(scrapes: JobManager, pool: WorkerPool, account, label: str, 
         await menu(PERSONAL_SCRAPING)
         return None
     if not scrapes.acquire(label, cancelable=False, timeout=0):
-        await answer(f"⛔ Скрапер занят: {scrapes.label}. Дождитесь завершения.")
+        await menu(busy(scrapes.label))
         return None
     pool.scraping = account  # new bot jobs run without it (a worker); its login codes wait
     progress = scrapes.progress = Progress()

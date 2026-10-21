@@ -48,7 +48,7 @@ class TestCallbacks:
         assert MenuCB.unpack(MenuCB(action=MenuAction.LIST).pack()).action == MenuAction.LIST
 
     def test_nav_roundtrip(self):
-        assert NavCB.unpack(NavCB(screen="🛠 Обслуживание").pack()).screen == "🛠 Обслуживание"
+        assert NavCB.unpack(NavCB(screen="🔐 Безопасность").pack()).screen == "🔐 Безопасность"
 
 
 # --- auth middleware (whitelist) -------------------------------------------

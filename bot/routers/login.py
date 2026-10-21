@@ -10,13 +10,14 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from telethon import errors
 from telethon.tl.types.auth import SentCodeTypeApp
 
-from bot.callbacks import ChoiceCB, MenuAction, MenuCB
+from bot.callbacks import ChoiceCB, MenuAction, MenuCB, NavCB
 from bot.keyboards.common import cancel_kb, choice_kb
-from bot.keyboards.menu import main_menu
+from bot.keyboards.menu import back_kb
 from bot.routers._common import delete_quietly
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
-from modules.registry import menu_path
+from bot.services.workspaces import Workspace
+from modules.registry import ACCOUNTS, menu_path
 from bot.states import AddByPhone
 from modules import login as sign_in
 
@@ -32,40 +33,45 @@ RESEND_KB = choice_kb("phone_resend", [("📨 Отправить код зано
 # =============================== add by phone ===============================
 
 async def _end_login(message: Message, state: FSMContext, text: str):
+    """The sign-in is over (added, refused or failed): ⬅️ back to its project's 🤖 Аккаунты."""
+    project = (await state.get_data()).get("project", 0)
     await logins.close(message.chat.id)
     await state.clear()
-    await message.answer(text, reply_markup=main_menu())
+    await message.answer(text, reply_markup=back_kb(ACCOUNTS, project))
 
 
-def add_kb():
+def add_kb(project: int = 0):
     """By phone: a worker or a personal account; from tdata, or one in no project: a worker
-    (bot/routers/accounts.py)."""
+    (bot/routers/accounts/), into `project`; ⬅️ back to its 🤖 Аккаунты."""
     builder = InlineKeyboardBuilder()
     builder.button(text="🤖 Воркер — по номеру", callback_data=ChoiceCB(scope="phone_role", value="worker"))
     builder.button(text="👤 Личный — по номеру", callback_data=ChoiceCB(scope="phone_role", value=sign_in.PERSONAL))
-    builder.button(text="📥 Воркер — из tdata (ZIP)", callback_data=MenuCB(action=MenuAction.TDATA))
-    builder.button(text="📦 Воркеры — из свободных", callback_data=MenuCB(action=MenuAction.FREE))
+    builder.button(text="📥 Воркер — из tdata (ZIP)", callback_data=MenuCB(action=MenuAction.TDATA, project=project))
+    builder.button(text="📦 Воркеры — из свободных", callback_data=MenuCB(action=MenuAction.FREE, project=project))
+    builder.button(text="⬅️ Назад", callback_data=NavCB(screen=ACCOUNTS, project=project))
     builder.adjust(1)
     return builder.as_markup()
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.ADD))
-async def phone_start(callback: CallbackQuery, state: FSMContext):
+async def phone_start(callback: CallbackQuery, state: FSMContext, workspace: Workspace):
+    """➕ Добавить: in 🤖 Аккаунты' place, as a screen of its own."""
     await callback.answer()
     await state.clear()
-    await callback.message.answer("Кого и как добавляем в проект? Личный аккаунт — общий для всех проектов, "
-                                  "только для скрапа.", reply_markup=add_kb())
+    await callback.message.edit_text("➕ <b>Добавить аккаунт</b> — кого и как? Личный аккаунт — общий для всех "
+                                     "проектов, только для скрапа.", parse_mode="HTML",
+                                     reply_markup=add_kb(workspace.project_id))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "phone_role"))
-async def phone_role(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+async def phone_role(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, workspace: Workspace):
     """A worker joins the pool; a personal account goes to personal_sessions/ (scrapes only)."""
     await callback.answer()
     await state.clear()
-    await state.update_data(role=callback_data.value)
+    await state.update_data(role=callback_data.value, project=workspace.project_id)  # its ⬅️ at the end
     await state.set_state(AddByPhone.phone)
-    await callback.message.answer(
-        "Номер телефона аккаунта в международном формате, например <code>+79991234567</code>.\n"
+    await callback.message.answer(  # a prompt for text: a new message, ➕ Добавить's menu stays
+        "➕ Добавить — номер телефона аккаунта в международном формате, например <code>+79991234567</code>.\n"
         "Аккаунт должен быть уже зарегистрирован в Telegram.",
         parse_mode="HTML", reply_markup=cancel_kb(AddByPhone.phone),
     )
@@ -113,8 +119,7 @@ async def phone_resend(callback: CallbackQuery, state: FSMContext):
     login = logins.get(callback.message.chat.id)
     # a menu button cleared the flow meanwhile: without its role a personal account would be saved as a worker
     if login is None or "role" not in await state.get_data():
-        await logins.close(callback.message.chat.id)
-        await callback.message.answer(f"Вход устарел — начните заново: {menu_path('add')}.")
+        await _end_login(callback.message, state, f"Вход устарел — начните заново: {menu_path('add')}.")
         return
     try:  # as the first request: a dead proxy must not hang the button
         await asyncio.wait_for(login.client.send_code_request(login.phone), sign_in.FETCH_TIMEOUT * 2)

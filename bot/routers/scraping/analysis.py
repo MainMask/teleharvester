@@ -6,40 +6,49 @@ from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 
-from bot.callbacks import ChoiceCB
+from bot.callbacks import ChoiceCB, NavCB
 from bot.keyboards.common import cancel_kb, choice_kb
-from bot.routers._common import STALE_BUTTON, menu_answer, require_text
+from bot.routers._common import STALE_BUTTON, pick_from, require_text
 from bot.routers.scraping import common
 from bot.services import scraping
-from bot.services.jobs import JobManager
+from bot.services.jobs import JobManager, busy
 from bot.states import Analysis
 from modules import analysis_tools, scraped_files
+from modules.registry import BOT_FUNCTIONS_BY_KEY, COLLECT
 
 router = Router()
 
 
 def _tools_kb(tools, more: bool, token: str):
-    """`token`: the project's menu (analysis_project) — its buttons act on that project only."""
+    """`token`: the project's menu (analysis_project) — its buttons act on that project only; ⬅️: the
+    main tools from ➕ Ещё, 📥 Сбор from them."""
     suffix = f".{token}"
     options = [(analysis_tools.TOOLS[tool][0], tool + suffix) for tool in tools]
     if more:
         options.append(("➕ Ещё", "more" + suffix))
-    return choice_kb("an_tool", options)
+    else:
+        options.append(("⬅️ Назад", "main" + suffix))
+    markup = choice_kb("an_tool", options)
+    if more:  # the analysis is 📥 Сбор's: back to it, in place
+        markup.inline_keyboard.append([InlineKeyboardButton(text=f"⬅️ {COLLECT}",
+                                                            callback_data=NavCB(screen=COLLECT).pack())])
+    return markup
+
+
+ANALYSIS_TEXT = ("📈 <b>Анализ</b> — утилиты для файлов скрапа. Аккаунты не нужны: бот читает файл и "
+                 "присылает результат.")
 
 
 async def analysis_project(message: Message, state: FSMContext, project):
-    """The analysis tools, from a project's card (bot/routers/projects.py): they offer its files only."""
+    """The analysis tools, from a project's 📥 Сбор (bot/routers/projects/card.py): they offer its files only."""
     await state.clear()
     # its buttons carry the token, as a card's: an older menu's must not act on this one
     token = secrets.token_hex(4)
     await state.update_data(only_project=project.name, analysis_token=token)
-    await message.answer(
-        "📈 <b>Анализ данных</b> — утилиты для файлов скрапа. Аккаунты не нужны: бот читает файл и "
-        "присылает результат.", parse_mode="HTML",
-        reply_markup=_tools_kb(analysis_tools.MAIN_TOOLS, more=True, token=token),
-    )
+    await message.edit_text(ANALYSIS_TEXT, parse_mode="HTML",  # in 📥 Сбор's place
+                            reply_markup=_tools_kb(analysis_tools.MAIN_TOOLS, more=True, token=token))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "an_tool"))
@@ -50,9 +59,12 @@ async def analysis_tool(callback: CallbackQuery, callback_data: ChoiceCB, state:
     if token != data.get("analysis_token"):  # a project's menu shown before the last one
         await callback.message.answer(STALE_BUTTON)
         return
-    if tool == "more":
-        await callback.message.answer("Ещё инструменты:",
-                                      reply_markup=_tools_kb(analysis_tools.MORE_TOOLS, more=False, token=token))
+    if tool in ("more", "main"):  # ➕ Ещё and its ⬅️, in place
+        more = tool == "more"
+        await callback.message.edit_text(f"{ANALYSIS_TEXT}\n\n➕ <b>Ещё инструменты</b>" if more else ANALYSIS_TEXT,
+                                         parse_mode="HTML", reply_markup=_tools_kb(
+                                             analysis_tools.MORE_TOOLS if more else analysis_tools.MAIN_TOOLS,
+                                             more=not more, token=token))
         return
     if tool not in analysis_tools.TOOLS:
         return
@@ -71,11 +83,11 @@ async def analysis_tool(callback: CallbackQuery, callback_data: ChoiceCB, state:
         ask = ("Нажмите кнопку или пришлите путь к папке или шаблон "
                f"(например {scraped_files.BASES_DIR}/*_posts*.parquet):")
     elif files:
-        ask = "Выберите файл или пришлите путь к нему:"
+        ask = "Выберите файл — или пришлите путь к нему на сервере:"
     elif kind == "any":
-        ask = "У проекта нет файлов. Пришлите путь к файлу:"
+        ask = "У проекта нет файлов. Пришлите путь к файлу на сервере:"
     else:
-        ask = "У проекта нет файлов с постами. Пришлите путь к файлу:"
+        ask = "У проекта нет файлов с постами. Пришлите путь к файлу на сервере:"
 
     await state.set_state(Analysis.file)
     await state.update_data(tool=tool, files=[path for path, _ in files])
@@ -92,11 +104,8 @@ async def analysis_file_pick(callback: CallbackQuery, callback_data: ChoiceCB, s
     files = (await state.get_data()).get("files", [])
     if callback_data.value == "all":
         path = files
-    else:
-        index = int(callback_data.value)
-        if not 0 <= index < len(files):
-            return
-        path = files[index]
+    elif (path := pick_from(files, callback_data.value)) is None:
+        return
     await _analysis_file_chosen(callback.message, state, analyses, path)
 
 
@@ -153,22 +162,23 @@ async def _run_analysis(message: Message, analyses: JobManager, tool: str, path,
     try:
         before = scraping.dir_snapshot(out_dir) if multi_file else None
     except OSError as err:
-        await message.answer(f"Папка вывода недоступна: {err}")
+        await common.to_collect(message, f"Папка вывода недоступна: {err}", analyses)
         return
 
-    if not analyses.acquire("Анализ", cancelable=False, timeout=0):
-        await message.answer(f"⛔ Занят: {analyses.label}. Дождитесь завершения.")
+    if not analyses.acquire(BOT_FUNCTIONS_BY_KEY["analysis"].title, cancelable=False, timeout=0):
+        await common.to_collect(message, busy(analyses.label), analyses)
         return
 
+    label = analysis_tools.TOOLS[tool][0]
     try:
-        await message.answer("Выполняется…")
+        await message.answer(f"{label} — выполняется…")
         text, file_path = await scraping.do_analysis(tool, path, data)
         if tool == "read":
             await message.answer(text, parse_mode="HTML")
-            await menu_answer(message, "Готово ✅")
+            await common.to_collect(message, f"✅ {label}: готово.", analyses)
             return
     except (Exception, SystemExit) as err:  # scraper.analysis raises SystemExit on bad input
-        await menu_answer(message, f"Ошибка: {err}")
+        await common.to_collect(message, f"⚠️ Ошибка: {err}", analyses)
         return
     finally:
         analyses.release()
@@ -181,12 +191,10 @@ async def _run_analysis(message: Message, analyses: JobManager, tool: str, path,
         files = scraping.new_files(out_dir, before, (Path(output).name,))
         if files:
             await common.send_files(message.bot, message.chat.id, files)
-        await menu_answer(message, "Готово ✅" if files else "Готово, но ничего не найдено.")
+        await common.to_collect(message, f"✅ {label}: готово." if files else f"✅ {label}: ничего не найдено.",
+                                analyses)
         return
 
     if file_path and os.path.exists(file_path):
-        await message.answer("Готово ✅")
         await common.send_files(message.bot, message.chat.id, [file_path])
-        await menu_answer(message, "Анализ завершён. Вы в главном меню.")
-    else:
-        await menu_answer(message, "Готово ✅")
+    await common.to_collect(message, f"✅ {label}: готово.", analyses)

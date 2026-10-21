@@ -1,13 +1,13 @@
-from bot.keyboards.common import PAGE_SIZE
-from bot.keyboards.menu import main_menu
+from bot.keyboards.common import PAGE_SIZE, cancel_kb
+from bot.keyboards.menu import back_kb, main_menu
 from bot.services import login as logins
 from bot.services.capture import capture
+from bot.services.jobs import busy
 from modules.registry import BOT_FUNCTIONS_BY_KEY, menu_path
 from functions.base.base import POST_LINK_HINT, BaseFunction
-from functions.spamblock import rehome, rehome_report
 from scraper.scrape import bad_channels, bad_channels_text, parse_channels
 
-# a stale tap: a button of an old message; a stale step: text sent to a step whose flow is gone
+# a stale tap: a button of an old message (stale_tap); a stale step: text sent to a step whose flow is gone
 STALE_BUTTON = "Кнопка устарела — откройте раздел заново."
 STALE_STEP = "Действие устарело — откройте раздел заново."
 MAX_MESSAGE = 4000  # send_chunked keeps each chunk under Telegram's 4096-char limit
@@ -21,17 +21,17 @@ SEND_MESSAGE_PROMPT = (
 async def build_content(message, album):
     """Capture the broadcast message; report and return None if media can't be fetched
     (e.g. the Bot API's ~20 MB download cap) or the message has nothing to send
-    (unsupported type like a poll/contact/location), so the flow aborts instead of
-    failing silently on every recipient."""
+    (unsupported type like a poll/contact/location), so the step asks for another instead of
+    failing silently on every recipient (the caller leaves its step only once it has the content)."""
     try:
         content = await capture(message, message.bot, album)
     except Exception as err:
-        await message.answer(f"Не удалось обработать сообщение для рассылки: {err}")
+        await message.answer(f"Не удалось обработать сообщение для рассылки: {err}. Пришлите другое:")
         return None
 
     if not content.text and not content.media:
         content.cleanup()
-        await message.answer("Это сообщение нельзя разослать (пустое или неподдерживаемый тип).")
+        await message.answer("Это сообщение нельзя разослать (пустое или неподдерживаемый тип). Пришлите другое:")
         return None
 
     return content
@@ -52,6 +52,12 @@ def marks_step(value: str, picked: list[int], page: int, total: int, presets: di
     return picked, page  # 📄: the page shown
 
 
+def pick_from(items: list, value: str):
+    """The item a button names by its index into `items` (its value); None for a stale one."""
+    index = int(value) if value.isdigit() else -1
+    return items[index] if 0 <= index < len(items) else None
+
+
 def resolve(functions: dict, key: str):
     """Return (a new instance, BotFunction) for a registry key: each run has its own.
 
@@ -62,35 +68,36 @@ def resolve(functions: dict, key: str):
     return functions[bot_function.classname](), bot_function
 
 
-async def proxies_busy(message, pool, manager) -> bool:
-    """A proxy change now would rebuild clients in use (a job, the autoreply poll): told, True."""
-    if manager.active:  # a job may have started since the prompt or the button
-        await message.answer(f"⛔ Занят: {manager.label}. Дождитесь завершения задачи и повторите.")
-        return True
-    if pool.polling is not None:  # its old client is connected through the old proxy until the poll ends
-        await message.answer("⛔ Идёт проверка автоответа. Повторите через минуту.")
-        return True
-    return False
-
-
-async def rehome_now(message, pool) -> str | None:
-    """Move the restricted workers onto their proxies and the others off the pool back into it now
-    (functions.spamblock.rehome), but the ones in use outside the job slot (a scrape, 🔑 Код входа): their
-    clients must not change under them, the next status check offers them. The report, or None once a bad
-    proxy list is told."""
-    busy = {path for path in pool.storage.jsessions_paths if pool.busy(path) or pool.scraped(path)}
-    try:
-        return rehome_report(rehome(pool.storage, busy=busy))
-    except ValueError as err:  # a list edited by hand
-        await message.answer(f"⚠️ Пересадка невозможна: {err}. Исправьте — 🌐 Прокси.")
-        return None
+NO_WORKERS = f"У проекта нет воркер-аккаунтов. Добавьте: {menu_path('add')}."
 
 
 async def ensure_workers(callback, pool) -> bool:
-    """True if there is at least one worker; otherwise alert the operator."""
+    """A function's button tapped (answered here): True if the project has a worker; else False after saying
+    so in a pop-up over its screen."""
     if pool.count() == 0:
-        await callback.message.answer(f"У проекта нет воркер-аккаунтов. Добавьте: {menu_path('add')}.")
+        await callback.answer(NO_WORKERS, show_alert=True)
         return False
+    await callback.answer()
+    return True
+
+
+async def start_form(callback, state, step, text: str, pool=None, markup=None, parse_mode=None,
+                     data: dict | None = None) -> bool:
+    """A function's first step from its screen's button: with `pool`, none without a worker (ensure_workers);
+    else the chat at `step` (a form before it left), `data` kept for the next steps, and the step's prompt
+    (`text`, which starts with the function's title) with ✖️ Отмена under its own buttons (`markup`): a
+    choice of them in the screen's place, a prompt for text as a new message. False: not started."""
+    if pool is not None:
+        if not await ensure_workers(callback, pool):
+            return False
+    else:
+        await callback.answer()
+    await state.clear()
+    await state.set_state(step)
+    if data:
+        await state.update_data(**data)
+    send = callback.message.edit_text if markup is not None else callback.message.answer
+    await send(text, parse_mode=parse_mode, reply_markup=cancel_kb(step, markup))
     return True
 
 
@@ -113,6 +120,18 @@ async def menu_answer(message, text: str):
     await message.answer(text, reply_markup=main_menu())
 
 
+async def back_answer(message, text: str, screen: str, project: int = 0, **kwargs):
+    """A flow's last word with ⬅️ to the screen it was started from (in its `project`): never a dead end."""
+    await message.answer(text, reply_markup=back_kb(screen, project), **kwargs)
+
+
+async def busy_step(message, manager, screen: str):
+    """A form's last step while the project's job slot is busy: said, with ⬅️ to `screen`; the step stays, so
+    what was sent is not lost — it can be sent again once that job is over."""
+    await back_answer(message, f"{busy(manager.label)}\nКогда она закончится, пришлите сообщение ещё раз.", screen,
+                      manager.project_id)
+
+
 async def leave_form(message, state):
     """A main-menu button or /start: out of any form; a sign-in by phone waiting for its code is
     closed now, as /cancel does, not after its timeout."""
@@ -131,12 +150,17 @@ async def read_text_document(message, max_size: int) -> str | None:
 
 async def left_flow(callback, state, step) -> bool:
     """A stale button: the chat is no longer at `step` (the State its keyboard was shown at) but in
-    another flow, or none. Says so and answers the tap; the caller then changes nothing."""
+    another flow, or none. Says so over the message (stale_tap); the caller then changes nothing."""
     if await state.get_state() == step.state:
         return False
-    await callback.answer()
-    await callback.message.answer(STALE_BUTTON)
+    await stale_tap(callback)
     return True
+
+
+async def stale_tap(callback):
+    """A button of a message left behind: said in a pop-up over it, as by the last router (stale.py), no
+    message piled up under it."""
+    await callback.answer(STALE_BUTTON, show_alert=True)
 
 
 async def require_post_link(message) -> str | None:
@@ -174,6 +198,6 @@ async def require_text(message) -> str | None:
     sent a non-text message (sticker/photo/…), so the step isn't lost to AttributeError."""
     text = (message.text or "").strip()
     if not text:
-        await message.answer("Ожидается текст. Попробуйте ещё раз.")
+        await message.answer("Нужен текст. Пришлите ещё раз:")
         return None
     return text

@@ -2,6 +2,7 @@
 bot; the accounts list and proxies in the CLI."""
 
 import asyncio
+import dataclasses
 import conftest
 import functools
 import io
@@ -11,7 +12,7 @@ import types
 import pytest
 import toml
 
-from bot.callbacks import ChoiceCB
+from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB
 from bot.routers import menu
 from bot.services.delegation import WorkerPool
 
@@ -68,13 +69,17 @@ class _Msg:
         self.sent.append(_Sent(text))
         return self.sent[-1]
 
+    async def edit_text(self, text, **kwargs):  # in place: what is shown now, as an answer
+        self.answers.append((text, kwargs.get("reply_markup")))
+
 
 class _Callback:
     def __init__(self):
-        self.message = _Msg()
+        self.message, self.alerts = _Msg(), []
 
-    async def answer(self, *a, **k):
-        pass
+    async def answer(self, text=None, **k):
+        if text:
+            self.alerts.append(text)
 
 
 def _buttons(markup):
@@ -215,7 +220,7 @@ def test_bot_delay_reports_a_broken_config(tmp_path, monkeypatch):
     settings = _settings(tmp_path, monkeypatch)
     (tmp_path / "config.toml").write_text("[broadcast\ndelay = [5, 10]\n")  # broken by hand meanwhile
     msg = _Msg(text="2-4")
-    asyncio.run(screen.delay_apply(msg, _State(), settings))
+    asyncio.run(screen.setting_typed(msg, _State({"setting": "delay"}), settings))
     assert "Не удалось сохранить config.toml" in msg.answers[0][0] and settings.delay == [5, 10]
 
 
@@ -224,17 +229,17 @@ def test_bot_delay_button(tmp_path, monkeypatch):
 
     settings = _settings(tmp_path, monkeypatch)
     state, callback = _State(), _Callback()
-    asyncio.run(screen.delay_start(callback, state, settings))
+    asyncio.run(screen.setting_start(callback, MenuCB(action=MenuAction.DELAY), state, settings))
     assert "5–10 с" in callback.message.answers[0][0]
 
     for bad in ("abc", "1-2-3", "", "-5"):
         msg = _Msg(text=bad)
-        asyncio.run(screen.delay_apply(msg, state, settings))
+        asyncio.run(screen.setting_typed(msg, state, settings))
         assert "Пришлите ещё раз" in msg.answers[0][0]
     assert settings.delay == [5, 10]
 
     msg = _Msg(text="7")
-    asyncio.run(screen.delay_apply(msg, state, settings))
+    asyncio.run(screen.setting_typed(msg, state, settings))
     assert settings.delay == [7] and toml.load(tmp_path / "config.toml")["broadcast"]["delay"] == [7]
 
 
@@ -242,14 +247,14 @@ def test_bot_profile_pause_rejects_bad_input_and_saves_a_range(tmp_path, monkeyp
     from bot.routers import settings as screen
 
     settings = _settings(tmp_path, monkeypatch)
-    state = _State()
+    state = _State({"setting": "ppause"})
     for bad in ("abc", "1-2-3", "", "-5"):
         msg = _Msg(text=bad)
-        asyncio.run(screen.profilepause_apply(msg, state, settings))
+        asyncio.run(screen.setting_typed(msg, state, settings))
         assert "Пришлите ещё раз" in msg.answers[0][0]
 
     msg = _Msg(text="90 - 240")
-    asyncio.run(screen.profilepause_apply(msg, state, settings))
+    asyncio.run(screen.setting_typed(msg, state, settings))
     assert settings.profile_pause == [90, 240]
     assert toml.load(tmp_path / "config.toml")["limits"]["profile_pause"] == [90, 240]
 
@@ -284,23 +289,25 @@ def test_names_from_a_sent_txt(monkeypatch):
 
     manager, runs = _launches()
     msg = _Msg(document=ns(file_size=20), content="Иван Петров\n\nАнна\n".encode())
-    asyncio.run(profile.name_list(msg, _State(), ns(), {"ChangeNameFunc": object}, manager))
+    asyncio.run(profile.text_list(msg, _State({"pick_key": "name"}), ns(), {"ChangeNameFunc": object}, manager))
     assert runs == [{"names": ["Иван Петров", "Анна"]}]
 
 
 def test_names_button_from_assets(tmp_path, monkeypatch):
     from bot.routers import profile
 
-    monkeypatch.setattr(profile, "NAMES_FILE", str(tmp_path / "names.txt"))
+    monkeypatch.setitem(profile.TEXT_FIELDS, "name",
+                        dataclasses.replace(profile.TEXT_FIELDS["name"], path=str(tmp_path / "names.txt")))
     (tmp_path / "names.txt").write_text("A\nB\nC\n")
     state = _State()
-    asyncio.run(profile.name_start(_Callback(), state, _pool(), {}, None))
+    asyncio.run(profile.picker_start(_Callback(), FunctionCB(key="name"), state, _pool()))
     _pick("all", state, _pool())
     callback = _pick("go", state, _pool())
     assert _buttons(callback.message.answers[0][1]) == [f"📄 Из {tmp_path / 'names.txt'} (3)", "✖️ Отмена"]
 
     manager, runs = _launches()
-    asyncio.run(profile.name_from_file(_Callback(), _State(), ns(), {"ChangeNameFunc": object}, manager))
+    asyncio.run(profile.text_from_file(_Callback(), _State({"pick_key": "name"}), ns(), {"ChangeNameFunc": object},
+                                       manager))
     assert runs == [{"names": ["A", "B", "C"]}]
 
 
@@ -308,7 +315,8 @@ def test_typed_name_works_as_before():
     from bot.routers import profile
 
     manager, runs = _launches()
-    asyncio.run(profile.name_run(_Msg(text="Иван Петров"), _State(), ns(), {"ChangeNameFunc": object}, manager))
+    asyncio.run(profile.text_typed(_Msg(text="Иван Петров"), _State({"pick_key": "name"}), ns(),
+                                   {"ChangeNameFunc": object}, manager))
     assert runs == [{"first_name": "Иван", "last_name": "Петров"}]
 
 
@@ -317,7 +325,7 @@ def test_usernames_from_a_sent_txt():
 
     manager, runs = _launches()
     msg = _Msg(document=ns(file_size=20), content=b"@one\ntwo\n")
-    asyncio.run(profile.username_list(msg, _State(), ns(), {"ChangeUsernameFunc": object}, manager))
+    asyncio.run(profile.text_list(msg, _State({"pick_key": "username"}), ns(), {"ChangeUsernameFunc": object}, manager))
     assert runs == [{"usernames": ["one", "two"]}]
 
 
@@ -326,7 +334,7 @@ def test_empty_list_is_asked_again():
 
     manager, runs = _launches()
     msg = _Msg(document=ns(file_size=2), content=b"\n\n")
-    asyncio.run(profile.username_list(msg, _State(), ns(), {"ChangeUsernameFunc": object}, manager))
+    asyncio.run(profile.text_list(msg, _State({"pick_key": "username"}), ns(), {"ChangeUsernameFunc": object}, manager))
     assert runs == [] and "нет ни одной строки" in msg.answers[0][0]
 
 
@@ -415,7 +423,7 @@ def test_scrape_asks_before_starting_then_runs_in_its_own_slot(monkeypatch):
     state = _State(_SCRAPE)
     msg = _Msg(text="31.01.2024")
     asyncio.run(router.scrape.scrape_run(msg, state))
-    assert calls == [] and _buttons(msg.answers[0][1]) == ["▶️ Запустить", "⚙️ Дополнительно"]
+    assert calls == [] and _buttons(msg.answers[0][1]) == ["▶️ Запустить", "🎛 Дополнительно", "✖️ Отмена"]
 
     go = _SCallback()
     asyncio.run(router.scrape.scrape_go(go, ChoiceCB(scope="scrape_go", value="run"), state, _pool(), None, scrapes))
@@ -438,9 +446,9 @@ def test_scrape_options_toggle_in_place_and_reach_the_run(monkeypatch):
     more = _SCallback()
     asyncio.run(router.scrape.scrape_go(more, ChoiceCB(scope="scrape_go", value="more"), state, _pool(), None,
                                  JobManager()))
-    assert _buttons(more.message.answers[0][1]) == [
-        "💬 Комментарии ✅", "❤️ Реакции ✅ (медленно)", "👥 База участников ✅",
-        "🔎 Фильтр по слову: —", "🔢 Максимум постов: все", "▶️ Запустить"]
+    assert _buttons(more.message.edits[0][1]) == [  # in the summary's place
+        "🗨 Комментарии ✅", "❤️ Реакции ✅ (медленно)", "👥 База участников ✅",
+        "🔎 Фильтр по слову: —", "🔢 Максимум постов: все", "▶️ Запустить", "✖️ Отмена"]
 
     toggle = _SCallback()
     asyncio.run(router.scrape.scrape_option(toggle, ChoiceCB(scope="scrape_opt", value="reactors"), state,
@@ -477,7 +485,7 @@ def test_an_interrupted_scrape_keeps_its_marker_and_says_how_to_continue(monkeyp
     bot = _SBot()
     params = router.scrape._scrape_params({**_SCRAPE, "date_max": "31.01.2024"})
     asyncio.run(router.scrape._run_scrape(bot, 1, JobManager(), _pool(), None, params))
-    assert any("с тем же именем" in t for t in _sent(bot))
+    assert any("нажмите «▶️ Скрап проекта» — бот предложит продолжить" in t for t in _sent(bot))
     assert router.scrape._read_marker(conftest.home()) == {"out_dir": "out", "name": "n", "account": _ACC, "chat_id": 1}
 
 
@@ -489,7 +497,7 @@ def test_the_stop_button_stops_and_drops_the_marker(monkeypatch):
 
     async def press_stop(params):
         # the operator's ⏹, mid-run
-        await menu.scrape_stop(_SCallback(), ChoiceCB(scope="scrape_stop", value=str(scrapes.key)),
+        await menu.stop_job(_SCallback(), ChoiceCB(scope="scrape_stop", value=str(scrapes.key)),
                                conftest.Workspaces(scrapes=scrapes))
         assert params.stop.is_set()
         raise SystemExit(1)  # the scrape checkpoints and exits
@@ -630,14 +638,15 @@ def test_a_personal_account_is_offered_marked_and_warned_about(tmp_path):
     start = _SCallback()
     asyncio.run(router.members.members_project(start.message, state, ns(name="P"),
                                        dict(pool=_pool(), personal=personal, scrapes=JobManager())))
-    assert _buttons(start.message.answers[0][1]) == ["👤 me.jsession", "🤖 w.jsession"]  # personal first
+    # in the card's place, personal first
+    assert _buttons(start.message.edits[0][1]) == ["👤 me.jsession", "🤖 w.jsession", "⬅️ 📥 Сбор"]
 
     pick = _SCallback()
     asyncio.run(router.common.account_pick(pick, ChoiceCB(scope="scr_acc", value="0"), state, _pool(), personal,
                                     JobManager()))
     assert state.data["account"] == "personal_sessions/me.jsession" and state.state == Members.chats
     warning = pick.message.answers[0][0]
-    assert warning.startswith("⚠️ Это ваш личный аккаунт") and "только до тех, у кого есть username" in warning
+    assert warning.startswith("⚠️ Это ваш личный аккаунт") and "только тем, у кого есть username" in warning
 
 
 def test_many_accounts_to_scrape_on_are_paged():
@@ -651,13 +660,14 @@ def test_many_accounts_to_scrape_on_are_paged():
     start = _SCallback()
     asyncio.run(router.members.members_project(start.message, state, ns(name="P"),
                                        dict(pool=pool, personal=None, scrapes=JobManager())))
-    assert _buttons(start.message.answers[0][1])[-3:] == ["⬅️", "📄 стр 1/2", "➡️"]
+    assert _buttons(start.message.edits[0][1])[-4:] == ["◀️", "📄 стр 1/2", "▶️", "⬅️ 📥 Сбор"]
 
     page = _SCallback()
     asyncio.run(router.common.account_pick(page, ChoiceCB(scope="scr_acc", value="pg.1"), state, pool, None,
                                            JobManager()))
     assert _buttons(page.message.edited[-1]) == ["🤖 w20.jsession", "🤖 w21.jsession", "🤖 w22.jsession",
-                                                 "🤖 w23.jsession", "🤖 w24.jsession", "⬅️", "📄 стр 2/2", "➡️"]
+                                                 "🤖 w23.jsession", "🤖 w24.jsession", "◀️", "📄 стр 2/2", "▶️",
+                                                 "⬅️ 📥 Сбор"]
     asyncio.run(router.common.account_pick(_SCallback(), ChoiceCB(scope="scr_acc", value="22"), state, pool, None,
                                     JobManager()))
     assert state.data["account"] == "sessions/w22.jsession" and state.state == Members.chats
@@ -688,7 +698,7 @@ def test_a_personal_scrape_holds_its_account_too():
 
     async def say(text):
         raise AssertionError(text)
-    assert asyncio.run(router.common.take_slot(JobManager(), pool, account, "Скрап", say, say)) is not None
+    assert asyncio.run(router.common.take_slot(JobManager(), pool, account, "Скрап", say)) is not None
     assert pool.scraping is account
 
 
@@ -702,7 +712,7 @@ def test_no_scrape_starts_on_a_personal_account_whose_codes_are_read():
     async def say(text):
         said.append(text)
     scrapes = JobManager()
-    assert asyncio.run(router.common.take_slot(scrapes, pool, account, "Скрап", say, say)) is None
+    assert asyncio.run(router.common.take_slot(scrapes, pool, account, "Скрап", say)) is None
     assert said == [router.common.PERSONAL_BUSY] and not scrapes.active and pool.scraping is None
 
 
@@ -714,7 +724,7 @@ def test_the_verify_stop_says_stopped(monkeypatch, tmp_path):
     scrapes = JobManager()
 
     async def stopped(creds, params):
-        await menu.scrape_stop(_SCallback(), ChoiceCB(scope="scrape_stop", value=str(scrapes.key)),
+        await menu.stop_job(_SCallback(), ChoiceCB(scope="scrape_stop", value=str(scrapes.key)),
                                conftest.Workspaces(scrapes=scrapes))
         raise SystemExit(1)  # verify ends as interrupted
 
@@ -731,10 +741,10 @@ def test_a_stale_account_button_says_so():
     from bot.routers import scraping as router
     from bot.services.jobs import JobManager
 
-    pick = _SCallback()
+    pick = _Callback()
     asyncio.run(router.common.account_pick(pick, ChoiceCB(scope="scr_acc", value="0"), _State(), _pool(), None,
-                                    JobManager()))
-    assert pick.message.answers[0][0] == "Кнопка устарела — откройте раздел заново."
+                                           JobManager()))
+    assert pick.alerts == ["Кнопка устарела — откройте раздел заново."] and not pick.message.answers
 
 
 # --- continuing an interrupted scrape from the bot ----------------------------------------
@@ -765,7 +775,7 @@ def test_scrape_offers_to_continue_an_interrupted_one_on_its_account(monkeypatch
     msg = _SMsg()
     _project_scrape(router, msg, state)
 
-    text, markup = msg.answers[0]
+    text, markup = msg.edits[0]  # in 📥 Сбор's place
     assert state.state == Scrape.resume and "Уже собрано постов: 42" in text and "1. @a\n\n2. @b" in text
     assert _buttons(markup)[0] == "▶️ Продолжить"
 
@@ -1103,7 +1113,7 @@ def test_cli_menu_is_the_bot_s_menu(monkeypatch):
     monkeypatch.setattr(cli_menu.console, "print", lambda text="", *a, **k: printed.append(text))
     cli_menu.print_menu(project)
     # an all-risky section: ⚠️ once, on its title, as in the bot; a mixed one: on its risky items
-    assert "\n[bold magenta]💬 Активность[/] ⚠️" in printed and "\n[bold magenta]🛠 Обслуживание[/]" in printed
+    assert "\n[bold magenta]💬 Активность[/] ⚠️" in printed and "\n[bold magenta]🔐 Безопасность[/]" in printed
     assert any("[14] ⚠️ [bold white]🧹 Очистить диалоги[/] — удаляет" in p for p in printed)
     heading = printed.index("  [italic]Действия в чатах[/]")  # the bot's subheadings
     assert "[19] [bold white]🚪 Вступить в чат" in printed[heading + 1]
@@ -1286,18 +1296,18 @@ def test_picker_ticks_the_new_workers_and_toggles():
 
     _seeded("a", "b", a=["ChangeNameFunc"])  # a: renamed before, b: new
     pool, state, callback = _jpool(_A, _B), _State(), _Callback()
-    asyncio.run(profile.name_start(callback, state, pool, {}, None))
-    text, markup = callback.message.answers[0]
-    assert state.state == PickWorkers.choose and "Отмечено: 1 из 2" in text
+    asyncio.run(profile.picker_start(callback, FunctionCB(key="name"), state, pool))
+    text, markup = callback.message.answers[0]  # in the screen's place (_Msg keeps an edit as an answer)
+    assert state.state == PickWorkers.marks and text.startswith("✏️ Имя — на каких воркерах? Отмечено: 1 из 2")
     assert _buttons(markup)[:2] == ["⬜ @a ✓ 01.10", "✅ @b"]
     assert "стр 1/1" not in _buttons(markup)  # one page: no paging
 
     edited = _pick("0", state, pool).message.edits[0]
     assert "Отмечено: 2 из 2" in edited[0] and _buttons(edited[1])[:2] == ["✅ @a ✓ 01.10", "✅ @b"]
-    assert _pick("none", state, pool).message.edits[0][0].startswith("На каких воркерах? Отмечено: 0 из 2")
+    assert _pick("none", state, pool).message.edits[0][0].startswith("✏️ Имя — на каких воркерах? Отмечено: 0 из 2")
     assert _pick("go", state, pool).alerts == ["Отметьте хотя бы одного воркера"]
-    assert _pick("new", state, pool).message.edits[0][0].startswith("На каких воркерах? Отмечено: 1 из 2")
-    assert _pick("all", state, pool).message.edits[0][0].startswith("На каких воркерах? Отмечено: 2 из 2")
+    assert _pick("new", state, pool).message.edits[0][0].startswith("✏️ Имя — на каких воркерах? Отмечено: 1 из 2")
+    assert _pick("all", state, pool).message.edits[0][0].startswith("✏️ Имя — на каких воркерах? Отмечено: 2 из 2")
 
 
 def test_first_picker_marks_every_current_worker_done():
@@ -1305,7 +1315,7 @@ def test_first_picker_marks_every_current_worker_done():
     from modules import profile_done
 
     pool, callback = _jpool(_A, _B), _Callback()
-    asyncio.run(profile.photo_start(callback, _State(), pool, {}, None))
+    asyncio.run(profile.picker_start(callback, FunctionCB(key="photo"), _State(), pool))
     text, markup = callback.message.answers[0]
     assert "Все уже менялись" in text and _buttons(markup)[:2] == ["⬜ @a ✓", "⬜ @b ✓"]
     assert profile_done.load()["done"]["a"]["SetPasswordFunc"] == profile_done.SEEDED
@@ -1323,7 +1333,7 @@ def test_picker_notes_scraping_and_restricted_workers():
     restricted_workers.save_status({_B: "01.11.2026"})
     pool, callback = _jpool(_A, _B), _Callback()
     pool.scraping = ns(path=_B, label="B")
-    asyncio.run(profile.bio_start(callback, _State(), pool, {}, None))
+    asyncio.run(profile.picker_start(callback, FunctionCB(key="bio"), _State(), pool))
     assert _buttons(callback.message.answers[0][1])[:2] == ["✅ @a ⛔", "✅ @b 🚫 до 01.11.2026 ⏳ скрап"]
 
 
@@ -1333,7 +1343,7 @@ def test_picker_pages():
     paths = [f"sessions/w{i:02}.session" for i in range(45)]
     _seeded(*[f"w{i:02}" for i in range(45)])
     pool, state, callback = _jpool(*paths), _State(), _Callback()
-    asyncio.run(profile.bio_start(callback, state, pool, {}, None))
+    asyncio.run(profile.picker_start(callback, FunctionCB(key="bio"), state, pool))
     buttons = _buttons(callback.message.answers[0][1])
     assert buttons[0] == "✅ @w00" and buttons[19] == "✅ @w19" and "📄 стр 1/3" in buttons
 
@@ -1347,14 +1357,14 @@ def test_picker_pages():
 
 def test_picked_workers_reach_the_job():
     from bot.routers import profile
-    from bot.states import ChangeName
+    from bot.states import ProfileText
 
     _seeded("a", "b")
     pool, state = _jpool(_A, _B), _State()
-    asyncio.run(profile.name_start(_Callback(), state, pool, {}, None))
+    asyncio.run(profile.picker_start(_Callback(), FunctionCB(key="name"), state, pool))
     _pick("0", state, pool)
     callback = _pick("go", state, pool)
-    assert state.state == ChangeName.manual and "Введите имя" in callback.message.answers[0][0]
+    assert state.state == ProfileText.text and "Пришлите имя" in callback.message.answers[0][0]
 
     seen = []
 
@@ -1362,7 +1372,7 @@ def test_picked_workers_reach_the_job():
         async def run(self, *args, only=None, **kw):
             seen.append(only)
 
-    asyncio.run(profile.name_run(_Msg(text="Иван"), state, pool, {"ChangeNameFunc": object}, _Manager()))
+    asyncio.run(profile.text_typed(_Msg(text="Иван"), state, pool, {"ChangeNameFunc": object}, _Manager()))
     assert seen == [[_B]]
 
 
@@ -1379,7 +1389,7 @@ def test_all_picked_runs_on_the_shown_workers_only():
     _seeded("a", "b")
     pool, state = _jpool(_A, _B), _State()
     functions = {"HideLastSeenFunc": object}
-    asyncio.run(profile.lastseen_start(_Callback(), state, pool, functions, _Manager()))
+    asyncio.run(profile.picker_start(_Callback(), FunctionCB(key="lastseen"), state, pool))
     _pick("go", state, pool, _Manager(), functions)
     assert seen == [[_A, _B]] and state.state is None
 
@@ -1449,7 +1459,8 @@ def test_scrape_channels_are_shown_by_name_up_to_the_confirmation(monkeypatch):
     msg = _Msg(text="@a, @b")
     asyncio.run(router.scrape.scrape_channels(msg, state, _pool(), None))
     assert [text for text, _ in msg.answers] == [
-        "🔎 Проверяю названия…", "1. «Канал А»\n👤 @a\n\n2. «Канал Б»\n👤 @b", "Дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):"]
+        "🔎 Проверяю названия…", "1. «Канал А»\n👤 @a\n\n2. «Канал Б»\n👤 @b",
+        "Пришлите дату «с» (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД):"]
     assert msg.sent[0].deleted  # the 🔎 gives way to the names
     assert state.state == Scrape.date_min
 
@@ -1464,10 +1475,10 @@ def test_a_chat_not_found_asks_before_each_flow_goes_on(monkeypatch):
     from bot.states import Members, Scrape, Verify
 
     _named_chats(monkeypatch, {"@a": "Канал А"})
-    flows = [(router.scrape.scrape_channels, Scrape.channels, Scrape.date_min, "Дата с (ДД"),
+    flows = [(router.scrape.scrape_channels, Scrape.channels, Scrape.date_min, "Пришлите дату «с» (ДД"),
              # ▶️ collects the project's base at once (test_members)
              (functools.partial(router.members.members_chats, scrapes=None), Members.chats, None, None),
-             (router.verify.verify_channel, Verify.channel, Verify.date_min, "Дата с:")]
+             (router.verify.verify_channel, Verify.channel, Verify.date_min, "Пришлите дату «с»")]
     for handler, asking, next_state, next_prompt in flows:
         state = _State({"account": _ACC})
         state.state = asking
@@ -1517,9 +1528,9 @@ def test_a_retyped_list_is_checked_again(monkeypatch):
 def test_a_stale_continue_button_says_so():
     from bot.routers import scraping as router
 
-    go = _SCallback()
+    go = _Callback()
     asyncio.run(router.common.chats_ok(go, _State(), None, None, None))
-    assert go.message.answers[0][0] == "Кнопка устарела — откройте раздел заново."
+    assert go.alerts == ["Кнопка устарела — откройте раздел заново."] and not go.message.answers
 
 
 def test_a_busy_account_is_not_asked_and_the_flow_goes_on(monkeypatch):
@@ -1593,7 +1604,7 @@ def test_an_interrupted_scrape_is_offered_with_its_channels_names(monkeypatch, t
     _project_scrape(router, msg, _State({}))
     # as the project's checks named them, one block each as on its card
     assert ("Каналы:\n\n1. «Канал А»\n👤 @a · 🆔 <code>-1001</code>\n\n2. «Канал Б»\n👤 @b\n\nПериод:"
-            in msg.answers[0][0])
+            in msg.edits[0][0])
     assert looked_up == []  # no call to Telegram
 
 
@@ -1609,17 +1620,19 @@ def test_the_channels_names_ride_along_with_the_scrape(monkeypatch):
     assert params.chat_labels == ["«Канал А» (@a)"]  # kept in its checkpoint
 
 
-@pytest.mark.parametrize("module, handler", [("broadcasts", "com_start"), ("activity", "reactions_start"),
-                                             ("activity", "poll_start"), ("moderation", "ru_start"),
-                                             ("moderation", "rm_start")])
-def test_a_flow_starts_without_another_flow_s_leftovers(module, handler):
+@pytest.mark.parametrize("module, handler, key", [("chat_broadcasts", "start", "comments"),
+                                                  ("activity", "reactions_start", None),
+                                                  ("activity", "poll_start", None), ("moderation", "ru_start", None),
+                                                  ("moderation", "rm_start", None)])
+def test_a_flow_starts_without_another_flow_s_leftovers(module, handler, key):
     import importlib
 
     router = importlib.import_module(f"bot.routers.{module}")
     state = _State({"trigger": "go!", "link": "https://t.me/old/1"})  # a trigger flow left midway
-    asyncio.run(getattr(router, handler)(_Callback(), state, _pool()))
+    args = (FunctionCB(key=key),) if key else ()
+    asyncio.run(getattr(router, handler)(_Callback(), *args, state, _pool()))
     # the comments run would write that trigger to config.toml (_save_options)
-    assert state.data == {}
+    assert not {"trigger", "link"} & state.data.keys()
 
 
 def test_the_contacts_and_profile_flows_start_without_leftovers(tmp_path, monkeypatch):
@@ -1633,22 +1646,18 @@ def test_the_contacts_and_profile_flows_start_without_leftovers(tmp_path, monkey
 
     state = _State(dict(leftovers))
     pool = _pool()
-    asyncio.run(profile._ask_workers(_Callback(), state, "bio", dict(pool=pool, functions={}, manager=None)))
+    asyncio.run(profile._ask_workers(_Callback().message, state, "bio", pool))
     assert not leftovers.keys() & state.data.keys()
 
 
 # (router, handler, button value, the step its keyboard is shown at, extra handler args)
 _MID_FLOW = [
-    ("broadcasts", "mail_skip", "yes", "PmMailing.path", ()),
-    ("broadcasts", "ins_mode", "0", "Instant.mode", ()),
-    ("broadcasts", "ins_mention", "yes", "Instant.mode", ()),
-    ("broadcasts", "ins_mmode", "admins", "Instant.mode", ()),
-    ("broadcasts", "cha_mode", "0", "ChatBroadcast.mode", ()),
-    ("broadcasts", "cha_mention", "yes", "ChatBroadcast.mode", ("settings",)),
-    ("broadcasts", "cha_mmode", "admins", "ChatBroadcast.mode", ("settings",)),
+    ("mailing", "mail_skip", "yes", "PmMailing.path", ()),
+    ("chat_broadcasts", "mode_pick", "0", "ChatPost.mode", ()),
+    ("chat_broadcasts", "mention_pick", "yes", "ChatPost.mode", ("settings",)),
+    ("chat_broadcasts", "mmode_pick", "admins", "ChatPost.mode", ("settings",)),
     ("join", "pick_mode", "1", "Join.mode", ()),
     ("join", "pick_captcha", "yes", "Join.mode", ()),
-    ("pm_broadcast", "pick_mode", "phone", "PmBroadcast.mode", ()),
     ("moderation", "ru_reason", "0", "ReportUser.username", ()),
 ]
 
@@ -1660,7 +1669,7 @@ def _mid_flow_call(module, handler, value, state, extra):
     callback = _Callback()
     extras = [ns(trigger="go", messages_count=0) for _ in extra]
     asyncio.run(getattr(router, handler)(callback, ChoiceCB(scope="x", value=value), state, *extras))
-    return [text for text, _ in callback.message.answers]
+    return callback.alerts + [text for text, _ in callback.message.answers]  # a stale tap: in a pop-up
 
 
 @pytest.mark.parametrize("module, handler, value, step, extra", _MID_FLOW)
@@ -1720,3 +1729,15 @@ def test_cli_set_proxies_without_a_list_for_the_restricted_stops_separating_them
     answers = iter([str(home / "proxies.txt"), str(home / "proxies_restriced.txt")])
     asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
     assert applied == [[]] and (home / "proxies_restricted.txt").exists()
+
+
+@pytest.mark.parametrize("peer, by_phone", [("+7 999 123-45-67", True), ("79991234567", True), ("@durov", False),
+                                            ("durov", False), ("https://t.me/durov", False), ("+12", False)])
+def test_pm_to_a_person_sees_a_number_or_a_username(peer, by_phone):
+    """✉️ ЛС человеку asks no «по username / по номеру»: what was sent says which."""
+    from bot.routers import pm_broadcast
+    from bot.states import PmBroadcast
+
+    state = _State()
+    asyncio.run(pm_broadcast.got_peer(_Msg(text=peer), state))
+    assert state.data == {"peer": peer, "by_phone": by_phone} and state.state == PmBroadcast.message

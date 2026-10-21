@@ -1,11 +1,12 @@
-"""The trigger / messages-count steps of the chat, instant and comments flows (bot/routers/broadcasts.py)."""
+"""The trigger / messages-count steps of the chat, instant and comments flows (bot/routers/chat_broadcasts.py)."""
 
 import asyncio
 import types
 
+from bot.callbacks import ChoiceCB
 from bot.keyboards.common import cancel_kb
-from bot.routers import broadcasts
-from bot.states import BroadcastOptions, ChatBroadcast, Comments
+from bot.routers import chat_broadcasts as broadcasts
+from bot.states import ChatPost
 
 
 def ns(**kw):
@@ -40,6 +41,9 @@ class _Msg:
     async def answer(self, text, reply_markup=None, **kw):
         self.answers.append((text, reply_markup))
 
+    async def edit_text(self, text, reply_markup=None, **kw):
+        self.answers.append((text, reply_markup))
+
 
 class _Callback:
     def __init__(self):
@@ -65,7 +69,7 @@ class _Settings:
 
 class _Manager:
     def __init__(self, active=False):
-        self.active, self.label, self.runs = active, "Другая задача", []
+        self.active, self.label, self.runs, self.project_id = active, "Другая задача", [], 1
 
     async def run(self, *args, **kwargs):
         self.runs.append(args)
@@ -84,10 +88,10 @@ def _content(monkeypatch):
 
 
 def test_comments_link_asks_the_count_with_the_current_value():
-    state, msg = _State(), _Msg("https://t.me/c/1/2")
-    asyncio.run(broadcasts.com_link(msg, state, _Settings(messages_count=5)))
+    state, msg = _State({"flow": "comments"}), _Msg("https://t.me/c/1/2")
+    asyncio.run(broadcasts.link_input(msg, state, _Settings(messages_count=5)))
 
-    assert state.state == BroadcastOptions.count and state.data["flow"] == "comments"
+    assert state.state == ChatPost.count and state.data["flow"] == "comments"
     text, markup = msg.answers[-1]
     assert "5" in markup.inline_keyboard[0][0].text
 
@@ -95,56 +99,63 @@ def test_comments_link_asks_the_count_with_the_current_value():
 def test_count_typed_moves_to_the_flows_message_step():
     state, msg = _State({"flow": "comments"}), _Msg(" 3 ")
     asyncio.run(broadcasts.count_input(msg, state))
-    assert state.data["messages_count"] == 3 and state.state == Comments.message
+    assert state.data["messages_count"] == 3 and state.state == ChatPost.message
 
 
 def test_count_garbage_asks_again():
     state, msg = _State({"flow": "comments"}), _Msg("-1")
     asyncio.run(broadcasts.count_input(msg, state))
     assert "messages_count" not in state.data and state.state is None
-    assert "0 = без лимита" in msg.answers[-1][0]
+    assert "♾ Без лимита" in msg.answers[-1][0]
 
 
-def test_count_keep_takes_the_current_setting():
+def test_count_keep_takes_the_current_setting_and_unlimited_takes_none():
     state, callback = _State({"flow": "chat"}), _Callback()
-    asyncio.run(broadcasts.count_keep(callback, state, _Settings(messages_count=7)))
-    assert state.data["messages_count"] == 7 and state.state == ChatBroadcast.message
+    asyncio.run(broadcasts.count_keep(callback, ChoiceCB(scope="bc_count", value="keep"), state,
+                                      _Settings(messages_count=7)))
+    assert state.data["messages_count"] == 7 and state.state == ChatPost.message
+
+    state = _State({"flow": "chat"})
+    asyncio.run(broadcasts.count_keep(_Callback(), ChoiceCB(scope="bc_count", value="0"), state,
+                                      _Settings(messages_count=7)))
+    assert state.data["messages_count"] == 0 and state.state == ChatPost.message
 
 
 def test_trigger_step_has_no_keep_button_when_empty_only_cancel():
     state, msg = _State(), _Msg()
-    asyncio.run(broadcasts._ask_trigger(msg, state, _Settings(trigger="")))
-    assert state.state == BroadcastOptions.trigger and msg.answers[-1][1] == cancel_kb(BroadcastOptions.trigger)
+    asyncio.run(broadcasts._ask_trigger(msg.answer, state, _Settings(trigger="")))
+    assert state.state == ChatPost.trigger and msg.answers[-1][1] == cancel_kb(ChatPost.trigger)
 
-    asyncio.run(broadcasts._ask_trigger(msg, state, _Settings(trigger="go")))
+    asyncio.run(broadcasts._ask_trigger(msg.answer, state, _Settings(trigger="go")))
     assert "go" in msg.answers[-1][1].inline_keyboard[0][0].text
 
 
 def test_trigger_typed_then_count_asked_for_the_chat():
-    state, msg = _State(), _Msg("старт")
+    state, msg = _State({"flow": "chat"}), _Msg("старт")
     asyncio.run(broadcasts.trigger_input(msg, state, _Settings()))
     assert state.data["trigger"] == "старт" and state.data["flow"] == "chat"
-    assert state.state == BroadcastOptions.count
+    assert state.state == ChatPost.count
 
 
 def test_busy_slot_saves_nothing_and_drops_the_content(monkeypatch):
     content = _content(monkeypatch)
     settings, manager = _Settings(), _Manager(active=True)
-    state = _State({"link": "https://t.me/c/1/2", "messages_count": 9})
+    state = _State({"flow": "comments", "link": "https://t.me/c/1/2", "messages_count": 9})
     msg = _Msg()
 
-    asyncio.run(broadcasts.com_run(msg, state, None, None, {}, manager, settings))
+    asyncio.run(broadcasts.message_input(msg, state, None, None, {}, manager, settings))
 
     assert settings.saved == [] and content.cleaned and manager.runs == []
     assert "Занят" in msg.answers[-1][0]
+    assert state.data["link"] == "https://t.me/c/1/2"  # the step stays: the message can be sent again
 
 
 def test_start_saves_the_chosen_values(monkeypatch):
     _content(monkeypatch)
     settings, manager = _Settings(trigger="go", messages_count=0), _Manager()
-    state = _State({"choice": 0, "trigger": "старт", "messages_count": 4})
+    state = _State({"flow": "chat", "choice": 0, "trigger": "старт", "messages_count": 4})
 
-    asyncio.run(broadcasts.cha_run(_Msg(), state, None, ns(workers=[]), {}, manager, settings))
+    asyncio.run(broadcasts.message_input(_Msg(), state, None, ns(workers=[]), {}, manager, settings))
 
     assert settings.saved == [("trigger", "старт"), ("messages_count", 4)] and len(manager.runs) == 1
 
@@ -152,6 +163,6 @@ def test_start_saves_the_chosen_values(monkeypatch):
 def test_chat_run_without_a_trigger_is_stale(monkeypatch):
     content = _content(monkeypatch)
     manager, msg = _Manager(), _Msg()
-    asyncio.run(broadcasts.cha_run(msg, _State({"choice": 0, "messages_count": 1}), None, ns(workers=[]), {},
-                                   manager, _Settings()))
+    asyncio.run(broadcasts.message_input(msg, _State({"flow": "chat", "choice": 0, "messages_count": 1}), None,
+                                         ns(workers=[]), {}, manager, _Settings()))
     assert manager.runs == [] and "устарел" in msg.answers[-1][0] and not content.cleaned  # never built

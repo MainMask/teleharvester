@@ -5,7 +5,8 @@ from rich.prompt import Confirm, Prompt
 from functions import add_contacts, pmmailing, scraper, scraper_analysis
 from functions.base import TelethonFunction
 from modules.cli_menu import menu_entries, print_menu
-from modules.registry import CARD, PROJECT_CARD, PROJECT_MANAGE, card_rows, children, trail
+from modules.registry import (ADD_CHANNELS, CARD, PROJECT_FILES, RISKY, SCREENS, by_category, children, risk_marker,
+                              trail)
 from modules import projects, scraped_files
 from modules.storages.functions_storage import FunctionsStorage
 from scraper.scrape import bad_channels, bad_channels_text, parse_channels
@@ -117,27 +118,33 @@ class ProjectsFunc(TelethonFunction):
         plan = projects.topup(project) if projects.unfinished(project.name) is None else None
         # the bases only ever added to: a group's members, the uploaded list
         clearable = [what for what, path in projects.CLEARABLE.items() if path(project.name).exists()]
-        # the bot's card and its ⚙️ in one list: every function, data or not (one with nothing to work on
-        # yet says what to collect first: projects.missing), then the project itself; 🔄 and 🧹 when there
-        # is something to do. Numbered by their place in the registry, so a hidden one shifts none
-        hidden = ([] if plan else ["topup"]) + ([] if clearable else ["clear"])
-        actions = [button.action for rows in (PROJECT_CARD, PROJECT_MANAGE) for row in rows for button in row
-                   if button.action != "manage"]
-        actions += children(CARD)  # its screens: 🤖 Аккаунты, 💬 Активность
-        number = {action: index for index, action in enumerate(actions, 1)}
-        card, manage = ("  ".join(f"[{number[action]}] {title}"
-                                  for row in card_rows(rows, hidden, bool(project.channels))
-                                  for title, action in row if action in number)
-                        for rows in (PROJECT_CARD, PROJECT_MANAGE))
-        sections = "  ".join(f"[{number[title]}] {title} ›" for title in children(CARD))
-        console.print(f"  {card}\n  ⚙️ Управление проектом:  {manage}\n  {sections}  (пусто — выход)", markup=False,
-                      highlight=False)
-        shown = {str(number[action]): action for action in actions if action not in hidden}
+        # the bot's card's screens in its order: one on the project's files a line, each of its buttons, data or
+        # not (one with nothing to work on yet says what to collect first: projects.missing), 🔄 and 🧹 when there
+        # is something to do; the ones on its workers (🤖 Аккаунты, 💬 Активность) on a line of their own.
+        # Numbered by their place in the registry, so a hidden one shifts none
+        hidden = ([] if plan else ["topup"]) + ([] if clearable else ["clearbase"])
+        titles = {"channels": ADD_CHANNELS} if not project.channels else {}
+        items = {title: self._items(title) if title in PROJECT_FILES else [(f"{title} ›", title)]
+                 for title in children(CARD)}
+        keys = [key for title in children(CARD) for _, key in items[title]]
+        number = {key: index for index, key in enumerate(keys, 1)}
+        lines = []
+        for title in children(CARD):
+            shown = "  ".join(f"[{number[key]}] {titles.get(key, label)}" for label, key in items[title]
+                              if key not in hidden)
+            if title in PROJECT_FILES:
+                lines.append(f"{title}{self._risky(title)}:  {shown}")
+            elif lines and lines[-1].startswith("["):  # the screens on its workers: one line
+                lines[-1] += f"  {shown}"
+            else:
+                lines.append(shown)
+        lines.append("(пусто — выход)")
+        console.print("\n".join(f"  {line}" for line in lines), markup=False, highlight=False)
+        shown = {str(number[key]): key for key in keys if key not in hidden}
         action = shown.get(Prompt.ask("[bold red]действие[/]", default=""))
-        if action in children(CARD):
-            return self._section(action, functions)
-        checked = ("scrape", "contacts", "mail", "verify", "analysis")
-        if action in checked and (why := projects.missing(project, action)):
+        if action in SCREENS:  # 🤖 Аккаунты, 💬 Активность
+            return self._screen(action, functions)
+        if action in projects.MISSING_CHECKED and (why := projects.missing(project, action)):
             console.print(why, style="bold yellow", markup=False)
             return
         # each runs the function's own flow on the project's files only, on its workers
@@ -147,15 +154,15 @@ class ProjectsFunc(TelethonFunction):
             scraper.ScrapeFunc(storage, self.settings).topup(project.name, plan)
         elif action == "members":  # the base is named after the project: one of its bases
             scraper.MembersFunc(storage, self.settings).execute(project=project.name)
-        elif action == "contacts":  # the contacts need a base's IDs
+        elif action == "addcontacts":  # the contacts need a base's IDs
             bases = scraped_files.project_files(project.name, kinds=("participants",))
             functions.run(add_contacts.AddContactsFunc(storage, self.settings).execute(bases=bases))
-        elif action == "mail":  # the mailing takes the uploaded list too
+        elif action == "pmmailing":  # the mailing takes the uploaded list too
             recipients = scraped_files.project_files(project.name, kinds=("participants", "list"))
             functions.run(pmmailing.PmMailingFunc(storage, self.settings).execute(bases=recipients))
         elif action == "upload":
             self._upload(project)
-        elif action == "clear":
+        elif action == "clearbase":
             self._clear(project, clearable)
         elif action == "verify":
             posts = scraped_files.project_files(project.name, kinds=("posts",))
@@ -194,9 +201,22 @@ class ProjectsFunc(TelethonFunction):
             console.print("[bold green]Проект удалён, файлы скрапа на месте.[/]")
 
     @staticmethod
-    def _section(title, functions):
-        """A project's screen (🤖 Аккаунты with 👤 Профиль, 🛠 Обслуживание; 💬 Активность): its items, one run
-        on the project's workers."""
+    def _items(title) -> list[tuple[str, str]]:
+        """A card's screen's buttons, (title, key), as the bot's: its actions, then its functions (⚠️ as there)."""
+        functions = by_category(title)
+        return [*((button.title, button.action) for button in SCREENS[title].buttons),
+                *((f"{risk_marker(function, functions)}{function.title}", function.key) for function in functions)]
+
+    @staticmethod
+    def _risky(title) -> str:
+        """⚠️ on a screen's title when every function there is risky, as in the bot."""
+        functions = by_category(title)
+        return " ⚠️" if functions and all(function.risk == RISKY for function in functions) else ""
+
+    @staticmethod
+    def _screen(title, functions):
+        """A project's screen on its workers (🤖 Аккаунты with 👤 Профиль, 🔐 Безопасность; 💬 Активность): its
+        items, one run on the project's workers."""
         entries = [entry for entry in menu_entries(functions.functions, project=True) if title in trail(entry[0])]
         print_menu(entries)
         raw = Prompt.ask("[bold red]пункт (пусто — выход)[/]", default="")

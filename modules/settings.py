@@ -90,6 +90,11 @@ def seconds_text(seconds: List[int]) -> str:
     return "–".join(str(part) for part in seconds) + " с"
 
 
+def count_text(count: int) -> str:
+    """[broadcast] messages_count as shown: 0 is no limit."""
+    return "без лимита" if count == 0 else str(count)
+
+
 class Settings:
     def __init__(self):
         config = load_toml("config.toml")
@@ -212,6 +217,12 @@ class Settings:
         """Change how many messages each worker sends per chat/post (0 = unlimited), in config.toml and live."""
         self._write_setting(path, "broadcast", "messages_count", count)
         self.messages_count = count
+
+    def set_daily_cap(self, key: str, count: int, path: str = "config.toml"):
+        """Change a per-account daily cap ([limits] per_account_daily, invite_per_account_daily or
+        contacts_per_account_daily; 0 = unlimited), in config.toml and live."""
+        self._write_setting(path, "limits", key, count)
+        setattr(self, key, count)
 
     def set_profile_pause(self, pause: List[int], path: str = "config.toml"):
         """Change the pause between accounts for profile changes, in config.toml and live."""

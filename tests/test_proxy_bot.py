@@ -1,4 +1,4 @@
-"""Offline tests for the bot proxy-setup handler (bot/routers/accounts.py)."""
+"""Offline tests for the bot proxy-setup handler (bot/routers/accounts/proxies.py)."""
 
 import asyncio
 import conftest
@@ -31,6 +31,14 @@ class _Msg:
 
     async def answer(self, text, **kwargs):
         self.replies.append(text)
+
+    async def edit_text(self, text, **kwargs):  # in place: what is shown now, as an answer
+        self.replies.append(text)
+
+
+def _manager(active=False, label=""):
+    """The project's job slot: busy (`active`, with its job's `label`) or free."""
+    return ns(active=active, label=label, project_id=1)
 
 
 class _Pool:
@@ -66,10 +74,10 @@ def test_text_proxies_applied_and_file_written(tmp_path, monkeypatch):
     msg = _Msg(text="socks5://u:p@1.1.1.1:1080\nhttp://2.2.2.2:3128")
     state = _State()
 
-    asyncio.run(accounts.proxy_apply(msg, state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_apply(msg, state, _Pool(storage), _manager()))
 
     assert len(storage.applied) == 2
-    assert state.state == accounts.SetProxy.spare  # next: the optional proxies for the restricted
+    assert state.state == accounts.proxies.SetProxy.spare  # next: the optional proxies for the restricted
     assert (tmp_path / "home" / "proxies.txt").read_text().strip().splitlines() == [
         "socks5://u:p@1.1.1.1:1080",
         "http://2.2.2.2:3128",
@@ -85,7 +93,7 @@ def test_refuses_while_job_active(tmp_path, monkeypatch):
     msg = _Msg(text="socks5://u:p@1.1.1.1:1080")
     state = _State()
 
-    asyncio.run(accounts.proxy_apply(msg, state, _Pool(storage), ns(active=True, label="Рассылка")))
+    asyncio.run(accounts.proxies.proxy_apply(msg, state, _Pool(storage), _manager(True, "Рассылка")))
 
     assert storage.applied is None  # nothing applied
     assert state.cleared is False
@@ -100,7 +108,7 @@ def test_bad_proxy_line_reports(tmp_path, monkeypatch):
     msg = _Msg(text="garbage-line")
     state = _State()
 
-    asyncio.run(accounts.proxy_apply(msg, state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_apply(msg, state, _Pool(storage), _manager()))
 
     assert storage.applied is None
     assert state.cleared is False
@@ -117,7 +125,7 @@ def test_refuses_while_autoreply_polls(tmp_path, monkeypatch):
     state = _State()
 
     pool = _Pool(storage, polling="sessions/a.jsession")
-    asyncio.run(accounts.proxy_apply(msg, state, pool, ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_apply(msg, state, pool, _manager()))
 
     assert storage.applied is None
     assert state.cleared is False
@@ -150,7 +158,7 @@ def test_the_restricted_proxies_are_saved_and_the_restricted_moved(tmp_path, mon
     storage, state = _Rehoming(on=["socks5://8.8.8.8:1080"]), _State()
     msg = _Msg(text="socks5://9.9.9.9:1080")
 
-    asyncio.run(accounts.proxy_spare_apply(msg, state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_spare_apply(msg, state, _Pool(storage), _manager()))
 
     assert (tmp_path / "home" / "proxies_restricted.txt").read_text() == "socks5://9.9.9.9:1080\n"
     assert storage.rehomed == [(0, 1, False, [])] and state.cleared
@@ -163,7 +171,7 @@ def test_the_restricted_proxies_may_not_repeat_the_pool(tmp_path, monkeypatch):
     storage, state = _Rehoming(), _State()
     msg = _Msg(text="socks5://9.9.9.9:1080")
 
-    asyncio.run(accounts.proxy_spare_apply(msg, state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_spare_apply(msg, state, _Pool(storage), _manager()))
 
     assert storage.rehomed == [] and not state.cleared
     assert not (tmp_path / "home" / "proxies_restricted.txt").exists()
@@ -175,7 +183,8 @@ def test_a_worker_scraping_is_left_for_later_the_others_moved(tmp_path, monkeypa
     storage.jsessions_paths["a"] = ns(account=ns(proxy=None))  # its one move, scraping now
     msg = _Msg(text="socks5://9.9.9.9:1080")
 
-    asyncio.run(accounts.proxy_spare_apply(msg, state, _Pool(storage, scraping=["a"]), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_spare_apply(msg, state, _Pool(storage, scraping=["a"]),
+                                                   _manager()))
 
     assert storage.rehomed == [(0, 1, False, ["a"])]  # moved the rest, "a" left as it is
     assert (tmp_path / "home" / "proxies_restricted.txt").exists() and state.cleared
@@ -188,7 +197,8 @@ def test_not_separating_clears_the_list_and_brings_them_back(tmp_path, monkeypat
     storage, state = _Rehoming(on=["socks5://9.9.9.9:1080"]), _State()  # one still on it: stuck, say
     cb = ns(message=_Msg(), answer=lambda *a, **k: asyncio.sleep(0))
 
-    asyncio.run(accounts.proxy_spare_choice(cb, ns(value="clear"), state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_spare_choice(cb, ns(value="clear"), state, _Pool(storage),
+                                                    _manager()))
 
     assert not (tmp_path / "home" / "proxies_restricted.txt").exists() and state.cleared
     assert storage.rehomed[-1] == (0, 0, False, [])  # no list for them now: everyone off the pool comes back
@@ -202,9 +212,9 @@ def test_a_broken_list_for_the_restricted_comes_first(tmp_path, monkeypatch):
     storage, state = _Storage(), _State()
     msg = _Msg(text="socks5://u:p@1.1.1.1:1080")
 
-    asyncio.run(accounts.proxy_apply(msg, state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_apply(msg, state, _Pool(storage), _manager()))
 
-    assert storage.applied is None and state.state == accounts.SetProxy.spare
+    assert storage.applied is None and state.state == accounts.proxies.SetProxy.spare
     assert any("испорчен" in r and "Сначала" in r for r in msg.replies)
 
 
@@ -262,7 +272,7 @@ def test_the_move_button_moves_its_own_project_and_waits_for_a_job(monkeypatch):
     from bot.routers import spamblock
 
     moved = []
-    monkeypatch.setattr("bot.routers._common.rehome", lambda storage, dry_run=False, busy=():
+    monkeypatch.setattr("bot.routers.accounts.proxies.rehome", lambda storage, dry_run=False, busy=():
                         moved.append(storage.name) or {"out": [], "back": [], "stuck": [], "busy": []})
     mine = _workspace(ns(name="mine", jsessions_paths={}), 7, active=True)
     other = _workspace(ns(name="other", jsessions_paths={}), 8)
@@ -270,7 +280,7 @@ def test_the_move_button_moves_its_own_project_and_waits_for_a_job(monkeypatch):
 
     cb = _Callback()
     asyncio.run(spamblock.rehome_restricted(cb, ns(value="7"), workspaces))
-    assert moved == [] and any("Занят: Рассылка" in r for r in cb.message.replies)  # its job runs
+    assert moved == [] and any("Занято: идёт «Рассылка»" in r for r in cb.message.replies)  # its job runs
 
     mine.manager.active = False
     edits = []
@@ -304,7 +314,7 @@ def test_a_bad_pool_list_writes_nothing_for_the_restricted(tmp_path, monkeypatch
     storage, state = _Rehoming(), _State()
     msg = _Msg(text="socks5://9.9.9.9:1080")
 
-    asyncio.run(accounts.proxy_spare_apply(msg, state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_spare_apply(msg, state, _Pool(storage), _manager()))
 
     assert not (tmp_path / "home" / "proxies_restricted.txt").exists() and storage.rehomed == []
 
@@ -316,7 +326,7 @@ def test_a_broken_list_for_the_restricted_can_be_replaced_from_the_bot(tmp_path,
     storage, state = _Rehoming(), _State()
     msg = _Msg(text="socks5://9.9.9.9:1080")
 
-    asyncio.run(accounts.proxy_spare_apply(msg, state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_spare_apply(msg, state, _Pool(storage), _manager()))
 
     assert (tmp_path / "home" / "proxies_restricted.txt").read_text() == "socks5://9.9.9.9:1080\n"
     assert storage.rehomed[-1] == (0, 1, False, []) and state.cleared
@@ -333,7 +343,7 @@ def test_a_broken_list_for_the_restricted_can_be_dropped_too(tmp_path, monkeypat
         sent.append(kwargs.get("reply_markup"))
     msg.answer = answer
 
-    asyncio.run(accounts.proxy_apply(msg, state, _Pool(storage), ns(active=False, label="")))
+    asyncio.run(accounts.proxies.proxy_apply(msg, state, _Pool(storage), _manager()))
 
     labels = [b.text for markup in sent if markup for row in markup.inline_keyboard for b in row]
     assert "🗑 Не отделять" in labels

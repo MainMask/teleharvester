@@ -129,7 +129,8 @@ def test_rehome_brings_one_clean_again_back_or_reports_it_stuck(tmp_path):
     storage.apply_proxies(MAIN[:1], SPARE, {sorted(storage.jsessions_paths)[0]})
     first = sorted(storage.jsessions_paths)[0]
 
-    assert storage.rehome_restricted(set(), MAIN[:1], SPARE) == {"out": [], "back": [], "stuck": [first], "busy": []}  # pool full
+    # pool full
+    assert storage.rehome_restricted(set(), MAIN[:1], SPARE) == {"out": [], "back": [], "stuck": [first], "busy": []}
     assert storage.rehome_restricted(set(), MAIN, SPARE) == {"out": [], "back": [first], "stuck": [], "busy": []}
     assert _ips(storage)[first] == "10.0.0.1"
 
@@ -149,7 +150,8 @@ def test_rehome_moves_the_restricted_out_first_so_one_clean_again_takes_its_plac
 
     moves = storage.rehome_restricted({paths[3]}, MAIN[:1], SPARE)
 
-    assert moves == {"out": [paths[3]], "back": [paths[0]], "stuck": [], "busy": []}  # not stuck: paths[3] freed a place
+    # not stuck: paths[3] freed a place
+    assert moves == {"out": [paths[3]], "back": [paths[0]], "stuck": [], "busy": []}
     assert _ips(storage)[paths[0]] == "10.0.0.0" and _ips(storage)[paths[3]] == "10.9.9.9"
 
 

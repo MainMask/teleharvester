@@ -972,33 +972,71 @@ async def _collect_post(client, ref: _ChannelRef, message, params: ScrapeParams)
     return row, reactors
 
 
-async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
-    params.out_dir.mkdir(parents=True, exist_ok=True)
-    # per-channel history snapshots go in partial_dir; the resume machinery goes one
-    # level down in ckpt_dir, so combining <name>_partial (analysis) only sees the snapshots
-    partial_dir = params.out_dir / f"{params.name}_partial"
-    ckpt_dir = partial_dir / "checkpoint"
+class _Run:
+    """A scrape run's state across its channels: the rows not yet in a checkpoint shard, the counts,
+    the resume cursor — `channel`, `last_id`, and `closed` once the channel's final checkpoint is
+    written (the Ctrl-C checkpoint must not roll it back) — and the progress line's clock."""
 
-    data: list[dict] = []
-    reactors: list[dict] = []
-    failed: list[tuple[str, str]] = []  # (channel, error) of channels cut short by an error
-    t_index = 0
-    start_time = time.monotonic()
-    printed_at = None  # elapsed time of the last progress line
+    def __init__(self, params: ScrapeParams):
+        self.params = params
+        # per-channel history snapshots go in partial_dir; the resume machinery goes one
+        # level down in ckpt_dir, so combining <name>_partial (analysis) only sees the snapshots
+        self.partial_dir = params.out_dir / f"{params.name}_partial"
+        self.ckpt_dir = self.partial_dir / "checkpoint"
+        self.data: list[dict] = []
+        self.reactors: list[dict] = []
+        self.failed: list[tuple[str, str]] = []  # (channel, error) of channels cut short by an error
+        self.t_index = 0
+        self.shard_index = 0
+        self.snapshot_from = 0  # first shard index not yet written to an `_until_` snapshot
+        self.channel = 0
+        self.last_id = 0
+        self.closed = False
+        self.dialogs_loaded = False
+        self.started = time.monotonic()
+        self.printed_at = None  # elapsed time of the last progress line
 
-    n_channels = len(params.channels)
-    span = (params.date_max - params.date_min).total_seconds()
+    def prepare(self) -> tuple[int, int]:
+        """A fresh run drops the previous one's files; a resume takes up its checkpoint. Returns the
+        channel index and the message id to continue from."""
+        params, ckpt_dir = self.params, self.ckpt_dir
+        resume_meta_ok = params.resume and (ckpt_dir / "resume.json").exists()
+        if params.resume and not resume_meta_ok:
+            print(f"  ! resume: {ckpt_dir / 'resume.json'} not found; starting a fresh run")
+        if not resume_meta_ok:
+            _clear_checkpoint(ckpt_dir)  # fresh run: never inherit a previous job's shards
+            for p in self.partial_dir.glob("*_until_*"):  # ... or its per-channel snapshots
+                p.unlink()
+            return 0, 0
+        rj = ckpt_dir / "resume.json"
+        meta = json.loads(rj.read_text(encoding="utf-8"))
+        if (meta.get("channels") != params.channels
+                or meta.get("keyword", "") != params.keyword
+                or meta.get("date_min") != params.date_min.isoformat()
+                or meta.get("date_max") != params.date_max.isoformat()):
+            raise SystemExit("продолжение: resume.json не совпадает с каналами / словом / датами "
+                             "прерванного скрапа.")
+        if not _shard_paths(ckpt_dir, "posts") and int(meta.get("t_index", 0)) > 0:
+            raise SystemExit(f"продолжение: в {ckpt_dir} нет файлов чекпоинта, "
+                             f"а resume.json сообщает о {meta['t_index']} собранных постах "
+                             f"— продолжить безопасно нельзя.")
+        self.shard_index = _next_shard_index(ckpt_dir)
+        self.t_index = _count_shard_rows(ckpt_dir, "posts")  # footer metadata only, no data
+        n_reactor_rows = _count_shard_rows(ckpt_dir, "reactors")
+        self.channel = int(meta["channel_index"])
+        self.last_id = int(meta["last_id"])
+        self.failed = [tuple(f) for f in meta.get("failed", [])]
+        print(SEP)
+        print(f"Resuming '{params.name}': channel {self.channel + 1}/{len(params.channels)}, "
+              f"{self.t_index} posts + {n_reactor_rows} reactor rows already saved in "
+              f"{self.shard_index} shard(s), continuing from id {self.last_id or 'newest'}")
+        print(SEP)
+        return self.channel, self.last_id
 
-    def _date_frac(msg_date) -> float:
-        if span <= 0:
-            return 1.0
-        return min(max((params.date_max - msg_date).total_seconds() / span, 0.0), 1.0)
-
-    shard_index = 0
-
-    def _write_checkpoint(channel_index: int, last_id: int) -> None:
-        nonlocal shard_index
-        if not data and not reactors and not (ckpt_dir / "resume.json").exists():
+    def write(self, channel_index: int, last_id: int) -> None:
+        """A checkpoint: the rows gathered since the previous one as a new shard, and the cursor."""
+        params, ckpt_dir = self.params, self.ckpt_dir
+        if not self.data and not self.reactors and not (ckpt_dir / "resume.json").exists():
             return  # nothing scraped yet and no cursor to advance
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         # append-only: write ONLY the rows gathered since the previous checkpoint to
@@ -1006,26 +1044,26 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
         # so a checkpoint costs O(batch) regardless of run size. Always parquet:
         # lossless and format-stable for a resume.
         wrote = False
-        if data:
-            pdf = pd.DataFrame(data)
+        if self.data:
+            pdf = pd.DataFrame(self.data)
             # int64 + None would become float64 and corrupt the hash; keep a stable type
             pdf["Author Access Hash"] = pd.array(
-                [r["Author Access Hash"] for r in data], dtype="Int64")
-            pdf["Topic ID"] = pd.array([r["Topic ID"] for r in data], dtype="Int64")
+                [r["Author Access Hash"] for r in self.data], dtype="Int64")
+            pdf["Topic ID"] = pd.array([r["Topic ID"] for r in self.data], dtype="Int64")
             # whole or not at all (save_table): an OOM-kill mid-write leaves no half-written shard
-            save_table(pdf, ckpt_dir / f"posts_part_{shard_index:05}.parquet", "parquet")
-            data.clear()
+            save_table(pdf, ckpt_dir / f"posts_part_{self.shard_index:05}.parquet", "parquet")
+            self.data.clear()
             wrote = True
-        if reactors:
-            rdf = pd.DataFrame(reactors)
+        if self.reactors:
+            rdf = pd.DataFrame(self.reactors)
             # int64 + None would become float64 and corrupt the hash; keep a stable type
             rdf["Reactor Access Hash"] = pd.array(
-                [r["Reactor Access Hash"] for r in reactors], dtype="Int64")
-            save_table(rdf, ckpt_dir / f"reactors_part_{shard_index:05}.parquet", "parquet")
-            reactors.clear()
+                [r["Reactor Access Hash"] for r in self.reactors], dtype="Int64")
+            save_table(rdf, ckpt_dir / f"reactors_part_{self.shard_index:05}.parquet", "parquet")
+            self.reactors.clear()
             wrote = True
         if wrote:
-            shard_index += 1
+            self.shard_index += 1
         atomic_file.write(ckpt_dir / "resume.json", json.dumps({
             "name": params.name,
             "channels": params.channels,
@@ -1042,51 +1080,259 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
             "with_participants": params.with_participants,
             "channel_index": channel_index,
             "last_id": last_id,
-            "t_index": t_index,
-            "failed": failed,
+            "t_index": self.t_index,
+            "failed": self.failed,
             "updated": datetime.now(timezone.utc).isoformat(),
         }, indent=2))
 
-    resume_channel_index = 0
-    resume_last_id = 0
-    resume_meta_ok = params.resume and (ckpt_dir / "resume.json").exists()
-    if params.resume and not resume_meta_ok:
-        print(f"  ! resume: {ckpt_dir / 'resume.json'} not found; starting a fresh run")
-    if not resume_meta_ok:
-        _clear_checkpoint(ckpt_dir)  # fresh run: never inherit a previous job's shards
-        for p in partial_dir.glob("*_until_*"):  # ... or its per-channel snapshots
-            p.unlink()
-    else:
-        rj = ckpt_dir / "resume.json"
-        meta = json.loads(rj.read_text(encoding="utf-8"))
-        if (meta.get("channels") != params.channels
-                or meta.get("keyword", "") != params.keyword
-                or meta.get("date_min") != params.date_min.isoformat()
-                or meta.get("date_max") != params.date_max.isoformat()):
-            raise SystemExit("продолжение: resume.json не совпадает с каналами / словом / датами "
-                             "прерванного скрапа.")
-        if not _shard_paths(ckpt_dir, "posts") and int(meta.get("t_index", 0)) > 0:
-            raise SystemExit(f"продолжение: в {ckpt_dir} нет файлов чекпоинта, "
-                             f"а resume.json сообщает о {meta['t_index']} собранных постах "
-                             f"— продолжить безопасно нельзя.")
-        shard_index = _next_shard_index(ckpt_dir)
-        t_index = _count_shard_rows(ckpt_dir, "posts")  # footer metadata only, no data
-        n_reactor_rows = _count_shard_rows(ckpt_dir, "reactors")
-        resume_channel_index = int(meta["channel_index"])
-        resume_last_id = int(meta["last_id"])
-        failed = [tuple(f) for f in meta.get("failed", [])]
-        print(SEP)
-        print(f"Resuming '{params.name}': channel {resume_channel_index + 1}/{n_channels}, "
-              f"{t_index} posts + {n_reactor_rows} reactor rows already saved in "
-              f"{shard_index} shard(s), continuing from id {resume_last_id or 'newest'}")
-        print(SEP)
+    def snapshot(self, slug: str) -> None:
+        """The shards written since the previous snapshot as <slug>_until_<posts so far>.parquet: a
+        channel's own (after a resume the first one also repeats the earlier channels' checkpointed
+        posts; combine drops them)."""
+        self.partial_dir.mkdir(exist_ok=True)
+        _write_snapshot(self.ckpt_dir, self.snapshot_from,
+                        self.partial_dir / f"{slug}_until_{self.t_index:05}.parquet")
+        self.snapshot_from = self.shard_index
 
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+def _date_frac(params: ScrapeParams, msg_date) -> float:
+    """How far a post is into [date_min, date_max] from its newest end: a channel's progress when
+    the id probe failed."""
+    span = (params.date_max - params.date_min).total_seconds()
+    if span <= 0:
+        return 1.0
+    return min(max((params.date_max - msg_date).total_seconds() / span, 0.0), 1.0)
+
+
+async def _resolve_channel(client, ref: _ChannelRef, channel: str) -> tuple[_ChannelRef, str]:
+    """The channel's reference resolved once — its message links' base, its topic — and its label
+    for the log."""
+    # resolve once: a t.me/+hash string misses the session cache, so every
+    # iter_messages would otherwise re-check the invite over the network
+    ref = ref._replace(arg=await client.get_input_entity(ref.arg))
+    if ref.slug.startswith("+") and isinstance(ref.arg, InputPeerChannel):
+        # t.me/+hash/<id> is no message link; the chat's t.me/c/<id>/<id> is
+        ref = ref._replace(url_base=f"https://t.me/c/{ref.arg.channel_id}")
+    elif isinstance(ref.arg, (InputPeerChat, InputPeerUser)):
+        # an invite into a basic group, or a private chat: no message links
+        ref = ref._replace(url_base="")
+    try:
+        entity = await client.get_entity(ref.arg)
+    except Exception:
+        entity = None
+    title = getattr(entity, "title", None)
+    ref, topic_title = await _resolve_topic(client, ref, entity)
+    label = f'"{title}" ({channel})' if title else channel
+    if topic_title:
+        label += f' topic "{topic_title}"'
+    return ref, label
+
+
+async def _id_range(client, ref: _ChannelRef, params: ScrapeParams, thread: dict) -> tuple[int, int]:
+    """The newest message id in [date_min, date_max] and the one just below it: a channel's progress
+    is measured over that id range. Two cheap limit=1 fetches; (0, 0) if they fail."""
+    try:
+        hi = await client.get_messages(ref.arg, limit=1, offset_date=params.date_max, **thread)
+        lo = await client.get_messages(ref.arg, limit=1, offset_date=params.date_min, **thread)
+        return (hi[0].id if hi else 0), (lo[0].id if lo else 0)
+    except Exception as exc:  # never let a progress probe kill the run
+        print(f"  ! progress probe failed ({exc}); ETA will be approximate")
+        return 0, 0
+
+
+def _sigterm_as_cancel() -> Callable[[], None]:
+    """SIGTERM (a terminal closed, `kill`) as the running task's cancellation; returns the function
+    that hands SIGTERM back.
+
+    SIGTERM is NOT turned into a KeyboardInterrupt the way SIGINT is, so without this it would kill
+    the run mid-batch; as a cancellation, _scrape's CancelledError handler checkpoints a clean resume
+    point. Only in the main thread (the terminal menu); when the bot runs a scrape in a worker thread
+    add_signal_handler is unavailable, and the bot stops it through params.stop instead."""
+    loop = asyncio.get_running_loop()
+    main_task = asyncio.current_task()
+    handled = False
+    # the bot's child process has its own (SIGTERM -> stop): handed back after the loop, as
+    # remove_signal_handler would leave SIG_DFL, killing the final file writes on a SIGTERM
+    previous = signal.getsignal(signal.SIGTERM)
+    if threading.current_thread() is threading.main_thread():
+        try:
+            loop.add_signal_handler(signal.SIGTERM, main_task.cancel)
+            handled = True
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass  # Windows or a loop without signal support: fall back to per-150 checkpoints
+
+    def restore() -> None:
+        if handled:
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+                signal.signal(signal.SIGTERM, previous)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
+    return restore
+
+
+async def _scrape_channel(client, run: _Run, channel: str, loop_start: float) -> bool:
+    """One channel of the run (run.channel), from run.last_id down to date_min: long FLOOD_WAITs and
+    connection drops are waited out from a checkpoint, then the channel is checkpointed and its
+    snapshot written; another error marks it failed and moves past it. True if the max-messages stop
+    left it unfinished."""
+    params, i = run.params, run.channel
+    n_channels = len(params.channels)
+    c_index = 0
+    attempt = 0
+    flood_attempts = 0
+    flood_last_id = None  # cursor at the previous FloodWaitError
+    net_last_id = None    # cursor at the previous dropped connection
+    done_channel = False
+    cut = False
+    ref = None
+    try:
+        ref = _channel_ref(channel)
+        run.dialogs_loaded = await _warm_channel(client, ref, run.dialogs_loaded)
+        ref, label = await _resolve_channel(client, ref, channel)
+        # one topic is its reply thread; the General topic has none: the whole chat,
+        # filtered below. Telethon ignores search= with reply_to=, so the keyword is
+        # matched locally for a topic.
+        thread = {"reply_to": ref.topic} if ref.topic not in (None, 1) else {}
+        search = None if ref.topic is not None else params.keyword or None
+        keyword = params.keyword.lower()
+        print(f"=== ch {i + 1}/{n_channels}: {label} ===")
+        id_hi, id_lo = await _id_range(client, ref, params, thread)
+        id_span = id_hi - id_lo
+        sess_start_id = run.last_id or id_hi  # last_id = resume cursor, else 0
+        if params.on_progress is not None:  # before the first post: one may take minutes (reactors)
+            cf = (min(max((id_hi - run.last_id) / id_span, 0.0), 1.0)
+                  if id_span > 0 and run.last_id else 0.0)
+            params.on_progress((i + cf) / n_channels, None, run.t_index)
+        while True:
+            try:
+                async for message in client.iter_messages(
+                        ref.arg, search=search, offset_id=run.last_id,
+                        # exclusive, hence +1s; a resume's last_id is older anyway
+                        offset_date=params.date_max + timedelta(seconds=1), **thread):
+                    if message.date < params.date_min:
+                        done_channel = True
+                        break
+                    if message.date > params.date_max:
+                        continue
+                    if isinstance(message, MessageService):  # pin, photo change, joins: not a post
+                        run.last_id = message.id  # still progress: retries resume below it
+                        continue
+                    if ref.topic is not None and (
+                            _topic_id(message, True) != ref.topic
+                            or keyword not in (message.text or "").lower()):
+                        run.last_id = message.id  # another topic, or no keyword
+                        continue
+
+                    row, row_reactors = await _collect_post(client, ref, message, params)
+                    run.data.append(row)
+                    run.reactors.extend(row_reactors)
+                    c_index += 1
+                    run.t_index += 1
+                    run.last_id = message.id
+                    date_str = row["Date"]
+
+                    now = time.monotonic() - run.started
+                    chan_elapsed = time.monotonic() - loop_start  # sess_ids is per channel too
+                    if id_span > 0:                                # current channel fraction
+                        cf = min(max((id_hi - message.id) / id_span, 0.0), 1.0)
+                    else:
+                        cf = _date_frac(params, message.date)     # probe failed: fall back
+                    overall = (i + cf) / n_channels
+                    sess_ids = sess_start_id - message.id         # ids this process consumed
+                    eta_s = (None
+                             if not (id_span > 0 and sess_ids > 0 and chan_elapsed > 30)
+                             else max(message.id - id_lo, 0) * chan_elapsed / sess_ids)
+                    eta = "estimating" if eta_s is None else format_duration(eta_s)
+                    if params.on_progress is not None:
+                        params.on_progress(overall, eta_s, run.t_index)
+                    if run.printed_at is None or now - run.printed_at >= PRINT_EVERY:
+                        run.printed_at = now
+                        print(
+                            f"|{_progress_bar(overall)}| {overall * 100:5.1f}%  "
+                            f"ch {i + 1}/{n_channels} ({cf * 100:3.0f}%) "
+                            f"| {c_index:05} here / {run.t_index:05} total | id {message.id} | {date_str} "
+                            f"| elapsed {format_duration(now)} | ETA {eta}"
+                        )
+
+                    if run.t_index % CHECKPOINT_EVERY == 0:
+                        run.write(i, run.last_id)
+                        print(f"  -> checkpoint: {run.t_index} posts")
+
+                    if run.t_index >= params.max_messages:
+                        break
+                else:
+                    done_channel = True
+            except FloodWaitError as exc:  # a soft ban longer than FLOOD_SLEEP_THRESHOLD
+                if run.last_id != flood_last_id:  # progress since the last ban: count afresh
+                    flood_attempts = 0
+                flood_last_id = run.last_id
+                flood_attempts += 1
+                run.write(i, run.last_id)
+                wait = exc.seconds + FLOOD_RETRY_BUFFER
+                if wait > FLOOD_MAX_WAIT or flood_attempts > FLOOD_MAX_ATTEMPTS:
+                    print(f"  ! {label}: FLOOD_WAIT {exc.seconds}s - giving up "
+                          f"(checkpoint saved at {run.t_index} posts)")
+                    raise
+                print(f"  ! {label}: FLOOD_WAIT {exc.seconds}s - checkpoint saved at "
+                      f"{run.t_index} posts, waiting it out "
+                      f"({flood_attempts}/{FLOOD_MAX_ATTEMPTS}), then resuming from id "
+                      f"{run.last_id or 'newest'}")
+                await asyncio.sleep(wait)
+                await _reconnect(client)
+                continue
+            except (*NET_ERRORS, *RETRYABLE_RPC) as exc:
+                if run.last_id != net_last_id:  # progress since the last drop: count afresh
+                    attempt = 0
+                net_last_id = run.last_id
+                attempt += 1
+                run.write(i, run.last_id)
+                if attempt > RESUME_MAX_ATTEMPTS:
+                    print(f"  ! {label}: {exc} - giving up after {attempt - 1} retries")
+                    raise
+                wait = min(RESUME_BASE_WAIT * attempt, RESUME_MAX_WAIT)
+                print(f"  ! {label}: {exc} - checkpoint saved at {run.t_index} posts, "
+                      f"retry {attempt}/{RESUME_MAX_ATTEMPTS} from id "
+                      f"{run.last_id or 'newest'} in {wait}s")
+                await asyncio.sleep(wait)
+                await _reconnect(client)
+                continue
+            break  # iter_messages finished without a disconnect -> channel done
+        cut = not done_channel  # only the max-messages break leaves it unfinished
+
+        print(f"##### {label}: done, {c_index:05} posts | "
+              f"overall {((i + 1) / n_channels) * 100:.0f}% #####")
+        # flush the tail buffer to a shard and advance the resume cursor
+        # (on every exit path from the channel, not just a clean finish)
+        run.write(i + 1 if done_channel else i, 0 if done_channel else run.last_id)
+        run.closed = True
+        run.snapshot(ref.slug)
+    except (*NET_ERRORS, FloodWaitError, *RETRYABLE_RPC):  # bubble to the Ctrl-C/finally scope and out to run()
+        raise
+    except Exception as exc:
+        print(f"{channel} error: {exc}")
+        if not run.closed:  # else only the _until_ snapshot failed; the data is saved
+            run.failed.append((channel, f"{type(exc).__name__}: {exc}"))
+            # move past it like a finished channel, so Ctrl-C/a resume don't retry it
+            run.write(i + 1, 0)
+            if run.shard_index > run.snapshot_from:  # rows scraped before the error: its own snapshot
+                # (after a resume, rows of the earlier channels even if this one's link didn't parse)
+                run.snapshot(ref.slug if ref is not None else channel_slug(channel))
+            run.closed = True
+    return cut
+
+
+async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
+    params.out_dir.mkdir(parents=True, exist_ok=True)
+    run = _Run(params)
+    resume_channel, resume_last_id = run.prepare()
+
+    run.ckpt_dir.mkdir(parents=True, exist_ok=True)
     # before connecting: ⏹ must work while a dead proxy is retried for hours
     watcher = watch_stop(params.stop)
     client = None
     try:
-        client = await connect(creds, entity_cache=ckpt_dir / "entities")
+        client = await connect(creds, entity_cache=run.ckpt_dir / "entities")
         params.owner_id = (await client.get_me()).id
         previous = _previous_posts(params)
         owner = read_attrs(previous).get("owner_id") if previous else None
@@ -1100,249 +1346,52 @@ async def _scrape(creds: Credentials, params: ScrapeParams) -> None:
             await client.disconnect()
         raise
 
-    i, last_id = resume_channel_index, resume_last_id  # for the Ctrl-C handler below
-    snapshot_from = 0  # first shard index not yet written to an `_until_` snapshot
-    dialogs_loaded = False
-    channel_closed = False  # the channel's final checkpoint is written; Ctrl-C must not roll it back
     cut_short: int | None = None  # first channel the max-messages stop left unfinished
-
-    # SIGTERM (a terminal closed, `kill`) is NOT turned into a KeyboardInterrupt the way
-    # SIGINT is, so without this it would kill the run mid-batch. Convert it to task
-    # cancellation so the CancelledError handler below checkpoints a clean resume point.
-    # Only in the main thread (the terminal menu); when the bot runs a scrape in a worker thread
-    # add_signal_handler is unavailable, and the bot stops it through params.stop instead.
-    loop = asyncio.get_running_loop()
-    main_task = asyncio.current_task()
-    sigterm_handled = False
-    # the bot's child process has its own (SIGTERM -> stop): handed back after the loop, as
-    # remove_signal_handler would leave SIG_DFL, killing the final file writes on a SIGTERM
-    previous_sigterm = signal.getsignal(signal.SIGTERM)
-    if threading.current_thread() is threading.main_thread():
-        try:
-            loop.add_signal_handler(signal.SIGTERM, main_task.cancel)
-            sigterm_handled = True
-        except (NotImplementedError, RuntimeError, ValueError):
-            pass  # Windows or a loop without signal support: fall back to per-150 checkpoints
+    restore_sigterm = _sigterm_as_cancel()
     try:
         for i, channel in enumerate(params.channels):
-            if i < resume_channel_index:
+            if i < resume_channel:
                 continue
-            if t_index >= params.max_messages:
+            if run.t_index >= params.max_messages:
                 if cut_short is None:
                     cut_short = i
                 break
 
             loop_start = time.monotonic()
-            c_index = 0
-            last_id = resume_last_id if i == resume_channel_index else 0
-            attempt = 0
-            flood_attempts = 0
-            flood_last_id = None  # cursor at the previous FloodWaitError
-            net_last_id = None    # cursor at the previous dropped connection
-            done_channel = False
-            channel_closed = False
-            try:
-                ref = _channel_ref(channel)
-                dialogs_loaded = await _warm_channel(client, ref, dialogs_loaded)
-                # resolve once: a t.me/+hash string misses the session cache, so every
-                # iter_messages would otherwise re-check the invite over the network
-                ref = ref._replace(arg=await client.get_input_entity(ref.arg))
-                if ref.slug.startswith("+") and isinstance(ref.arg, InputPeerChannel):
-                    # t.me/+hash/<id> is no message link; the chat's t.me/c/<id>/<id> is
-                    ref = ref._replace(url_base=f"https://t.me/c/{ref.arg.channel_id}")
-                elif isinstance(ref.arg, (InputPeerChat, InputPeerUser)):
-                    # an invite into a basic group, or a private chat: no message links
-                    ref = ref._replace(url_base="")
-                try:
-                    entity = await client.get_entity(ref.arg)
-                except Exception:
-                    entity = None
-                title = getattr(entity, "title", None)
-                ref, topic_title = await _resolve_topic(client, ref, entity)
-                label = f'"{title}" ({channel})' if title else channel
-                if topic_title:
-                    label += f' topic "{topic_title}"'
-                # one topic is its reply thread; the General topic has none: the whole chat,
-                # filtered below. Telethon ignores search= with reply_to=, so the keyword is
-                # matched locally for a topic.
-                thread = {"reply_to": ref.topic} if ref.topic not in (None, 1) else {}
-                search = None if ref.topic is not None else params.keyword or None
-                keyword = params.keyword.lower()
-                print(f"=== ch {i + 1}/{n_channels}: {label} ===")
-                # progress is measured over the message-id range in [date_min, date_max]:
-                # two cheap limit=1 fetches give the newest and the just-below-floor ids.
-                try:
-                    _hi = await client.get_messages(ref.arg, limit=1, offset_date=params.date_max, **thread)
-                    _lo = await client.get_messages(ref.arg, limit=1, offset_date=params.date_min, **thread)
-                    id_hi = _hi[0].id if _hi else 0
-                    id_lo = _lo[0].id if _lo else 0
-                except Exception as exc:  # never let a progress probe kill the run
-                    print(f"  ! progress probe failed ({exc}); ETA will be approximate")
-                    id_hi = id_lo = 0
-                id_span = id_hi - id_lo
-                sess_start_id = last_id or id_hi  # last_id = resume cursor, else 0
-                if params.on_progress is not None:  # before the first post: one may take minutes (reactors)
-                    cf = min(max((id_hi - last_id) / id_span, 0.0), 1.0) if id_span > 0 and last_id else 0.0
-                    params.on_progress((i + cf) / n_channels, None, t_index)
-                while True:
-                    try:
-                        async for message in client.iter_messages(
-                                ref.arg, search=search, offset_id=last_id,
-                                # exclusive, hence +1s; a resume's last_id is older anyway
-                                offset_date=params.date_max + timedelta(seconds=1), **thread):
-                            if message.date < params.date_min:
-                                done_channel = True
-                                break
-                            if message.date > params.date_max:
-                                continue
-                            if isinstance(message, MessageService):  # pin, photo change, joins: not a post
-                                last_id = message.id  # still progress: retries resume below it
-                                continue
-                            if ref.topic is not None and (
-                                    _topic_id(message, True) != ref.topic
-                                    or keyword not in (message.text or "").lower()):
-                                last_id = message.id  # another topic, or no keyword
-                                continue
-
-                            row, row_reactors = await _collect_post(client, ref, message, params)
-                            data.append(row)
-                            reactors.extend(row_reactors)
-                            c_index += 1
-                            t_index += 1
-                            last_id = message.id
-                            date_str = row["Date"]
-
-                            now = time.monotonic() - start_time
-                            chan_elapsed = time.monotonic() - loop_start  # sess_ids is per channel too
-                            if id_span > 0:                                # current channel fraction
-                                cf = min(max((id_hi - message.id) / id_span, 0.0), 1.0)
-                            else:
-                                cf = _date_frac(message.date)             # probe failed: fall back
-                            overall = (i + cf) / n_channels
-                            sess_ids = sess_start_id - message.id         # ids this process consumed
-                            eta_s = (None
-                                     if not (id_span > 0 and sess_ids > 0 and chan_elapsed > 30)
-                                     else max(message.id - id_lo, 0) * chan_elapsed / sess_ids)
-                            eta = "estimating" if eta_s is None else format_duration(eta_s)
-                            if params.on_progress is not None:
-                                params.on_progress(overall, eta_s, t_index)
-                            if printed_at is None or now - printed_at >= PRINT_EVERY:
-                                printed_at = now
-                                print(
-                                    f"|{_progress_bar(overall)}| {overall * 100:5.1f}%  "
-                                    f"ch {i + 1}/{n_channels} ({cf * 100:3.0f}%) "
-                                    f"| {c_index:05} here / {t_index:05} total | id {message.id} | {date_str} "
-                                    f"| elapsed {format_duration(now)} | ETA {eta}"
-                                )
-
-                            if t_index % CHECKPOINT_EVERY == 0:
-                                _write_checkpoint(i, last_id)
-                                print(f"  -> checkpoint: {t_index} posts")
-
-                            if t_index >= params.max_messages:
-                                break
-                        else:
-                            done_channel = True
-                    except FloodWaitError as exc:  # a soft ban longer than FLOOD_SLEEP_THRESHOLD
-                        if last_id != flood_last_id:  # progress since the last ban: count afresh
-                            flood_attempts = 0
-                        flood_last_id = last_id
-                        flood_attempts += 1
-                        _write_checkpoint(i, last_id)
-                        wait = exc.seconds + FLOOD_RETRY_BUFFER
-                        if wait > FLOOD_MAX_WAIT or flood_attempts > FLOOD_MAX_ATTEMPTS:
-                            print(f"  ! {label}: FLOOD_WAIT {exc.seconds}s - giving up "
-                                  f"(checkpoint saved at {t_index} posts)")
-                            raise
-                        print(f"  ! {label}: FLOOD_WAIT {exc.seconds}s - checkpoint saved at "
-                              f"{t_index} posts, waiting it out "
-                              f"({flood_attempts}/{FLOOD_MAX_ATTEMPTS}), then resuming from id "
-                              f"{last_id or 'newest'}")
-                        await asyncio.sleep(wait)
-                        await _reconnect(client)
-                        continue
-                    except (*NET_ERRORS, *RETRYABLE_RPC) as exc:
-                        if last_id != net_last_id:  # progress since the last drop: count afresh
-                            attempt = 0
-                        net_last_id = last_id
-                        attempt += 1
-                        _write_checkpoint(i, last_id)
-                        if attempt > RESUME_MAX_ATTEMPTS:
-                            print(f"  ! {label}: {exc} - giving up after {attempt - 1} retries")
-                            raise
-                        wait = min(RESUME_BASE_WAIT * attempt, RESUME_MAX_WAIT)
-                        print(f"  ! {label}: {exc} - checkpoint saved at {t_index} posts, "
-                              f"retry {attempt}/{RESUME_MAX_ATTEMPTS} from id "
-                              f"{last_id or 'newest'} in {wait}s")
-                        await asyncio.sleep(wait)
-                        await _reconnect(client)
-                        continue
-                    break  # iter_messages finished without a disconnect -> channel done
-                if not done_channel:  # only the max-messages break gets here
-                    cut_short = i
-
-                print(f"##### {label}: done, {c_index:05} posts | "
-                      f"overall {((i + 1) / n_channels) * 100:.0f}% #####")
-                # flush the tail buffer to a shard and advance the resume cursor
-                # (on every exit path from the channel, not just a clean finish)
-                _write_checkpoint(i + 1 if done_channel else i,
-                                  0 if done_channel else last_id)
-                channel_closed = True
-                partial_dir.mkdir(exist_ok=True)
-                partial = partial_dir / f"{ref.slug}_until_{t_index:05}"
-                # only this channel's new shards (after a resume the first one also
-                # repeats the earlier channels' checkpointed posts; combine drops them)
-                _write_snapshot(ckpt_dir, snapshot_from, partial.with_name(partial.name + ".parquet"))
-                snapshot_from = shard_index
-            except (*NET_ERRORS, FloodWaitError, *RETRYABLE_RPC):  # bubble to the Ctrl-C/finally scope and out to run()
-                raise
-            except Exception as exc:
-                print(f"{channel} error: {exc}")
-                if not channel_closed:  # else only the _until_ snapshot failed; the data is saved
-                    failed.append((channel, f"{type(exc).__name__}: {exc}"))
-                    # move past it like a finished channel, so Ctrl-C/a resume don't retry it
-                    _write_checkpoint(i + 1, 0)
-                    if shard_index > snapshot_from:  # rows scraped before the error: its own snapshot
-                        _write_snapshot(ckpt_dir, snapshot_from,
-                                        partial_dir / f"{ref.slug}_until_{t_index:05}.parquet")
-                        snapshot_from = shard_index
-                    channel_closed = True
+            run.channel, run.last_id, run.closed = i, resume_last_id if i == resume_channel else 0, False
+            if await _scrape_channel(client, run, channel, loop_start):
+                cut_short = i
 
             # be gentle: at least 60s per channel
             spent = time.monotonic() - loop_start
             if (spent < 60 and i < len(params.channels) - 1
-                    and t_index < params.max_messages):
+                    and run.t_index < params.max_messages):
                 await asyncio.sleep(60 - spent)
     except (KeyboardInterrupt, asyncio.CancelledError):
         # asyncio.run() turns a SIGINT into task cancellation, i.e. a
         # CancelledError raised at the current await - not KeyboardInterrupt - so
         # both must be caught here for Ctrl-C to checkpoint. (SIGTERM is turned into the
-        # same cancellation by the handler installed above.)
+        # same cancellation by _sigterm_as_cancel.)
         print()
-        if not channel_closed:
-            _write_checkpoint(i, last_id)
+        if not run.closed:
+            run.write(run.channel, run.last_id)
         raise
     finally:
         if watcher is not None:
             watcher.cancel()
-        if sigterm_handled:
-            try:
-                loop.remove_signal_handler(signal.SIGTERM)
-                signal.signal(signal.SIGTERM, previous_sigterm)
-            except (NotImplementedError, RuntimeError, ValueError):
-                pass
+        restore_sigterm()
         await client.disconnect()
 
     # reached only on a run that finished without an exception (a crash bubbles to
     # run() before this and prints the resume hint); run() writes the outputs from the
     # checkpoint shards, one shard at a time.
     print(SEP)
-    print(f"Concluded: {t_index:05} posts scraped")
+    print(f"Concluded: {run.t_index:05} posts scraped")
     print(SEP)
-    if failed:  # easy to miss mid-log on a long run; the checkpoint is gone after this
-        print(f"  ! {len(failed)} channel(s) stopped on an error and are incomplete - "
+    if run.failed:  # easy to miss mid-log on a long run; the checkpoint is gone after this
+        print(f"  ! {len(run.failed)} channel(s) stopped on an error and are incomplete - "
               f"re-scrape them separately:")
-        for channel, err in failed:
+        for channel, err in run.failed:
             print(f"    {channel}: {err}")
     if cut_short is not None:
         print(f"  ! stopped by max-messages - not scraped or cut short: "

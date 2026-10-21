@@ -18,17 +18,20 @@ from bot.middlewares.auth import AuthMiddleware
 from bot.services import autoreply, watchdog
 from bot.services.album import AlbumMiddleware
 from bot.services.capture import clear_orphan_temp
+from bot.services.safe_edit import SafeEdit
 from bot.services.workspaces import ProjectMiddleware, Workspaces
-from modules.registry import missing_classes
+from bot.callbacks import FunctionCB, MenuAction
+from modules.registry import BOT_FUNCTIONS_BY_KEY, SCREENS, missing_classes
 from bot.routers import (
     accounts,
     activity,
     autoreply as autoreply_menu,
     audience,
-    broadcasts,
+    chat_broadcasts,
     invite,
     join,
     login,
+    mailing,
     menu,
     moderation,
     pm_broadcast,
@@ -59,13 +62,15 @@ ROUTERS = (
     activity,
     moderation,
     service,
-    broadcasts,
+    mailing,
+    chat_broadcasts,
     scraping,
     stale,  # last: a button nothing above took
 )
-# the work in a project (bot/services/workspaces.py): its handlers run on the chat's current project's workers
-IN_PROJECT = (accounts, login, spamblock, pm_broadcast, invite, join, profile, audience, activity, moderation,
-              service, broadcasts, scraping)
+# the work in a project (bot/services/workspaces.py): its handlers run on the chat's current project's
+# workers — every router's but these, so a new one is a project's by default; of 📁 Проекты's, its card's
+OUTSIDE_PROJECTS = (menu, projects, settings_menu, autoreply_menu, stale)
+IN_PROJECT = (*(module for module in ROUTERS if module not in OUTSIDE_PROJECTS), projects.card, projects.manage)
 
 
 BOT_API_RETRY = 10  # seconds between Bot API reachability checks at start
@@ -124,6 +129,26 @@ async def mark_stopped():
         pass
 
 
+def unhandled_actions() -> list[str]:
+    """The registry's buttons with no handler: a screen's action not in bot/callbacks.MenuAction, a
+    function's key no FunctionCB filter takes, a project card's screens' button not in projects.card.ACTIONS."""
+    actions = {button.action for screen in SCREENS.values() for button in screen.buttons}
+    taken = {key for module in ROUTERS for key in function_keys(module.router)}
+    card = {action.value for action in projects.card.CARD_ACTIONS} | projects.card.CARD_FUNCTIONS
+    return sorted(actions - {action.value for action in MenuAction} | BOT_FUNCTIONS_BY_KEY.keys() - taken
+                  | card - projects.card.ACTIONS.keys())
+
+
+def function_keys(router) -> set[str]:
+    """The function keys the router's (and its sub-routers') FunctionCB filters take."""
+    rules = [flt.callback.rule for handler in router.callback_query.handlers for flt in handler.filters or ()
+             if getattr(flt.callback, "callback_data", None) is FunctionCB]
+    keys = {key for key in BOT_FUNCTIONS_BY_KEY if any(rule.resolve(FunctionCB(key=key)) for rule in rules)}
+    for sub in router.sub_routers:
+        keys |= function_keys(sub)
+    return keys
+
+
 _watchdog = None  # the watchdog's task, kept referenced (the loop holds tasks by weak ref only)
 
 
@@ -154,12 +179,16 @@ async def run_bot():
             + ", ".join(absent)
             + ". Rename them back or update BOT_FUNCTIONS."
         )
+    # ...and every button's action a handler: not a ValueError the first time its screen is opened
+    if unhandled := unhandled_actions():
+        raise RuntimeError("modules/registry.py has buttons no handler takes: " + ", ".join(unhandled))
 
     workspaces = Workspaces(settings, classes)
     for project in project_list.load():
         workspaces.add(project)
 
     bot = Bot(config.token)
+    bot.session.middleware(SafeEdit())  # an edit Telegram refuses: nothing, or the screen as a new message
     dp = Dispatcher()
 
     dp["workspaces"] = workspaces  # each project's pool and job slots
@@ -186,7 +215,7 @@ async def run_bot():
     for module in IN_PROJECT:
         module.router.message.middleware(in_project)
         module.router.callback_query.middleware(in_project)
-    # the main menu's screens of a project (🤖 Аккаунты, 💬 Активность) and /cancel: the current one's, if any
+    # the screens (a project's: its own, by its buttons' project) and /cancel: the current project's, if any
     menu.router.message.middleware(ProjectMiddleware(workspaces, required=False))
     menu.router.callback_query.middleware(ProjectMiddleware(workspaces, required=False))
 

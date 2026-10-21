@@ -824,6 +824,26 @@ def test_resume_reports_progress_before_the_first_post(monkeypatch, tmp_path):
     assert posts == 2 and eta is None and frac > 0  # the checkpoint's count, at its cursor
 
 
+def test_resume_with_an_unreadable_channel_link_lists_it_as_failed(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(scrape, "TelegramClient", FakeClient)
+    real = scrape._channel_ref
+
+    def channel_ref(raw):
+        if raw == "@broken":
+            raise ValueError("bad link")
+        return real(raw)
+
+    monkeypatch.setattr(scrape, "_channel_ref", channel_ref)
+    chans = ["@broken", "@two"]
+    _seed_checkpoint(tmp_path, [_CK_ROW_30], _resume_meta(tmp_path, channels=chans, t_index=1))
+
+    path = scrape.run(Credentials(1, "h", ""), _params(tmp_path, resume=True, channels=chans))
+
+    tail = capsys.readouterr().out.split("Concluded")[1]
+    assert "@broken: ValueError: bad link" in tail
+    assert 30 in set(pd.read_parquet(path)["Message ID"].astype(int))  # the checkpoint's posts kept
+
+
 def test_resume_flag_skips_completed_channel(monkeypatch, tmp_path):
     monkeypatch.setattr(scrape, "TelegramClient", FakeClient)
     chans = ["@one", "@two"]

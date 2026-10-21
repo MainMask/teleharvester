@@ -5,12 +5,14 @@ from aiogram.types import CallbackQuery, InaccessibleMessage, InlineKeyboardButt
 
 from bot.callbacks import ChoiceCB, FunctionCB, ReleaseCB
 from bot.keyboards.common import choice_kb
-from bot.routers._common import ensure_workers, proxies_busy, rehome_now, resolve
+from bot.routers._common import ensure_workers, resolve
+from bot.routers.accounts.proxies import proxies_busy, rehome_now
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace, Workspaces
 from functions.spamblock import rehome, worker_name
 from modules import restricted_workers
+from modules.registry import title
 
 router = Router()
 
@@ -59,7 +61,6 @@ async def offer_rehome(bot, chat_id, workspace):
 @router.callback_query(FunctionCB.filter(F.key == "status"))
 async def run_status(callback: CallbackQuery, pool: WorkerPool, functions: dict, manager: JobManager,
                      workspace: Workspace):
-    await callback.answer()
     if not await ensure_workers(callback, pool):
         return
 
@@ -71,7 +72,7 @@ async def run_status(callback: CallbackQuery, pool: WorkerPool, functions: dict,
     instance, bot_function = resolve(functions, "status")
     await manager.run(
         callback.bot, callback.message.chat.id, pool, instance, bot_function, status,
-        "Проверка статуса…", "Проверка статуса завершена ✅",
+        "Проверка статуса…", "✅ Проверка статуса завершена",
     )
 
 
@@ -95,7 +96,7 @@ async def release(callback: CallbackQuery, callback_data: ReleaseCB, workspaces:
         restricted_workers.release(path)
         await callback.message.edit_text(
             f"✅ Контакты {worker_name(storage, path)} переданы: со следующего запуска им "
-            "напишут другие воркеры, а «📇 В контакты» добавит их заново."
+            f"напишут другие воркеры, а «{title('addcontacts')}» добавит их заново."
         )
     await callback.answer()
 

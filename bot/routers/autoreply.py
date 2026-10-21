@@ -1,4 +1,4 @@
-"""The auto-reply screen (⚙️ Настройки → 📬 Автоответ): on/off, the text and reply stats.
+"""The auto-reply screen (⚙️ Настройки → 📬 Автоответ, its view): on/off, the text and reply stats.
 
 The loop itself is bot/services/autoreply.py; it reads the live Settings each round, so
 what is changed here takes effect on its next round.
@@ -12,12 +12,12 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.callbacks import ChoiceCB, MenuAction, MenuCB, NavCB
+from bot.callbacks import ChoiceCB, NavCB
 from bot.keyboards.common import cancel_kb
-from bot.routers._common import leave_form, require_text, send_chunked
-from bot.services import autoreply
+from bot.routers._common import require_text, send_chunked
+from bot.services import autoreply, screens
 from bot.services.workspaces import Workspaces
-from modules.registry import SETTINGS
+from modules.registry import AUTOREPLY, SETTINGS
 from bot.states import SetAutoreplyText
 from modules.settings import Settings
 
@@ -51,7 +51,7 @@ def _screen(settings: Settings, stats: dict, workspaces: Workspaces) -> str:
     text = settings.autoreply_text and f"<blockquote>{html.escape(shown)}</blockquote>"
 
     lines = [
-        f"💬 <b>Автоответ</b>: {status}",
+        f"📬 <b>Автоответ</b>: {status}",
         f"Проверка воркеров: раз в {max(1, settings.autoreply_interval // 60)} мин.",
         "",
         "Тем, кто ответил на рассылку в ЛС, воркер один раз отвечает этим текстом, "
@@ -83,13 +83,11 @@ def _kb(settings: Settings, all_workers: bool) -> InlineKeyboardMarkup:
     ])
 
 
-@router.callback_query(MenuCB.filter(F.action == MenuAction.AUTOREPLY))
-async def autoreply_screen(callback: CallbackQuery, state: FSMContext, settings: Settings, workspaces: Workspaces):
-    await leave_form(callback.message, state)
-    # navigation edits the settings screen in place, as the worker groups do
+@screens.view(AUTOREPLY)
+async def autoreply_screen(message: Message, state: FSMContext, edit: bool, settings: Settings,
+                           workspaces: Workspaces, **_):
     text, markup = _view(settings, workspaces)
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
-    await callback.answer()
+    await screens.send(message, edit)(text, parse_mode="HTML", reply_markup=markup)
 
 
 @router.callback_query(ChoiceCB.filter((F.scope == "autoreply") & (F.value == "toggle")))
@@ -123,7 +121,7 @@ async def autoreply_text_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(SetAutoreplyText.input)
     await callback.message.answer(
-        "Пришлите новый текст автоответа одним сообщением, например:\n"
+        "📬 Автоответ — пришлите новый текст одним сообщением, например:\n"
         "<code>Спасибо за ответ! Для дальнейшей связи напишите @MainMask</code>",
         parse_mode="HTML", reply_markup=cancel_kb(SetAutoreplyText.input),
     )

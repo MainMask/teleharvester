@@ -1,4 +1,4 @@
-"""Offline tests for the bot accounts list (bot/routers/accounts.py)."""
+"""Offline tests for the bot accounts list (bot/routers/accounts/)."""
 
 import asyncio
 import contextlib
@@ -76,6 +76,8 @@ class _Pool:
 
 
 class _Manager:
+    project_id = 1
+
     def __init__(self, free=True):
         self._free = free
         self.label = "Рассылка"
@@ -97,7 +99,7 @@ def test_lists_each_account(tmp_path):
     manager = _Manager(free=True)
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, manager, None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, manager, None))
 
     joined = "\n".join(msg.replies)
     assert "всего: <b>2</b>" in joined
@@ -114,7 +116,7 @@ def test_premium_workers_are_marked(tmp_path):
     ]
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), _Pool(workers, _Storage()), _Manager(free=True), None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), _Pool(workers, _Storage()), _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert "👤 @prem · 🆔 <code>1</code> · ⭐ Premium" in joined
@@ -130,7 +132,7 @@ def test_sorted_by_username(tmp_path):
     pool = _Pool(workers, _Storage())
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, _Manager(free=True), None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     order = ["@Curator1 ", "@Curator2 ", "@Curator4 ", "@Curator10 ", "👤 — ", "не удалось опросить"]
@@ -145,7 +147,7 @@ def test_busy_shows_only_count(tmp_path):
     manager = _Manager(free=False)
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, manager, None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, manager, None))
 
     joined = "\n".join(msg.replies)
     assert "всего: <b>1</b>" in joined
@@ -162,7 +164,7 @@ def test_failed_worker_falls_back_to_stored(tmp_path):
     manager = _Manager(free=True)
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, manager, None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, manager, None))
 
     joined = "\n".join(msg.replies)
     assert "Stored Name" in joined
@@ -191,7 +193,7 @@ def test_scraping_worker_is_not_polled(tmp_path):
     pool.scraping = ns(path="sessions/busy.jsession")
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, _Manager(free=True), None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert polled == ["sessions/free.jsession"]
@@ -204,7 +206,7 @@ def test_empty_pool(tmp_path):
     manager = _Manager(free=True)
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, manager, None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, manager, None))
 
     assert any("Воркеров: <b>0</b>" in r for r in msg.replies)
 
@@ -214,7 +216,7 @@ def test_names_are_html_escaped(tmp_path):
     pool = _Pool(workers, _Storage())
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, _Manager(free=True), None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert "A&amp;lt;B &lt;i&gt;" in joined
@@ -227,12 +229,12 @@ def test_slow_connect_is_timed_out(monkeypatch, tmp_path):
             await asyncio.sleep(10)  # a dead proxy: connect() hangs
             yield
 
-    monkeypatch.setattr(accounts, "GET_ME_TIMEOUT", 0.05)
+    monkeypatch.setattr(accounts.workers, "GET_ME_TIMEOUT", 0.05)
     pool = _Pool([_Client(_me(first_name="A", last_name=None, id=1, username=None))], _SlowStorage())
     manager = _Manager(free=True)
     msg = _Msg()
 
-    asyncio.run(asyncio.wait_for(accounts.accounts(msg, _State(), pool, manager, None), 2))
+    asyncio.run(asyncio.wait_for(accounts.workers.accounts(msg, _State(), pool, manager, None), 2))
 
     assert "не удалось опросить" in "\n".join(msg.replies)
     assert manager.released is True
@@ -250,7 +252,7 @@ def test_polled_workers_are_busy_meanwhile(tmp_path):
     workers = [_Seen(_me(first_name="A", last_name=None, id=1, username="a"))]
     pool = _Pool(workers, _Storage())
     pool.in_job = []
-    asyncio.run(accounts.accounts(_Msg(), _State(), pool, _Manager(free=True), None))
+    asyncio.run(accounts.workers.accounts(_Msg(), _State(), pool, _Manager(free=True), None))
     assert seen == [workers] and pool.in_job == []
 
 
@@ -272,7 +274,7 @@ def test_restrictions_are_shown(tmp_path):
     pool = _Pool([until, forever, clean, new], _Storage({forever.path: stored}))
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, _Manager(free=True), None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert "👤 @until · 🆔 <code>1</code>\n🚫 ЛС ограничены до 12 Nov 2026" in joined
@@ -296,7 +298,7 @@ def test_restricted_go_to_the_bottom(tmp_path):
     pool = _Pool([forever, until, clean], _Storage())
     msg = _Msg()
 
-    asyncio.run(accounts.accounts(msg, _State(), pool, _Manager(free=True), None))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
     assert "всего: <b>3</b> · ограничены: <b>2</b>" in joined
@@ -367,6 +369,9 @@ class _CbMsg(_Msg):
     async def answer(self, text, **kwargs):
         self.replies.append((text, kwargs.get("reply_markup")))
 
+    async def edit_text(self, text, **kwargs):  # in place: what is shown now, as a reply is
+        self.replies.append((text, kwargs.get("reply_markup")))
+
 
 def _personal(tmp_path, log_out_ok=True):
     (tmp_path / "personal_sessions").mkdir()
@@ -377,11 +382,17 @@ def _personal(tmp_path, log_out_ok=True):
 
 
 def _press(scope, value, state, pool, personal, msg):
-    """A button of the list, a card or a confirmation (ChoiceCB scope, value)."""
+    """A button of the list, a card or a confirmation (ChoiceCB scope, value); a pop-up it answers with is kept
+    in msg.replies too (its markup "pop-up"): what the operator sees after it."""
     from bot.callbacks import ChoiceCB
 
-    callback = ns(message=msg, answer=lambda *a, **k: asyncio.sleep(0))
-    handler = {"acc": accounts.account_card, "acc_act": accounts.account_action, "prm_ok": accounts.personal_remove}
+    async def answer(text=None, show_alert=False):
+        if show_alert:
+            msg.replies.append((text, "pop-up"))
+
+    callback = ns(message=msg, answer=answer)
+    handler = {"acc": accounts.card.account_card, "acc_act": accounts.card.account_action,
+               "prm_ok": accounts.card.personal_remove}
     asyncio.run(handler[scope](callback, ChoiceCB(scope=scope, value=value), state, pool, personal))
 
 
@@ -393,7 +404,7 @@ def _key(state, index):
 def _remove(pool, personal, state=None):
     """📋 Список → the account's card → 🗑 Убрать → 🗑 Да; the replies after the list."""
     state, msg = state or _State(), _CbMsg()
-    asyncio.run(accounts._list_personal(msg, state, pool, personal))
+    asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
     _press("acc_act", f"rm.{_key(state, 0)}", state, pool, personal, msg)
     _press("prm_ok", _key(state, 0), state, pool, personal, msg)
     return [text for text, _ in msg.replies[1:]]
@@ -407,16 +418,16 @@ def test_an_old_removal_confirmation_never_removes_another_account(tmp_path, mon
         removed.append(account.path)
         return True
 
-    monkeypatch.setattr(accounts.sign_in, "remove_personal", remove_personal)
+    monkeypatch.setattr(accounts.card.sign_in, "remove_personal", remove_personal)
     personal, _, _ = _personal(tmp_path)
     personal.full_sessions = {"personal_sessions/a.jsession": _Me(), "personal_sessions/b.jsession": _Me()}
     state, msg, pool = _State(), _CbMsg(), _free_pool()
-    asyncio.run(accounts._list_personal(msg, state, pool, personal))
+    asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
     old = _key(state, 1)
     _press("acc_act", f"rm.{old}", state, pool, personal, msg)
     # «Убрать b?» is shown; a personal account is added and the list is opened again: it is rebuilt
     personal.full_sessions = {"personal_sessions/0.jsession": _Me(), **personal.full_sessions}
-    asyncio.run(accounts._list_personal(msg, state, pool, personal))
+    asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
 
     _press("prm_ok", old, state, pool, personal, msg)  # «Да» on b's old confirmation
     assert removed == [] and "устарел" in msg.replies[-1][0]  # not a.jsession, now at index 1
@@ -432,12 +443,13 @@ def test_personal_accounts_are_listed_without_connecting(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     personal, me, _ = _personal(tmp_path)
     msg = _CbMsg()
-    asyncio.run(accounts.accounts(msg, _State(), _Pool([], _Storage()), _Manager(free=True), personal))
+    asyncio.run(accounts.workers.accounts(msg, _State(), _Pool([], _Storage()), _Manager(free=True), personal))
 
     texts = [text for text, _ in msg.replies]
     assert any("Воркеров: <b>0</b>" in t for t in texts)  # shown with no worker too
     assert "👤 <b>Личные</b>" in texts[-1] and "me.jsession" in texts[-1] and not me.connected
-    assert [b.text for row in msg.replies[-1][1].inline_keyboard for b in row] == ["👤 me.jsession"]  # its card
+    # its card, and ⬅️ back to the screen
+    assert [b.text for row in msg.replies[-1][1].inline_keyboard for b in row] == ["👤 me.jsession", "⬅️ 🤖 Аккаунты"]
 
 
 def test_removal_logs_out_and_deletes(tmp_path, monkeypatch):
@@ -492,7 +504,7 @@ def test_the_list_says_the_numbers_countries(tmp_path, monkeypatch):
     workers = [_Client(_me(first_name="A", last_name=None, id=1, username="a", phone="79991234567")),
                _Client(_me(first_name="B", last_name=None, id=2, username="b", phone="79161234567")), silent]
     msg = _Msg()
-    asyncio.run(accounts.accounts(msg, _State(), _Pool(workers, _Storage({silent.path: stored})),
+    asyncio.run(accounts.workers.accounts(msg, _State(), _Pool(workers, _Storage({silent.path: stored})),
                                   _Manager(free=True), None))
     assert "\n🌍 +7 Россия — 2 · +7 Казахстан — 1\n" in msg.replies[0]
 
@@ -514,25 +526,26 @@ def test_the_cards_are_offered_even_while_the_list_waits_for_a_task(tmp_path, mo
     monkeypatch.chdir(tmp_path)
     pool, personal, _ = _workers_and_me(tmp_path)
     msg = _CbMsg()
-    asyncio.run(accounts.accounts(msg, _State(), pool, _Manager(free=False), personal))
+    asyncio.run(accounts.workers.accounts(msg, _State(), pool, _Manager(free=False), personal))
     assert "Идёт задача" in msg.replies[0][0]
     assert "\n🌍 +7 Россия — 1\n" in msg.replies[0][0]  # its stored number: none is polled now
     # as listed: the workers, then the personal ones
-    assert [b.text for row in msg.replies[-1][1].inline_keyboard for b in row] == ["🤖 Ann (@ann)", "👤 me.jsession"]
+    assert [b.text for row in msg.replies[-1][1].inline_keyboard for b in row] == ["🤖 Ann (@ann)", "👤 me.jsession",
+                                                                                 "⬅️ 🤖 Аккаунты"]
 
 
 def test_a_worker_s_card_is_from_what_is_stored_and_has_no_removal(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     pool, personal, _ = _workers_and_me(tmp_path)
     state, msg = _State(), _CbMsg()
-    asyncio.run(accounts._list_personal(msg, state, pool, personal))
+    asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
     _press("acc", _key(state, 0), state, pool, personal, msg)
     text, markup = msg.replies[-1]
     # the number, id and file in <code>: a tap copies them
     assert text == ("<b>🤖 Воркер: Ann (@ann)</b>\n📱 <code>+79991234567</code> · 🆔 <code>7</code>\n"
                     "🌐 socks5://1.2.3.4:1080\n❔ не проверялся\n📄 <code>sessions/w.jsession</code>")
     # a worker is moved to another project (🤖 Аккаунты → ↪️ Перенести), never removed
-    assert [b.text for row in markup.inline_keyboard for b in row] == ["🔑 Код входа"]
+    assert [b.text for row in markup.inline_keyboard for b in row] == ["🔑 Код входа", "⬅️ К списку"]
 
     _press("acc_act", f"rm.{_key(state, 0)}", state, pool, personal, msg)  # a forged 🗑 on a worker removes nothing
     assert "устарел" in msg.replies[-1][0]
@@ -542,11 +555,14 @@ def test_a_personal_card_offers_its_removal(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     pool, personal, me = _workers_and_me(tmp_path)
     state, msg = _State(), _CbMsg()
-    asyncio.run(accounts._list_personal(msg, state, pool, personal))
+    asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
     _press("acc", _key(state, 1), state, pool, personal, msg)
     text, markup = msg.replies[-1]
     assert text.startswith("<b>👤 Личный (только для скрапа): me.jsession</b>") and not me.connected
-    assert [b.text for row in markup.inline_keyboard for b in row] == ["🔑 Код входа", "🗑 Убрать"]
+    assert [b.text for row in markup.inline_keyboard for b in row] == ["🔑 Код входа", "🗑 Убрать", "⬅️ К списку"]
+
+    _press("acc_act", f"list.{_key(state, 1)}", state, pool, personal, msg)  # ⬅️: the list again, in place
+    assert msg.replies[-1][0].endswith("🗂 Карточка аккаунта — код входа, удаление личного:")
 
 
 class _EditMsg(_CbMsg):
@@ -568,10 +584,10 @@ def test_the_codes_open_in_the_card_s_place_and_go_back_to_it(tmp_path, monkeypa
 
     async def fetch_codes(pool, client, path):
         return [("12345", datetime.now(timezone.utc))]
-    monkeypatch.setattr(accounts.logins, "fetch_codes", fetch_codes)
+    monkeypatch.setattr(accounts.card.logins, "fetch_codes", fetch_codes)
     pool, personal, _ = _workers_and_me(tmp_path)
     state, msg = _State(), _EditMsg()
-    asyncio.run(accounts._list_personal(msg, state, pool, personal))
+    asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
     _press("acc_act", f"codes.{_key(state, 0)}", state, pool, personal, msg)
     text, markup = msg.edits[-1]
     assert "<code>1 2 3 4 5</code>" in text
@@ -588,12 +604,12 @@ def test_an_old_card_s_buttons_do_nothing_after_a_new_list(tmp_path, monkeypatch
     async def fetch_codes(pool, client, path):
         read.append(path)
         return []
-    monkeypatch.setattr(accounts.logins, "fetch_codes", fetch_codes)
+    monkeypatch.setattr(accounts.card.logins, "fetch_codes", fetch_codes)
     pool, personal, me = _workers_and_me(tmp_path)
     state, msg = _State(), _EditMsg()
-    asyncio.run(accounts._list_personal(msg, state, pool, personal))
+    asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
     old = _key(state, 1)  # the personal account's card
-    asyncio.run(accounts._list_personal(msg, state, pool, personal))  # 📋 Список again
+    asyncio.run(accounts.card.list_personal(msg, state, pool, personal))  # 📋 Список again
     for action in ("rm", "codes", "card"):
         _press("acc_act", f"{action}.{old}", state, pool, personal, msg)
         assert "устарел" in msg.replies[-1][0]
@@ -616,10 +632,10 @@ def test_the_cards_are_in_the_list_s_order(tmp_path, monkeypatch):
               for c in workers}
     personal, _, _ = _personal(tmp_path)
     msg = _CbMsg()
-    asyncio.run(accounts.accounts(msg, _State(), _Pool(workers, _Storage(stored, sessions=workers)),
+    asyncio.run(accounts.workers.accounts(msg, _State(), _Pool(workers, _Storage(stored, sessions=workers)),
                                   _Manager(free=True), personal))
     assert [b.text for row in msg.replies[-1][1].inline_keyboard for b in row] == \
-        ["🤖 b (@b)", "🤖 c (@c)", "🤖 a (@a)", "👤 me.jsession"]
+        ["🤖 b (@b)", "🤖 c (@c)", "🤖 a (@a)", "👤 me.jsession", "⬅️ 🤖 Аккаунты"]  # ⬅️: back to its screen
 
 
 def test_the_cards_of_many_accounts_are_paged(tmp_path, monkeypatch):
@@ -634,18 +650,18 @@ def test_the_cards_of_many_accounts_are_paged(tmp_path, monkeypatch):
     pool.storage, pool._workers = _Storage(sessions=workers), workers
     state, msg = _State(), _EditMsg()
     state.data["account_paths"] = ["sessions/other.jsession"]  # a scrape's «На каком аккаунте?» meanwhile
-    asyncio.run(accounts._list_personal(msg, state, pool, None))
+    asyncio.run(accounts.card.list_personal(msg, state, pool, None))
     texts = [b.text for row in msg.replies[-1][1].inline_keyboard for b in row]
-    assert len(texts) == 23 and texts[0] == "🤖 w000.jsession" and texts[-2] == "📄 стр 1/7"
+    assert len(texts) == 24 and texts[0] == "🤖 w000.jsession" and texts[-3:] == ["📄 стр 1/7", "▶️", "⬅️ 🤖 Аккаунты"]
     assert state.data["account_paths"] == ["sessions/other.jsession"]  # the list keeps out of its way
 
     token = state.data["acc_token"]
     _press("acc", f"pg.1.{token}", state, pool, None, msg)  # ➡️: in place
     texts = [b.text for row in msg.edits[-1][1].inline_keyboard for b in row]
-    assert texts[0] == "🤖 w020.jsession" and texts[-2] == "📄 стр 2/7"
-    _press("acc", _key(state, 25), state, pool, None, msg)  # a card from the second page
-    assert msg.replies[-1][0].startswith("<b>🤖 Воркер: w025.jsession</b>")
+    assert texts[0] == "🤖 w020.jsession" and texts[-3] == "📄 стр 2/7"
+    _press("acc", _key(state, 25), state, pool, None, msg)  # a card from the second page, in the list's place
+    assert msg.edits[-1][0].startswith("<b>🤖 Воркер: w025.jsession</b>")
 
-    asyncio.run(accounts._list_personal(msg, state, pool, None))  # 📋 Список again: the old ➡️ is stale
+    asyncio.run(accounts.card.list_personal(msg, state, pool, None))  # 📋 Список again: the old ➡️ is stale
     _press("acc", f"pg.2.{token}", state, pool, None, msg)
     assert "устарел" in msg.replies[-1][0]

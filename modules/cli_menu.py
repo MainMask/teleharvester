@@ -1,5 +1,5 @@
 """The terminal menus, from the bot's (modules/registry.py): the main one (main.py) and a project's
-sections (functions/projects.py), in the bot's order and words."""
+screens on its workers (functions/projects.py), in the bot's order and words."""
 from rich.markup import escape
 
 from modules.console import console
@@ -7,8 +7,8 @@ from modules.registry import NOT_MENU_ITEMS, RISK_NOTE, RISKY, cli_menu
 
 
 def menu_entries(functions, project: bool = False) -> list:
-    """[(section, instance, title, hint, risky, group)] in the bot's order and words: the main menu's,
-    or (`project`) a project's sections; in the main menu, a function the registry doesn't know goes to
+    """[(screen, instance, title, hint, risky, group)] in the bot's order and words: the main menu's,
+    or (`project`) a project's screens'; in the main menu, a function the registry doesn't know goes to
     «Прочее» under its docstring (one run from another item only, NOT_MENU_ITEMS, nowhere)."""
     by_class = {type(instance).__name__: (instance, doc) for instance, doc in functions}
     entries = []

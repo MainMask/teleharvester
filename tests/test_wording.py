@@ -101,7 +101,7 @@ def test_cli_report_asks_again_when_a_link_has_no_post_and_enter_is_pressed(monk
 
 
 def test_the_mention_buttons_name_as_many_as_are_mentioned():
-    from bot.routers.broadcasts import MMODE_OPTIONS
+    from bot.routers.chat_broadcasts import MMODE_OPTIONS
     from functions.broadcast import MENTION_ADMINS, MENTION_USERS
 
     assert [label for label, _ in MMODE_OPTIONS] == [f"👮 {MENTION_ADMINS} случайных админа",

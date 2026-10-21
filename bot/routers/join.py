@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb, choice_kb, yes_no_kb
-from bot.routers._common import STALE_STEP, ensure_workers, left_flow, require_text, resolve
+from bot.routers._common import STALE_STEP, left_flow, require_text, resolve, start_form
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Join
@@ -15,25 +15,13 @@ router = Router()
 
 @router.callback_query(FunctionCB.filter(F.key == "join"))
 async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await callback.answer()
-
-    if not await ensure_workers(callback, pool):
-        return
-
-    await state.clear()
-    await state.set_state(Join.mode)
-    await callback.message.answer(
-        "🚪 <b>Вступление в чат</b> — куда вступят воркеры?\n\n"
-        "🚪 <b>В канал или группу по ссылке</b> — туда, куда ведёт ссылка (подходит и приглашение "
-        "t.me/+…).\n"
-        "💬 <b>В чат комментариев канала</b> — дайте ссылку на канал: воркеры вступят в его группу для "
-        "комментариев, не в сам канал. Нужно, чтобы писать в комментариях. Только публичная ссылка "
-        "(@name / t.me/name).",
-        parse_mode="HTML",
-        reply_markup=choice_kb("join_mode", [
-            ("🚪 В канал или группу по ссылке", "1"),
-            ("💬 В чат комментариев канала", "2"),
-        ]),
+    await start_form(
+        callback, state, Join.mode,
+        "🚪 <b>Вступить в чат</b> — куда вступят воркеры?\n\n"
+        "🚪 <b>По ссылке</b> — в канал или группу, куда она ведёт (и приглашение t.me/+…).\n"
+        "💬 <b>В комментарии</b> — в группу комментариев канала по его публичной ссылке: чтобы писать под "
+        "постами.",
+        pool, choice_kb("join_mode", [("🚪 По ссылке", "1"), ("💬 В комментарии", "2")]), parse_mode="HTML",
     )
 
 
@@ -42,9 +30,9 @@ async def pick_mode(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     if await left_flow(callback, state, Join.mode):
         return
     await state.update_data(mode=callback_data.value)
-    await callback.message.answer(
+    await callback.message.edit_text(
         f"Нажимать капчу после вступления? (каждый воркер ждёт её до {CAPTCHA_WAIT} с)",
-        reply_markup=yes_no_kb("join_captcha"),
+        reply_markup=cancel_kb(Join.mode, yes_no_kb("join_captcha")),
     )
     await callback.answer()
 
@@ -55,7 +43,8 @@ async def pick_captcha(callback: CallbackQuery, callback_data: ChoiceCB, state: 
         return
     await state.update_data(captcha=callback_data.value == "yes")
     await state.set_state(Join.link)
-    await callback.message.answer("Ссылка на чат/канал:", reply_markup=cancel_kb(Join.link))
+    await callback.message.edit_text("🚪 Вступить в чат — пришлите ссылку на чат или канал:",
+                                     reply_markup=cancel_kb(Join.link))
     await callback.answer()
 
 
@@ -82,5 +71,5 @@ async def got_link(
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(data["mode"], link, None, r, captcha=data.get("captcha", False)),
-        "Вступление…", "Вступление завершено ✅",
+        "Вступление…",
     )

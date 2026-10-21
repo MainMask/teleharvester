@@ -5,10 +5,10 @@ import conftest
 import types
 
 from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB, NavCB
-from bot.keyboards.menu import main_menu, screen_kb
+from bot.keyboards.menu import back_kb, main_menu, screen_kb
 from bot.routers import accounts, menu
-from modules.registry import (ACCOUNTS, ACTIVITY, CARD, PROJECTS, SCREENS, SERVICE, SETTINGS, TASKS, by_category,
-                              in_project)
+from modules.registry import (ACCOUNTS, ACTIVITY, AUTOREPLY, BASE, CARD, COLLECT, LIMITS, MANAGE, PROJECTS, SCREENS,
+                              SECURITY, SETTINGS, TASKS, by_category, in_project)
 from bot.services.screens import screen_text
 
 
@@ -23,13 +23,16 @@ class _State:
     async def clear(self):
         self.cleared = True
 
+    async def get_data(self):
+        return {}
+
 
 class _StateData(_State):
     """A state that keeps its data (the projects' list stores its buttons' names)."""
 
-    def __init__(self):
+    def __init__(self, data=None):
         super().__init__()
-        self.data = {}
+        self.data = dict(data or {})
 
     async def update_data(self, **kw):
         self.data.update(kw)
@@ -73,9 +76,11 @@ def test_main_menu_has_the_projects_and_the_settings_then_the_jobs():
 def test_every_function_has_one_place_and_the_work_on_a_base_is_a_project_s():
     from modules.registry import BOT_FUNCTIONS_BY_KEY
 
-    # a project's card: a group's members as its base, the contacts first — a mailing then writes from
-    # that worker — then the check of the scrape's files
-    assert [f.key for f in by_category(PROJECTS)] == ["members", "addcontacts", "pmmailing", "verify", "analysis"]
+    # a project's card's screens on its files: a group's members as its base, then the check of the scrape's
+    # files; the contacts first — a mailing then writes from that worker
+    assert [f.key for f in by_category(COLLECT)] == ["members", "verify", "analysis"]
+    assert [f.key for f in by_category(BASE)] == ["addcontacts", "pmmailing"]
+    assert by_category(PROJECTS) == []
     assert [f.key for f in by_category(ACTIVITY)][:4] == ["pm", "comments", "instant", "chat"]  # one target
     assert "invite" in [f.key for f in by_category(ACTIVITY)]  # chat to chat: no base, no project
     assert [f.key for f in by_category(ACCOUNTS)] == ["status"]  # the check most needed: on the screen itself
@@ -97,7 +102,7 @@ def test_sections_explain_their_groups():
     assert activity.index(f"<i>{ONE_TARGET}</i>") < activity.index("✉️ ЛС человеку") \
         < activity.index(f"<i>{IN_CHATS}</i>") < activity.index("🗳 Голосовать") < activity.index("🤝 Инвайтинг") \
         < activity.index(f"<i>{REPORTS}</i>") < activity.index("🚩 Жалоба")
-    assert "<i>" not in screen_text(SERVICE).split("\n\n<i>⚠️")[0]  # no groups: no subheadings, only the note
+    assert "<i>" not in screen_text(SECURITY).split("\n\n<i>⚠️")[0]  # no groups: no subheadings, only the note
 
 
 def test_hub_screens_pair_only_short_buttons_and_mark_the_submenus():
@@ -106,13 +111,27 @@ def test_hub_screens_pair_only_short_buttons_and_mark_the_submenus():
     rows = [[b.text for b in row] for row in screen_kb(ACCOUNTS).inline_keyboard]
     # the actions, the check on a row of its own, the screens opened from it
     assert rows == [["📋 Список", "➕ Добавить"], ["🌐 Прокси", "↪️ Перенести"], ["🛡 Проверка статуса (SpamBot)"],
-                    ["👤 Профиль ›", "🛠 Обслуживание ›"], ["⬅️ Назад"]]
+                    ["👤 Профиль ›", "🔐 Безопасность ›"], ["⬅️ Назад"]]
     assert all(len(text) <= SHORT for row in rows if len(row) == 2 for text in row)
     submenus = [NavCB.unpack(b.callback_data).screen for b in _buttons(screen_kb(ACCOUNTS))
                 if b.callback_data.startswith("nav:") and b.text.endswith(" ›")]
-    assert submenus == ["👤 Профиль", SERVICE]
+    assert submenus == ["👤 Профиль", SECURITY]
     assert [[b.text for b in row] for row in screen_kb(SETTINGS).inline_keyboard] == [
-        ["⏱ Задержка", "⏳ Пауза профиля"], ["📬 Автоответ"]]
+        ["⏱ Задержка", "⏳ Пауза профиля"], ["📬 Автоответ ›", "📏 Дневные лимиты ›"]]
+
+
+def test_the_card_holds_its_screens_two_in_a_row_each_acting_on_its_project():
+    rows = [[b.text for b in row] for row in screen_kb(CARD, 7).inline_keyboard]
+    assert rows == [["📥 Сбор ›", "📨 База и рассылка ›"], ["🤖 Аккаунты ›", "💬 Активность ›"],
+                    ["⚙️ Управление ›"], ["⬅️ Назад"]]
+    *screens, back = _buttons(screen_kb(CARD, 7))
+    assert {NavCB.unpack(b.callback_data).project for b in screens} == {7}
+    assert NavCB.unpack(back.callback_data) == NavCB(screen=PROJECTS)  # the list: no project's
+    # a screen's own buttons carry it too: they act on the project they were shown for
+    assert {MenuCB.unpack(b.callback_data).project for b in _buttons(screen_kb(COLLECT, 7))
+            if b.callback_data.startswith("menu:")} == {7}
+    assert {FunctionCB.unpack(b.callback_data).project for b in _buttons(screen_kb(ACTIVITY, 7))
+            if b.callback_data.startswith("fn:")} == {7}
 
 
 def test_a_main_menu_button_closes_a_sign_in_waiting_for_its_code(monkeypatch):
@@ -126,6 +145,7 @@ def test_a_main_menu_button_closes_a_sign_in_waiting_for_its_code(monkeypatch):
     monkeypatch.setattr(logins, "_logins", {1: ns(timer=None, client=ns(disconnect=disconnect))})
     state = _State()
     asyncio.run(menu.open_from_menu(_Msg(SETTINGS), state, settings=ns(delay=[1], profile_pause=[60],
+                                                                       trigger="", messages_count=0,
                                                                        autoreply_enabled=False, autoreply_text="")))
     assert logins._logins == {} and disconnected and state.cleared  # as /cancel: now, not after its timeout
 
@@ -190,10 +210,16 @@ def test_no_workers_names_where_to_add_them():
     from bot.routers._common import ensure_workers
     from modules.registry import menu_path
 
+    alerts = []
+
+    async def answer(text=None, show_alert=False):
+        alerts.append((text, show_alert))
+
     callback = _Callback()
+    callback.answer = answer
     assert asyncio.run(ensure_workers(callback, ns(count=lambda: 0))) is False
-    text = callback.message.answers[0][0]
-    assert menu_path("add") in text
+    [(text, popup)] = alerts  # over the screen: no message piled up under it
+    assert popup and menu_path("add") in text and not callback.message.answers
 
 
 def test_a_main_menu_button_leaves_any_form():
@@ -245,7 +271,8 @@ def test_a_main_menu_button_in_any_step_opens_its_screen(monkeypatch):
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     dp["workspaces"] = conftest.Workspaces()
-    dp["settings"] = ns(delay=[1], profile_pause=[60], autoreply_enabled=False, autoreply_text="")
+    dp["settings"] = ns(delay=[1], profile_pause=[60], trigger="go", messages_count=0,
+                  autoreply_enabled=False, autoreply_text="")
     for module in ROUTERS:
         monkeypatch.setattr(module.router, "_parent_router", None)  # included again, in this dispatcher
     dp.include_routers(*(module.router for module in ROUTERS))
@@ -296,12 +323,12 @@ def test_screen_kb_rows_follow_the_subheadings():
     assert rows == [["✉️ ЛС человеку", "🗨 Комментарии"], ["⚡ Чат — сразу", "🔔 Чат — по слову"],
                     ["🚪 Вступить в чат", "❤️ Реакции"], ["🗳 Голосовать", "🤝 Инвайтинг"],
                     ["🚩 Жалоба на пост"], ["🚫 Жалоба на пользователя"], ["⬅️ Назад"]]
-    rows = [[b.text for b in row] for row in screen_kb(SERVICE).inline_keyboard]
+    rows = [[b.text for b in row] for row in screen_kb(SECURITY).inline_keyboard]
     assert rows[-1] == ["⬅️ Назад"]  # the way back on a row of its own
 
 
 def test_risky_functions_are_marked():
-    texts = {b.text for b in _buttons(screen_kb(SERVICE))}
+    texts = {b.text for b in _buttons(screen_kb(SECURITY))}
     assert "⚠️ 🧹 Очистить диалоги" in texts and "🔒 Установить 2FA" in texts
 
 
@@ -316,7 +343,8 @@ def test_every_screen_opens_from_its_parent():
 def test_activity_button_answers_with_its_functions():
     msg, state = _Msg("💬 Активность"), _State()
     asyncio.run(menu.open_from_menu(msg, state))  # no project opened: none of its work
-    assert msg.answers == [("⛔ Сначала откройте проект: 📁 Проекты → проект.", main_menu())] and not state.cleared
+    assert msg.answers == [("⛔ Сначала откройте проект: 📁 Проекты → проект.", back_kb(PROJECTS))]
+    assert not state.cleared
 
     msg = _Msg("💬 Активность")
     asyncio.run(menu.open_from_menu(msg, state, workspace=conftest.Workspaces().workspace))
@@ -329,8 +357,8 @@ def test_activity_button_answers_with_its_functions():
 
 def test_a_mixed_section_marks_only_its_risky_functions():
 
-    text = screen_text(SERVICE)
-    assert text.startswith("<b>🛠 Обслуживание</b>\n")
+    text = screen_text(SECURITY)
+    assert text.startswith("<b>🔐 Безопасность</b>\n")
     assert "⚠️ <b>🧹 Очистить диалоги</b>" in text and "\n<b>📴 Сбросить чужие сессии</b>" in text
 
 
@@ -338,12 +366,14 @@ def test_add_account_offers_phone_for_both_roles_and_tdata():
     from bot.routers import login
 
     callback, state = _Callback(), _State()
-    asyncio.run(login.phone_start(callback, state))
-    text, markup = callback.message.answers[0]
+    asyncio.run(login.phone_start(callback, state, ns(project_id=4)))
+    text, markup = callback.message.edits[0]  # in 🤖 Аккаунты' place, ⬅️ back to it
     assert state.cleared and [b.text for b in _buttons(markup)] == [
-        "🤖 Воркер — по номеру", "👤 Личный — по номеру", "📥 Воркер — из tdata (ZIP)", "📦 Воркеры — из свободных"]
+        "🤖 Воркер — по номеру", "👤 Личный — по номеру", "📥 Воркер — из tdata (ZIP)", "📦 Воркеры — из свободных",
+        "⬅️ Назад"]
+    assert NavCB.unpack(_buttons(markup)[-1].callback_data) == NavCB(screen=ACCOUNTS, project=4)
     tdata = _buttons(markup)[2]
-    assert MenuCB.unpack(tdata.callback_data).action == MenuAction.TDATA  # the existing tdata upload
+    assert MenuCB.unpack(tdata.callback_data) == MenuCB(action=MenuAction.TDATA, project=4)  # into its project
 
 
 class _StepState(_State):
@@ -357,13 +387,14 @@ class _StepState(_State):
 
 def test_cancel_button_leaves_its_own_step():
     from bot.keyboards.common import cancel_kb
-    from bot.states import SetDelay
+    from bot.states import SetSetting
 
-    [button] = _buttons(cancel_kb(SetDelay.input))
+    [button] = _buttons(cancel_kb(SetSetting.value))
     assert button.text == "✖️ Отмена"
-    callback, state = _Callback(), _StepState(SetDelay.input.state)
+    callback, state = _Callback(), _StepState(SetSetting.value.state)
     asyncio.run(menu.cancel_button(callback, ChoiceCB.unpack(button.callback_data), state, ns(active=False)))
-    assert state.cleared and callback.message.answers == [("Отменено.", main_menu())]
+    # in the prompt's place, back to the screen the form was started from
+    assert state.cleared and callback.message.edits == [("Отменено.", back_kb(SETTINGS))]
 
 
 def test_a_prompt_with_its_own_buttons_has_the_cancel_last():
@@ -378,15 +409,15 @@ def test_a_prompt_with_its_own_buttons_has_the_cancel_last():
 
 def test_cancel_button_of_an_old_prompt_leaves_another_step_alone():
     from bot.keyboards.common import cancel_kb
-    from bot.states import SetDelay, SetProfilePause
+    from bot.states import SetAutoreplyText, SetSetting
 
-    [button] = _buttons(cancel_kb(SetDelay.input))
+    [button] = _buttons(cancel_kb(SetSetting.value))
     alerts = []
 
     async def answer(text=None, **kwargs):
         alerts.append(text)
 
-    callback, state = _Callback(), _StepState(SetProfilePause.input.state)
+    callback, state = _Callback(), _StepState(SetAutoreplyText.input.state)
     callback.answer = answer
     asyncio.run(menu.cancel_button(callback, ChoiceCB.unpack(button.callback_data), state, ns(active=False)))
     assert not state.cleared and callback.message.answers == []
@@ -398,20 +429,22 @@ def test_a_screen_opens_in_place_of_the_message():
 
     for title in SCREENS.keys() - VIEWS.keys():  # as the registry has it
         callback = _Callback()
-        project = {"workspace": conftest.Workspaces().workspace} if in_project(title) else {}
+        workspace = conftest.Workspaces().workspace
+        project = {"workspace": workspace} if in_project(title) else {}
         asyncio.run(menu.open_by_button(callback, NavCB(screen=title), _State(), **project))
         assert callback.message.answers == []  # no new message
-        assert callback.message.edits == [(screen_text(title), screen_kb(title))]
+        shown = (screen_text(title), screen_kb(title, workspace.project_id if project else 0))
+        assert callback.message.edits == [shown]
         assert callback.answered
-    assert "облачный пароль" in screen_text(SERVICE)
+    assert "облачный пароль" in screen_text(SECURITY)
 
 
 def test_the_projects_list_has_no_work_without_a_project():
-    """All the work on a base is a project's: its card's (bot/routers/projects.py)."""
-    from bot.routers import projects
+    """All the work on a base is a project's: its card's (bot/routers/projects/)."""
+    from bot.routers.projects import listing
 
     msg = _Msg(PROJECTS)
-    asyncio.run(projects.projects_screen(msg, _StateData(), False))
+    asyncio.run(listing.projects_screen(msg, _StateData(), False))
     text, markup = msg.answers[0]
     assert "Без проекта" not in text and not any("Без проекта" in b.text for b in _buttons(markup))
     assert "🧰 Без проекта" not in SCREENS
@@ -451,12 +484,12 @@ def test_every_function_is_explained_in_its_section():
 
 def test_accounts_screen_explains_its_buttons():
     msg = _Msg(ACCOUNTS)
-    asyncio.run(accounts.accounts_screen(msg, _State(), False, ns(count=lambda: 3)))
+    asyncio.run(accounts.workers.accounts_screen(msg, _State(), False, ns(count=lambda: 3)))
     text = msg.answers[0][0]
     for button in SCREENS[ACCOUNTS].buttons:
         assert f"<b>{button.title}</b> — {button.hint}" in text
     assert "<b>🛡 Проверка статуса (SpamBot)</b> — спрашивает @SpamBot" in text
-    for child in ("👤 Профиль", SERVICE):
+    for child in ("👤 Профиль", SECURITY):
         assert f"<b>{child}</b> — {SCREENS[child].hint}" in text
     assert "Задержка" not in text  # a setting: ⚙️ Настройки
 
@@ -464,7 +497,8 @@ def test_accounts_screen_explains_its_buttons():
 def test_settings_screen_shows_the_values_and_explains_its_buttons():
     from bot.routers import settings as screen
 
-    settings = ns(delay=[2, 5], profile_pause=[60, 180], autoreply_enabled=True, autoreply_text="Спасибо!")
+    settings = ns(delay=[2, 5], profile_pause=[60, 180], trigger="go", messages_count=0,
+                  autoreply_enabled=True, autoreply_text="Спасибо!")
     msg = _Msg(SETTINGS)
     asyncio.run(screen.settings_screen(msg, _State(), False, settings))
     text, markup = msg.answers[0]
@@ -477,18 +511,19 @@ def test_settings_screen_shows_the_values_and_explains_its_buttons():
 def test_a_saved_setting_brings_back_the_settings_screen_with_the_new_value():
     from bot.routers import settings as screen
 
-    settings = ns(delay=[2, 5], profile_pause=[60, 180], autoreply_enabled=False, autoreply_text="")
+    settings = ns(delay=[2, 5], profile_pause=[60, 180], trigger="go", messages_count=0,
+                  autoreply_enabled=False, autoreply_text="")
     settings.set_delay = lambda value: setattr(settings, "delay", value)
     settings.set_profile_pause = lambda value: setattr(settings, "profile_pause", value)
 
     msg = _Msg("3-6")
-    asyncio.run(screen.delay_apply(msg, _State(), settings))
+    asyncio.run(screen.setting_typed(msg, _StateData({"setting": "delay"}), settings))
     text, markup = msg.answers[0]
     assert text.startswith("✅ Задержка: 3–6 с.") and "задержка <b>3–6 с</b>" in text
     assert markup == screen_kb(SETTINGS)
 
     msg = _Msg("120")
-    asyncio.run(screen.profilepause_apply(msg, _State(), settings))
+    asyncio.run(screen.setting_typed(msg, _StateData({"setting": "ppause"}), settings))
     text, markup = msg.answers[0]
     assert text.startswith("✅ Пауза профиля: 120 с.") and "пауза профиля <b>120 с</b>" in text
     assert markup == screen_kb(SETTINGS)
@@ -522,7 +557,7 @@ def test_status_shows_each_running_job_with_its_buttons_and_keeps_the_form():
     workspaces = conftest.Workspaces(scrapes=scrapes, manager=manager, analyses=analyses)
     msg = _Msg("/status")
     asyncio.run(menu.status(msg, workspaces))
-    assert msg.answers == [("Сейчас ничего не выполняется.", None)]
+    assert msg.answers == [("📊 Задачи — сейчас ничего не выполняется.", None)]
 
     manager.acquire("Рассылка", timeout=0)
     manager.progress = Progress()
@@ -532,8 +567,10 @@ def test_status_shows_each_running_job_with_its_buttons_and_keeps_the_form():
     msg = _Msg("/status")
     asyncio.run(menu.status(msg, workspaces))  # no state: a form under way is not left
     # each with its project's name (none in the file here) and its own slot's buttons
-    assert [markup for _, markup in msg.answers] == [stop_kb(manager.key), scrape_kb(scrapes.key), None]
-    assert msg.answers[0][0] == manager.progress.render("📁 ? · Рассылка") and msg.answers[2][0] == "▶️ 📁 ? · Анализ"
+    jobs = msg.answers  # the header on the first one's message, not a message of its own
+    assert [markup for _, markup in jobs] == [stop_kb(manager.key), scrape_kb(scrapes.key), None]
+    assert jobs[0][0] == "📊 Задачи — выполняется: 3\n\n" + manager.progress.render("📁 ? · Рассылка")
+    assert jobs[2][0] == "▶️ 📁 ? · Анализ"
 
 
 def test_screen_navigation_closes_a_sign_in_waiting_for_its_code(monkeypatch):
@@ -545,9 +582,9 @@ def test_screen_navigation_closes_a_sign_in_waiting_for_its_code(monkeypatch):
         closed.append(chat_id)
 
     monkeypatch.setattr(_common.logins, "close", close)
-    asyncio.run(menu.open_by_button(_Callback(), NavCB(screen=SERVICE), _State(), workspace=ns()))
+    asyncio.run(menu.open_by_button(_Callback(), NavCB(screen=SECURITY), _State(), workspace=ns(project_id=0)))
     asyncio.run(menu.open_by_button(_Callback(), NavCB(screen=ACCOUNTS), _State(), pool=ns(count=lambda: 1),
-                                    workspace=ns()))
+                                    workspace=ns(project_id=0)))
     assert closed == [1, 1]  # as a main-menu button: not left open until its timeout
 
 
@@ -585,16 +622,17 @@ def test_an_old_navigation_button_is_stale_and_a_new_one_opens_its_screen(monkey
         return [type(call) for call in calls], [call.text for call in calls if isinstance(call, AnswerCallbackQuery)]
 
     try:
-        # and those of 🧰 Без проекта, gone: its screen, its functions (now a project card's)
-        old = ("cat:0", "cat:3", "menu:workers", "menu:projects", "menu:settings",
+        # and those of 🧰 Без проекта, gone: its screen; a card's buttons by its token, before its screens;
+        # the chat campaign's settings, now asked by its flow only
+        old = ("cat:0", "cat:3", "menu:workers", "menu:projects", "menu:settings", "menu:trigger", "menu:count",
                NavCB(screen="🧰 Без проекта").pack(), NavCB(screen="🤖 Воркеры").pack(),  # renamed: 🤖 Аккаунты
-               *(FunctionCB(key=key).pack() for key in ("members", "addcontacts", "pmmailing", "verify", "analysis")))
+               ChoiceCB(scope="prj_act", value="scrape.t0ken").pack())
         for data in old:
             assert asyncio.run(tap(data)) == ([AnswerCallbackQuery], [STALE_BUTTON]), data
         # a project's screen: in the chat's current project only (bot/services/workspaces.ProjectMiddleware)
-        assert asyncio.run(tap(NavCB(screen=SERVICE).pack()))[0] == [SendMessage, AnswerCallbackQuery]
+        assert asyncio.run(tap(NavCB(screen=SECURITY).pack()))[0] == [SendMessage, AnswerCallbackQuery]
         dp["workspace"] = conftest.Workspaces().workspace
-        assert asyncio.run(tap(NavCB(screen=SERVICE).pack()))[0] == [EditMessageText, AnswerCallbackQuery]
+        assert asyncio.run(tap(NavCB(screen=SECURITY).pack()))[0] == [EditMessageText, AnswerCallbackQuery]
     finally:
         for module in ROUTERS:
             module.router._parent_router = None
@@ -604,14 +642,15 @@ def test_the_screens_with_live_values_or_of_their_own_kind_register_their_views(
     import bot.app  # noqa: F401 — every router imported, as at the bot's start
     from bot.services.screens import VIEWS
 
-    assert set(VIEWS) == {PROJECTS, CARD, ACCOUNTS, SETTINGS, TASKS}  # the rest: as the registry has them
+    # the rest: as the registry has them (a project's: with its name)
+    assert set(VIEWS) == {PROJECTS, CARD, COLLECT, MANAGE, ACCOUNTS, SETTINGS, LIMITS, AUTOREPLY, TASKS}
 
 
 def test_the_tasks_button_shows_what_runs_and_keeps_the_form():
 
     msg, state = _Msg(TASKS), _State()
     asyncio.run(menu.open_from_menu(msg, state, workspaces=conftest.Workspaces()))
-    assert msg.answers == [("Сейчас ничего не выполняется.", None)]  # as /status
+    assert msg.answers == [("📊 Задачи — сейчас ничего не выполняется.", None)]  # as /status
     assert not state.cleared
 
 
@@ -657,4 +696,4 @@ def test_the_tasks_button_in_a_form_s_step_is_not_its_input(monkeypatch):
     finally:
         for module in ROUTERS:
             module.router._parent_router = None
-    assert sent == ["Сейчас ничего не выполняется."]
+    assert sent == ["📊 Задачи — сейчас ничего не выполняется."]

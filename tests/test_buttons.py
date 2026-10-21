@@ -4,17 +4,18 @@ menu through menu_path, never a path typed by hand."""
 
 import ast
 import glob
+import html
 import types
 import unicodedata
 
 from bot.callbacks import MenuAction
 from bot.keyboards.common import yes_no_kb
 from bot.keyboards.menu import main_menu, screen_kb
-from bot.routers import broadcasts
+from bot.routers import chat_broadcasts
 from modules.analysis_tools import TOOLS as ANALYSIS
 from modules.registry import (
-    ACCOUNTS, BOT_FUNCTIONS, BOT_FUNCTIONS_BY_KEY, CLI_EXTRAS, MAIN_MENU, NOT_MENU_ITEMS, PROJECT_CARD, PROJECT_MANAGE,
-    SCREENS, children, menu_path,
+    ACCOUNTS, BOT_FUNCTIONS, BOT_FUNCTIONS_BY_KEY, CLI_EXTRAS, MAIN_MENU, NOT_MENU_ITEMS, PROJECT_FILES, SCREENS,
+    children, menu_path, trail, AUTOREPLY,
 )
 from bot.services.screens import screen_text
 
@@ -37,12 +38,13 @@ def test_every_function_has_an_emoji_and_a_description():
 def test_every_menu_button_starts_with_an_emoji():
     from bot.keyboards.common import cancel_kb
     from bot.routers.login import add_kb
-    from bot.states import SetDelay
+    from bot.states import SetSetting
 
-    texts = _texts(main_menu()) + _texts(yes_no_kb("x")) + _texts(cancel_kb(SetDelay.input)) + _texts(add_kb())
+    texts = _texts(main_menu()) + _texts(yes_no_kb("x")) + _texts(cancel_kb(SetSetting.value)) + _texts(add_kb())
     for screen in SCREENS:
         texts += _texts(screen_kb(screen))
-    texts += [label for label, _ in broadcasts.MODE_OPTIONS + broadcasts.INSTANT_MODES + broadcasts.MMODE_OPTIONS]
+    texts += [label for label, _ in
+              chat_broadcasts.MODE_OPTIONS + chat_broadcasts.INSTANT_MODES + chat_broadcasts.MMODE_OPTIONS]
     texts += [label for label, *_ in ANALYSIS.values()]
     from functions.report_user import ReportUserFunc
     texts += [label for label, _ in ReportUserFunc(types.SimpleNamespace(sessions=[]), None).reasons]
@@ -59,11 +61,11 @@ def test_every_screen_button_is_described_on_its_screen_and_does_something():
 
     actions = {action.value for action in MenuAction}
     for title, screen in SCREENS.items():
-        if title == PROJECTS:  # its own list and cards (bot/routers/projects.py)
+        if title == PROJECTS:  # its own list and cards (bot/routers/projects/)
             continue
         text = screen_text(title)
         for button in screen.buttons:
-            assert button.hint.strip() and f"<b>{button.title}</b> — {button.hint}" in text
+            assert button.hint.strip() and f"<b>{button.title}</b> — {html.escape(button.hint)}" in text
             assert button.action in actions, button.title
         for child in children(title):
             assert f"<b>{child}</b> — {SCREENS[child].hint}" in text
@@ -79,23 +81,52 @@ def test_every_analysis_tool_is_described():
 
 
 def test_menu_path_finds_functions_and_screen_buttons():
-    # all the work is a project's: on its card (📁 Проект), or its screens
-    assert menu_path("status") == "📁 Проекты → 📁 Проект → 🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)"
-    assert menu_path("2fa") == "📁 Проекты → 📁 Проект → 🤖 Аккаунты → 🛠 Обслуживание → 🔒 Установить 2FA"
-    assert menu_path("invite") == "📁 Проекты → 📁 Проект → 💬 Активность → 🤝 Инвайтинг"
-    assert menu_path("autoreply") == "⚙️ Настройки → 📬 Автоответ"
-    assert menu_path("members") == "📁 Проекты → 📁 Проект → 👥 Участники чата"
+    # all the work is a project's: in its card's screens; the card is opened by its name
+    assert menu_path("status") == "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)"
+    assert menu_path("2fa") == "📁 Проекты → проект → 🤖 Аккаунты → 🔐 Безопасность → 🔒 Установить 2FA"
+    assert menu_path("invite") == "📁 Проекты → проект → 💬 Активность → 🤝 Инвайтинг"
+    assert trail(AUTOREPLY) == ["⚙️ Настройки", "📬 Автоответ"]  # a screen of its own
+    assert menu_path("members") == "📁 Проекты → проект → 📥 Сбор → 👥 Участники групп"
+    assert menu_path("pmmailing") == "📁 Проекты → проект → 📨 База и рассылка → 📨 ЛС по базе"
+    # 🧹: the base's, on the card, and the dialogs', on a worker's screen — two keys, two places
+    assert menu_path("clearbase") == "📁 Проекты → проект → ⚙️ Управление → 🧹 Очистить базу"
+    assert menu_path("clear") == "📁 Проекты → проект → 🤖 Аккаунты → 🔐 Безопасность → 🧹 Очистить диалоги"
+    assert menu_path("channels") == "📁 Проекты → проект → ⚙️ Управление → ✏️ Каналы"
     assert "projects" not in BOT_FUNCTIONS_BY_KEY  # 📁 Проекты: a main-menu button; the CLI's item (CLI_EXTRAS)
-    assert menu_path("add") == "📁 Проекты → 📁 Проект → 🤖 Аккаунты → ➕ Добавить"
+    assert menu_path("add") == "📁 Проекты → проект → 🤖 Аккаунты → ➕ Добавить"
     actions = {b.action for screen in SCREENS.values() for b in screen.buttons}
     assert not actions & set(BOT_FUNCTIONS_BY_KEY)  # one key, one place
 
 
-def test_the_card_s_functions_are_its_own_and_its_screen_says_what_each_button_does():
-    on_card = {BOT_FUNCTIONS_BY_KEY[b.function].classname for row in PROJECT_CARD for b in row if b.function}
+def test_the_card_s_functions_are_its_own():
+    on_card = {function.classname for function in BOT_FUNCTIONS if function.category in PROJECT_FILES}
     # not menu items of their own: run from a card or ➕ Добавить
     assert set(NOT_MENU_ITEMS) == on_card | {"ScrapeFunc", "TdataImportFunc", "LoginCodesFunc"}
-    assert all(b.hint for row in PROJECT_MANAGE for b in row)
+
+
+def test_every_menu_button_s_callback_fits_telegram_s_64_bytes():
+    """A button's callback data over 64 bytes is refused by Telegram: the whole screen would not show."""
+    for title in SCREENS:
+        for row in screen_kb(title, project=2 ** 31).inline_keyboard:
+            for button in row:
+                assert len(button.callback_data.encode()) <= 64, (title, button.text)
+
+
+def test_menu_path_of_an_unknown_key_says_so():
+    import pytest
+
+    with pytest.raises(KeyError, match="нет в меню"):
+        menu_path("no-such-button")
+
+
+def test_every_button_of_the_registry_has_its_handler(monkeypatch):
+    from bot.app import unhandled_actions
+    from modules import registry
+
+    assert unhandled_actions() == []
+    # a function no FunctionCB filter takes is caught at the start, not by its first tap
+    monkeypatch.setitem(registry.BOT_FUNCTIONS_BY_KEY, "nohandler", registry.BOT_FUNCTIONS[0])
+    assert unhandled_actions() == ["nohandler"]
 
 
 def test_no_message_types_a_menu_path_by_hand():
@@ -116,6 +147,51 @@ def test_no_message_types_a_menu_path_by_hand():
     assert typed == []
 
 
+def _strings(path):
+    """The string constants of a source file (f-strings' literal parts too), its docstrings left out:
+    [(lineno, text)]."""
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    docstrings = {id(node.body[0].value) for node in ast.walk(tree)
+                  if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                  and node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant)}
+    return [(node.lineno, node.value) for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings]
+
+
+def _sources(*roots):
+    return [path for root in roots for path in glob.glob(f"{root}/**/*.py", recursive=True)
+            if not path.endswith("registry.py")]
+
+
+def test_no_message_names_a_button_by_hand():
+    """A button's title typed in a message («▶️ Скрап проекта») outlives the button renamed: messages take it
+    from the registry (registry.title, its constants)."""
+    from modules.registry import ADD_CHANNELS
+
+    titles = {f.title for f in BOT_FUNCTIONS} | {b.title for s in SCREENS.values() for b in s.buttons} \
+        | set(SCREENS) | {ADD_CHANNELS}
+    typed = [f"{path}:{line}" for path in _sources("bot", "functions", "modules") for line, text in _strings(path)
+             if any(f"«{title}»" in text for title in titles)]
+    assert typed == []
+
+
+def test_every_way_back_to_a_project_s_screen_names_its_project():
+    """⬅️ to a project's screen (back_kb) carries the project: an older message's leads into its own project,
+    as every other button of a project's (bot/callbacks.py)."""
+    from modules import registry
+
+    unnamed = []
+    for path in _sources("bot"):
+        for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "back_kb" and node.args):
+                continue
+            screen = getattr(registry, getattr(node.args[0], "id", ""), None)
+            named = len(node.args) > 1 or any(keyword.arg == "project" for keyword in node.keywords)
+            if screen in SCREENS and registry.in_project(screen) and not named:
+                unnamed.append(f"{path}:{node.lineno}")
+    assert unnamed == []
+
+
 class _Screen:
     """A message the bot answers to, or a callback's message: what it answered."""
 
@@ -125,6 +201,10 @@ class _Screen:
         self.message = self  # a callback's .message
 
     async def answer(self, text=None, **kwargs):
+        if text is not None:
+            self.answers.append(text)
+
+    async def edit_text(self, text=None, **kwargs):
         if text is not None:
             self.answers.append(text)
 
@@ -145,8 +225,9 @@ def test_every_screen_of_the_main_menu_starts_with_an_emoji(monkeypatch, tmp_pat
     from modules import projects
 
     deps = dict(pool=types.SimpleNamespace(count=lambda: 1), settings=types.SimpleNamespace(
-        delay=[2, 5], profile_pause=[60, 180], autoreply_enabled=False, autoreply_text=""),
-        workspace=types.SimpleNamespace())  # a project opened: its screens
+        delay=[2, 5], profile_pause=[60, 180], trigger="go", messages_count=0,
+                  autoreply_enabled=False, autoreply_text=""),
+        workspace=types.SimpleNamespace(project_id=0))  # a project opened: its screens
 
     def opened(title):
         msg = _Screen(title)
@@ -171,7 +252,7 @@ def test_a_long_choice_is_paged_under_telegram_s_100_buttons():
 
     options = [(f"🤖 w{i}", str(i)) for i in range(130)]
     rows = paged_kb("x", options, 0, ".t").inline_keyboard
-    assert len(rows) == PAGE_SIZE + 1 and [b.text for b in rows[-1]] == ["⬅️", "📄 стр 1/7", "➡️"]
+    assert len(rows) == PAGE_SIZE + 1 and [b.text for b in rows[-1]] == ["◀️", "📄 стр 1/7", "▶️"]
     assert [ChoiceCB.unpack(b.callback_data).value for b in rows[-1]] == ["pg.6.t", "pg.0.t", "pg.1.t"]  # round
     last = paged_kb("x", options, 6).inline_keyboard
     assert [b.text for row in last[:-1] for b in row] == [f"🤖 w{i}" for i in range(120, 130)]

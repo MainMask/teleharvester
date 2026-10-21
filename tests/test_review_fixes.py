@@ -13,6 +13,10 @@ from git.exc import GitCommandError
 
 from functions.base.base import BaseFunction
 
+from modules.registry import BOT_FUNCTIONS_BY_KEY
+
+_STATUS = BOT_FUNCTIONS_BY_KEY["status"]  # a job's function: its ⬅️ leads to its screen
+
 
 def ns(**kw):
     return types.SimpleNamespace(**kw)
@@ -861,7 +865,7 @@ class TestReporterLength:
 
 class TestMailLimit:
     def _run(self, text):
-        from bot.routers import broadcasts
+        from bot.routers import mailing
 
         replies, data, states = [], {}, []
 
@@ -875,7 +879,7 @@ class TestMailLimit:
         async def answer(t, **k):
             replies.append(t)
 
-        asyncio.run(broadcasts.mail_limit(ns(text=text, answer=answer), _State()))
+        asyncio.run(mailing.mail_limit(ns(text=text, answer=answer), _State()))
         return replies, data, states
 
     def test_typo_reprompts(self):
@@ -1117,7 +1121,7 @@ class TestCancelNonCancelable:
 
 class TestMailRunStats:
     def _run(self, active_after_load, load_stats):
-        from bot.routers import broadcasts
+        from bot.routers import mailing
 
         replies = []
 
@@ -1133,7 +1137,7 @@ class TestMailRunStats:
 
         class _Manager:
             label = "Рассылка"
-            checks = 0
+            checks, project_id = 0, 1
 
             @property
             def active(self):
@@ -1143,7 +1147,7 @@ class TestMailRunStats:
         instance = ns(load_recipients=lambda p: ["a"], load_stats=load_stats,
                       filter_unsent=lambda r: r)
         functions = {"PmMailingFunc": lambda: instance}
-        asyncio.run(broadcasts.mail_run(ns(answer=answer), _State(), None, None, functions,
+        asyncio.run(mailing.mail_run(ns(answer=answer), _State(), None, None, functions,
                                         _Manager(), None))
         return replies
 
@@ -1237,7 +1241,7 @@ class TestJobManagerStops:
                 await asyncio.sleep(10)
 
             pool = ns(workers=[_Session()], run=lambda inst, bf, fac, rep: fac(None))
-            await manager.run(None, 1, pool, None, None, factory, "job", "done")
+            await manager.run(None, 1, pool, None, _STATUS, factory, "job", "done")
             await asyncio.sleep(0)
             await manager.stop()
             await asyncio.sleep(0.005)  # inside _wrap's cleanup (disconnect)
@@ -1262,7 +1266,7 @@ class TestJobManagerStops:
                 return None
 
         monkeypatch.setattr(jobs_mod, "TelegramReporter", lambda *a, **k: _Reporter())
-        started = asyncio.run(manager.run(None, 1, ns(workers=[]), None, None,
+        started = asyncio.run(manager.run(None, 1, ns(workers=[]), None, _STATUS,
                                           lambda f, r: None, "job", "done"))
 
         assert started is False and manager.active is False
@@ -1325,7 +1329,10 @@ class TestCancelInsideForm:
 
         class _State:
             async def get_state(self):
-                return "ChangeBio:text"
+                return "ProfileText:text"
+
+            async def get_data(self):
+                return {}
 
             async def clear(self):
                 return None
@@ -1781,7 +1788,7 @@ class TestJobSlotBackstop:
 
         async def scenario():
             manager = JobManager()
-            await manager.run(None, 1, ns(workers=[]), None, None, lambda f, r: None, "job", "done")
+            await manager.run(None, 1, ns(workers=[]), None, _STATUS, lambda f, r: None, "job", "done")
             manager._task.cancel()  # before _wrap ever runs: its try/finally never starts
             await asyncio.sleep(0.01)
             return manager
@@ -1974,7 +1981,7 @@ class TestJobNotRunLabel:
 
         async def scenario():
             manager = JobManager()
-            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), None,
+            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), _STATUS,
                               lambda f, r: None, "job", "Готово ✅")
             await asyncio.sleep(0.01)
 
@@ -2002,7 +2009,7 @@ class TestJobNotRunLabel:
 
         async def scenario():
             manager = JobManager()
-            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), None,
+            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), _STATUS,
                               lambda f, r: None, "job", "Готово ✅",
                               cleanup=lambda: cleaned.append(True))
             await asyncio.sleep(0.01)
@@ -2335,7 +2342,7 @@ class TestReportAnswerFailure:
 
         flow = {"busy": False, "selections": []}
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
-        cb = ns(message=ns(chat=ns(id=7), answer=answer), answer=failing_answer, bot=None)
+        cb = ns(message=ns(chat=ns(id=7), answer=answer, edit_text=answer), answer=failing_answer, bot=None)
         try:
             asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager(), ns(in_job=[])))
             assert stepped == [b"a"] and moderation._FLOWS[7][1]["busy"] is False
@@ -2400,7 +2407,7 @@ class TestStopWhileFinishing:
             return True
 
         async def scenario():
-            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), None,
+            await manager.run(None, 1, ns(workers=[], run=pool_run), ns(), _STATUS,
                               lambda f, r: None, "job", "Готово ✅")
             await asyncio.sleep(0.05)
 
@@ -2661,11 +2668,15 @@ def _clear(age):
         async def run(self, *args, **kwargs):
             runs.append(args)
 
-    message = ns(date=datetime.datetime.now(datetime.timezone.utc) - age, chat=ns(id=1))
+    async def edit_reply_markup(reply_markup=None):
+        return None
+
+    message = ns(date=datetime.datetime.now(datetime.timezone.utc) - age, chat=ns(id=1),
+                 edit_reply_markup=edit_reply_markup)
     callback = ns(message=message, answer=answer, bot=None)
     functions = {"ClearDialogsFunc": object}
     asyncio.run(service.clear_run(callback, ChoiceCB(scope="clear_confirm", value="yes"),
-                                  ns(), functions, _Manager()))
+                                  ns(), functions, _Manager(), ns(project_id=1)))
     return alerts, runs
 
 
@@ -2687,7 +2698,7 @@ class TestMailingLastChoiceWins:
     """A list pasted at the recipients step, then a base picked there: the mailing goes to the base."""
 
     def test_a_base_picked_after_a_pasted_list(self, monkeypatch):
-        from bot.routers import broadcasts
+        from bot.routers import mailing
 
         class _State:
             def __init__(self):
@@ -2711,16 +2722,16 @@ class TestMailingLastChoiceWins:
         async def no_content(message, album):
             return None  # the run stops here: only which recipients were read matters
 
-        monkeypatch.setattr(broadcasts, "build_content", no_content)
+        monkeypatch.setattr(mailing, "build_content", no_content)
         state = _State()
         state.data["bases"] = ["assets/databases/G_participants.parquet"]
-        asyncio.run(broadcasts.mail_path(ns(document=None, text="@a\n@b", answer=answer), state))
-        callback = ns(answer=answer, message=ns(answer=answer))
-        asyncio.run(broadcasts.mail_base(callback, ns(value="0"), state))
+        asyncio.run(mailing.mail_path(ns(document=None, text="@a\n@b", answer=answer), state))
+        callback = ns(answer=answer, message=ns(answer=answer, edit_text=answer))
+        asyncio.run(mailing.mail_base(callback, ns(value="0"), state))
 
         read = []
         instance = ns(load_recipients=lambda path: read.append(path) or [{"user_id": 1}])
-        manager = ns(active=False)
-        asyncio.run(broadcasts.mail_run(ns(answer=answer), state, None, None,
+        manager = ns(active=False, project_id=1)
+        asyncio.run(mailing.mail_run(ns(answer=answer), state, None, None,
                                         {"PmMailingFunc": lambda: instance}, manager, None))
         assert read == ["assets/databases/G_participants.parquet"]

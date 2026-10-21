@@ -189,7 +189,7 @@ def test_cli_card_sections_run_on_the_project_s_workers(monkeypatch):
         (type(instance).__name__, self.storage.home, len(self.storage))))
     monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))  # [1] Green
     monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    _answers(monkeypatch, cli, texts=["13", "1"])  # 🤖 Аккаунты › → [1] 📋 Список
+    _answers(monkeypatch, cli, texts=["9", "1"])  # 🤖 Аккаунты › → [1] 📋 Список
     cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert any("[13] 🤖 Аккаунты ›  [14] 💬 Активность ›" in p for p in printed)
+    assert any("[9] 🤖 Аккаунты ›  [10] 💬 Активность ›" in p for p in printed)  # in the bot's order
     assert ran == [("AccountsFunc", projects.home(projects.find("Green")), 1)]

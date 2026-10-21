@@ -9,8 +9,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import FunctionCB, MenuAction, MenuCB, NavCB
-from bot.keyboards.common import choice_kb
-from modules.registry import MAIN_MENU, SCREENS, button_title, by_category, children, risk_marker
+from modules.registry import CARD, MAIN_MENU, SCREENS, by_category, children, in_project, risk_marker
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -35,20 +34,18 @@ def _widths(labels: list[str]) -> list[int]:
     return widths
 
 
-def screen_button(title: str) -> InlineKeyboardButton:
-    """The button that opens a screen (registry SCREENS), marked ›."""
-    return InlineKeyboardButton(text=f"{title} ›", callback_data=NavCB(screen=title).pack())
-
-
-def screen_kb(title: str) -> InlineKeyboardMarkup:
-    """A screen's buttons: its actions, its functions (each subheading on new rows), the screens
-    opened from it — two short ones in a row; ⬅️ back to its parent on a row of its own."""
+def screen_kb(title: str, project: int = 0, hidden=(), titles: dict | None = None) -> InlineKeyboardMarkup:
+    """A screen's buttons: its actions, its functions (each subheading on new rows) — two short ones in a
+    row —, the screens opened from it two in a row; ⬅️ back to its parent on a row of its own. A project's
+    screen's buttons carry its `project` (bot/callbacks.py); without the `hidden` actions, `titles` in
+    place of some actions' own."""
     builder = InlineKeyboardBuilder()
     widths = []
 
-    actions = [button_title(button) for button in SCREENS[title].buttons]
-    for button, label in zip(SCREENS[title].buttons, actions):
-        builder.button(text=label, callback_data=MenuCB(action=MenuAction(button.action)))
+    shown = [button for button in SCREENS[title].buttons if button.action not in hidden]
+    actions = [(titles or {}).get(button.action, button.title) for button in shown]
+    for button, label in zip(shown, actions):
+        builder.button(text=label, callback_data=MenuCB(action=MenuAction(button.action), project=project))
     widths += _widths(actions)
 
     functions = by_category(title)
@@ -56,27 +53,24 @@ def screen_kb(title: str) -> InlineKeyboardMarkup:
         labels = []
         for function in run:
             labels.append(f"{risk_marker(function, functions)}{function.title}")
-            builder.button(text=labels[-1], callback_data=FunctionCB(key=function.key))
+            builder.button(text=labels[-1], callback_data=FunctionCB(key=function.key, project=project))
         widths += _widths(labels)
 
-    opened = [screen_button(child) for child in children(title)]
-    for button in opened:
-        builder.add(button)
-    widths += _widths([button.text for button in opened])
+    opened = children(title)
+    for child in opened:
+        builder.button(text=f"{child} ›", callback_data=NavCB(screen=child, project=project))
+    widths += [2] * (len(opened) // 2) + [1] * (len(opened) % 2)
 
     if parent := SCREENS[title].parent:
-        builder.button(text="⬅️ Назад", callback_data=NavCB(screen=parent))
+        builder.button(text="⬅️ Назад", callback_data=NavCB(screen=parent, project=project if in_project(parent) else 0))
         widths.append(1)
     builder.adjust(*widths)
     return builder.as_markup()
 
 
-def card_kb(rows: list[list[tuple[str, str]]], token: str, screens: tuple[str, ...] = ()) -> InlineKeyboardMarkup:
-    """A card's (title, action) rows (registry.card_rows, then its ⬅️), each button carrying the card's
-    token: an older card's must not act on the one opened since; `screens`, the ones opened from it
-    (a project's 🤖 Аккаунты, 💬 Активность), on a row before its ⬅️."""
-    markup = choice_kb("prj_act", [(label, f"{action}.{token}") for row in rows for label, action in row],
-                       widths=tuple(len(row) for row in rows))
-    if screens:
-        markup.inline_keyboard.insert(len(markup.inline_keyboard) - 1, [screen_button(title) for title in screens])
-    return markup
+def back_kb(screen: str, project: int = 0, fresh: bool = True) -> InlineKeyboardMarkup:
+    """⬅️ to the screen a job or a form was started from, once it is over (its project's: `project`); `fresh`:
+    the screen comes as a new message, this one (a report) stays."""
+    label = "⬅️ К проекту" if screen == CARD else f"⬅️ {screen}"
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+        text=label, callback_data=NavCB(screen=screen, project=project, fresh=fresh).pack())]])

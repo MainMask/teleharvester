@@ -1,5 +1,7 @@
 import os
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -7,12 +9,12 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb, choice_kb, marks_kb
-from bot.routers._common import (STALE_BUTTON, delete_quietly, ensure_workers, marks_step, read_text_document,
+from bot.routers._common import (back_answer, delete_quietly, ensure_workers, marks_step, read_text_document,
                                  require_text, resolve)
-from modules.registry import BOT_FUNCTIONS_BY_KEY
+from modules.registry import BOT_FUNCTIONS_BY_KEY, PROFILE
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from bot.states import ChangeBio, ChangeName, ChangePhoto, ChangeUsername, PickWorkers, SetPassword
+from bot.states import ChangePhoto, PickWorkers, ProfileText, SetPassword
 from modules import profile_done, restricted_workers
 from modules.scraper_creds import scrape_accounts
 
@@ -50,28 +52,27 @@ async def _sent_lines(message: Message) -> list[str] | None:
         return None
     lines = _lines(text)
     if not lines:
-        await message.answer("В файле нет ни одной строки. Пришлите список заново.")
+        await message.answer("В файле нет ни одной строки. Пришлите ещё раз:")
         return None
     return lines
 
 
 # --- worker picker: a function's first step, so workers done earlier can be left out ---
 
-def _workers_text(picked: list[int], total: int, new: list[int]) -> str:
-    text = (f"На каких воркерах? Отмечено: {len(picked)} из {total}\n"
+def _workers_text(key: str, picked: list[int], total: int, new: list[int]) -> str:
+    text = (f"{BOT_FUNCTIONS_BY_KEY[key].title} — на каких воркерах? Отмечено: {len(picked)} из {total}\n"
             f"✓ — эта функция уже меняла воркера. Отмечены те, что ещё не менялись: {len(new)}")
     return text if new else text + "\nВсе уже менялись — отметьте вручную."
 
 
 def _workers_kb(labels: list[str], picked: list[int], page: int):
-    return marks_kb("wpick", labels, picked, page, [("☑️ Все", "all"), ("⬜ Никого", "none"),
-                                                   ("🆕 Ещё не менялись", "new"), ("▶️ Далее", "go")], (3, 1))
+    return cancel_kb(PickWorkers.marks, marks_kb("wpick", labels, picked, page, [
+        ("☑️ Все", "all"), ("⬜ Никого", "none"), ("🆕 Ещё не менялись", "new"), ("▶️ Далее", "go")], (3, 1)))
 
 
-async def _ask_workers(callback: CallbackQuery, state: FSMContext, key: str, deps: dict):
+async def _ask_workers(message: Message, state: FSMContext, key: str, pool: WorkerPool):
     """Ask which workers the function `key` runs on, the ones it has not changed yet ticked
     (see modules.profile_done), then go on to its _NEXT step."""
-    pool = deps["pool"]
     accounts = scrape_accounts(pool.storage)
     keys = [profile_done.worker_key(pool.storage, account.path) for account in accounts]
     profile_done.seed(keys)
@@ -88,13 +89,14 @@ async def _ask_workers(callback: CallbackQuery, state: FSMContext, key: str, dep
     new = [i for i, worker in enumerate(keys) if classname not in ledger["done"].get(worker, {})]
 
     await state.clear()  # an abandoned flow's data must not reach this one
-    await state.set_state(PickWorkers.choose)
+    await state.set_state(PickWorkers.marks)
     await state.update_data(workers=None, pick_key=key, pick_paths=[account.path for account in accounts],
                             pick_labels=labels, pick_new=new, picked=new, pick_page=0)
-    await callback.message.answer(_workers_text(new, len(labels), new), reply_markup=_workers_kb(labels, new, 0))
+    await message.edit_text(_workers_text(key, new, len(labels), new),  # in its screen's place
+                            reply_markup=_workers_kb(labels, new, 0))
 
 
-@router.callback_query(PickWorkers.choose, ChoiceCB.filter(F.scope == "wpick"))
+@router.callback_query(PickWorkers.marks, ChoiceCB.filter(F.scope == "wpick"))
 async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool,
                        functions: dict, manager: JobManager):
     data = await state.get_data()
@@ -109,7 +111,8 @@ async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
         await callback.answer()
         # the paths, «all» too: a worker added meanwhile (by phone, tdata) was never shown nor picked
         await state.update_data(workers=[paths[i] for i in picked])
-        await callback.message.edit_text(f"Воркеры: {len(picked)} из {len(paths)}")
+        title = BOT_FUNCTIONS_BY_KEY[data["pick_key"]].title
+        await callback.message.edit_text(f"{title} — воркеры: {len(picked)} из {len(paths)}")
         await _NEXT[data["pick_key"]](callback.message, state,
                                       dict(pool=pool, functions=functions, manager=manager))
         return
@@ -120,14 +123,8 @@ async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
     if (new_picked, new_page) == (picked, page):  # an unchanged message can't be edited ("page" too)
         return
     await state.update_data(picked=new_picked, pick_page=new_page)
-    await callback.message.edit_text(_workers_text(new_picked, len(labels), new),
+    await callback.message.edit_text(_workers_text(data["pick_key"], new_picked, len(labels), new),
                                      reply_markup=_workers_kb(labels, new_picked, new_page))
-
-
-@router.callback_query(ChoiceCB.filter(F.scope == "wpick"))
-async def workers_pick_stale(callback: CallbackQuery):
-    await callback.answer()
-    await callback.message.answer(STALE_BUTTON)
 
 
 async def _picked(state: FSMContext) -> list[str] | None:
@@ -150,7 +147,7 @@ async def _run(key: str, message: Message, pool: WorkerPool, functions: dict, ma
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(r, **kwargs),
-        _HEADERS[key], "Готово ✅",
+        _HEADERS[key],
         only=only,
     )
 
@@ -164,183 +161,85 @@ def _no_input(key: str):
     return run
 
 
-# --- change bio ---
+# --- name, username, bio: typed, a sent .txt or the list in assets/ ---
 
-@router.callback_query(FunctionCB.filter(F.key == "bio"))
-async def bio_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                    manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await _ask_workers(callback, state, "bio", dict(pool=pool, functions=functions, manager=manager))
-
-
-async def _bio_prompt(message: Message, state: FSMContext, deps: dict):
-    await state.set_state(ChangeBio.text)
-    await message.answer(
-        "Введите новый текст bio для выбранных аккаунтов — или пришлите .txt со списком вариантов, "
-        "по одному на строку: каждый аккаунт получит случайный.",
-        reply_markup=cancel_kb(ChangeBio.text, _file_kb("bio_file", BIOS_FILE)),
-    )
+@dataclass(frozen=True)
+class _TextField:
+    prompt: str
+    path: str  # its list in assets/, offered by button
+    typed: Callable[[str], dict]  # the run's kwargs from the typed text
+    listed: Callable[[list[str]], dict]  # ...from a list: each worker gets one of them
 
 
-@router.callback_query(ChangeBio.text, ChoiceCB.filter(F.scope == "bio_file"))
-async def bio_from_file(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                        manager: JobManager):
-    await callback.answer()
-    bios = _file_lines(BIOS_FILE)
-    if not bios:
-        return
-    only = await _picked(state)
-    await state.clear()
-    await _run("bio", callback.message, pool, functions, manager, only, bios=bios)
-
-
-@router.message(ChangeBio.text, F.document)
-async def bio_list(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
-    bios = await _sent_lines(message)
-    if bios is None:
-        return
-    only = await _picked(state)
-    await state.clear()
-    await _run("bio", message, pool, functions, manager, only, bios=bios)
-
-
-@router.message(ChangeBio.text)
-async def bio_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
-    if not message.text:
-        await message.answer("Ожидается текст. Попробуйте ещё раз.")
-        return
-    bio = message.text
-    only = await _picked(state)
-    await state.clear()
-    await _run("bio", message, pool, functions, manager, only, bio=bio)
-
-
-# --- change name ---
-
-@router.callback_query(FunctionCB.filter(F.key == "name"))
-async def name_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                     manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await _ask_workers(callback, state, "name", dict(pool=pool, functions=functions, manager=manager))
-
-
-async def _name_prompt(message: Message, state: FSMContext, deps: dict):
-    await state.set_state(ChangeName.manual)
-    await message.answer(
-        "Введите имя для выбранных аккаунтов (напр. «Иван Петров») — или пришлите .txt со списком "
-        "имён, по одному на строку: каждый аккаунт получит случайное.",
-        reply_markup=cancel_kb(ChangeName.manual, _file_kb("name_file", NAMES_FILE)),
-    )
-
-
-@router.callback_query(ChangeName.manual, ChoiceCB.filter(F.scope == "name_file"))
-async def name_from_file(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                         manager: JobManager):
-    await callback.answer()
-    names = _file_lines(NAMES_FILE)
-    if not names:
-        return
-    only = await _picked(state)
-    await state.clear()
-    await _run("name", callback.message, pool, functions, manager, only, names=names)
-
-
-@router.message(ChangeName.manual, F.document)
-async def name_list(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
-    names = await _sent_lines(message)
-    if names is None:
-        return
-    only = await _picked(state)
-    await state.clear()
-    await _run("name", message, pool, functions, manager, only, names=names)
-
-
-@router.message(ChangeName.manual)
-async def name_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
-    name = await require_text(message)
-    if name is None:
-        return
-    only = await _picked(state)
-    await state.clear()
+def _full_name(name: str) -> dict:
     parts = name.split(maxsplit=1)
-    first, last = parts[0], (parts[1] if len(parts) == 2 else None)
-    await _run("name", message, pool, functions, manager, only, first_name=first, last_name=last)
+    return dict(first_name=parts[0], last_name=parts[1] if len(parts) == 2 else None)
 
 
-# --- change username ---
+TEXT_FIELDS = {
+    "name": _TextField("Пришлите имя для выбранных аккаунтов (например «Иван Петров») — или .txt со списком "
+                       "имён, по одному на строку: каждый аккаунт получит случайное.",
+                       NAMES_FILE, _full_name, lambda names: dict(names=names)),
+    "username": _TextField("Пришлите основу для username (если занята — добавится случайное число: base24, "
+                           "base3071, …) — или .txt со списком username, по одному на строку: аккаунты получат их "
+                           "по порядку.",
+                           USERNAMES_FILE, lambda base: dict(base=base),
+                           lambda usernames: dict(usernames=[u.lstrip("@") for u in usernames])),
+    "bio": _TextField("Пришлите новый текст bio для выбранных аккаунтов — или .txt со списком вариантов, "
+                      "по одному на строку: каждый аккаунт получит случайный.",
+                      BIOS_FILE, lambda bio: dict(bio=bio), lambda bios: dict(bios=bios)),
+}
 
-@router.callback_query(FunctionCB.filter(F.key == "username"))
-async def username_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
+
+def _text_prompt(key: str):
+    """The step after the worker picker of name, username and bio."""
+    async def prompt(message: Message, state: FSMContext, deps: dict):
+        field = TEXT_FIELDS[key]
+        await state.set_state(ProfileText.text)
+        await message.answer(field.prompt, reply_markup=cancel_kb(ProfileText.text, _file_kb("text_file", field.path)))
+    return prompt
+
+
+async def _run_picked(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager,
+                      **kwargs):
+    """The text's function (its key: the picker's) on the picked workers."""
+    data = await state.get_data()
+    await state.clear()
+    await _run(data["pick_key"], message, pool, functions, manager, data.get("workers"), **kwargs)
+
+
+@router.callback_query(ProfileText.text, ChoiceCB.filter(F.scope == "text_file"))
+async def text_from_file(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
                          manager: JobManager):
     await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await _ask_workers(callback, state, "username", dict(pool=pool, functions=functions, manager=manager))
+    field = TEXT_FIELDS[(await state.get_data())["pick_key"]]
+    if lines := _file_lines(field.path):
+        await _run_picked(callback.message, state, pool, functions, manager, **field.listed(lines))
 
 
-async def _username_prompt(message: Message, state: FSMContext, deps: dict):
-    await state.set_state(ChangeUsername.base)
-    await message.answer(
-        "База для username (если занята — добавится случайное число: base24, base3071, …) — или пришлите .txt "
-        "со списком username, по одному на строку: аккаунты получат их по порядку.",
-        reply_markup=cancel_kb(ChangeUsername.base, _file_kb("username_file", USERNAMES_FILE)),
-    )
+@router.message(ProfileText.text, F.document)
+async def text_list(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    lines = await _sent_lines(message)
+    if lines is not None:
+        field = TEXT_FIELDS[(await state.get_data())["pick_key"]]
+        await _run_picked(message, state, pool, functions, manager, **field.listed(lines))
 
 
-@router.callback_query(ChangeUsername.base, ChoiceCB.filter(F.scope == "username_file"))
-async def username_from_file(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                             manager: JobManager):
-    await callback.answer()
-    usernames = _file_lines(USERNAMES_FILE)
-    if not usernames:
-        return
-    only = await _picked(state)
-    await state.clear()
-    await _run("username", callback.message, pool, functions, manager, only,
-               usernames=[u.lstrip("@") for u in usernames])
-
-
-@router.message(ChangeUsername.base, F.document)
-async def username_list(message: Message, state: FSMContext, pool: WorkerPool, functions: dict,
-                        manager: JobManager):
-    usernames = await _sent_lines(message)
-    if usernames is None:
-        return
-    only = await _picked(state)
-    await state.clear()
-    await _run("username", message, pool, functions, manager, only, usernames=[u.lstrip("@") for u in usernames])
-
-
-@router.message(ChangeUsername.base)
-async def username_run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
-    base = await require_text(message)
-    if base is None:
-        return
-    only = await _picked(state)
-    await state.clear()
-    await _run("username", message, pool, functions, manager, only, base=base)
+@router.message(ProfileText.text)
+async def text_typed(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
+    text = await require_text(message)
+    if text is not None:
+        field = TEXT_FIELDS[(await state.get_data())["pick_key"]]
+        await _run_picked(message, state, pool, functions, manager, **field.typed(text))
 
 
 # --- change profile photo ---
-
-@router.callback_query(FunctionCB.filter(F.key == "photo"))
-async def photo_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                      manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await _ask_workers(callback, state, "photo", dict(pool=pool, functions=functions, manager=manager))
-
 
 async def _photo_prompt(message: Message, state: FSMContext, deps: dict):
     await state.set_state(ChangePhoto.photo)
     await message.answer(
         "Пришлите картинку (фото или файлом) — она станет аватаром выбранных аккаунтов, прежние аватарки удалятся:",
-        reply_markup=cancel_kb(ChangePhoto.photo, choice_kb("photo_src", [("📁 Из папки assets/photos", "folder")])),
+        reply_markup=cancel_kb(ChangePhoto.photo, choice_kb("photo_src", [("📄 Из assets/photos", "folder")])),
     )
 
 
@@ -354,7 +253,7 @@ async def photo_folder(callback: CallbackQuery, state: FSMContext, pool: WorkerP
     await manager.run(
         callback.bot, callback.message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(r),
-        "Смена фото (из assets/photos/)…", "Готово ✅",
+        "Смена фото (из assets/photos/)…",
         only=only,
     )
 
@@ -376,92 +275,59 @@ async def photo_upload(message: Message, state: FSMContext, pool: WorkerPool, fu
     try:
         await message.bot.download(source, destination=path, timeout=300)
     except Exception as err:  # e.g. the Bot API's ~20 MB download cap
-        await message.answer(f"⚠️ Не удалось скачать картинку: {err}")
+        await back_answer(message, f"⚠️ Не удалось скачать картинку: {err}", PROFILE, manager.project_id)
         return
 
     instance, bot_function = resolve(functions, "photo")
 
-    async def job(func, reporter):
-        try:
-            await func.run(reporter, photo_path=path)
-        finally:
-            os.remove(path)
-
-    started = await manager.run(
-        message.bot, message.chat.id, pool, instance, bot_function, job,
-        "Смена фото…", "Готово ✅",
+    await manager.run(
+        message.bot, message.chat.id, pool, instance, bot_function,
+        lambda f, r: f.run(r, photo_path=path),
+        "Смена фото…",
         cleanup=lambda: os.remove(path),
         only=only,
     )
-    if not started:
-        os.remove(path)
 
 
 # --- clear personal channel (no input) ---
 
-@router.callback_query(FunctionCB.filter(F.key == "clearchannel"))
-async def clearchannel_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                             manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await _ask_workers(callback, state, "clearchannel", dict(pool=pool, functions=functions, manager=manager))
-
-
 # --- hide last seen (no input) ---
-
-@router.callback_query(FunctionCB.filter(F.key == "lastseen"))
-async def lastseen_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                         manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await _ask_workers(callback, state, "lastseen", dict(pool=pool, functions=functions, manager=manager))
-
 
 # --- 2fa ---
 
-@router.callback_query(FunctionCB.filter(F.key == "2fa"))
-async def twofa_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                      manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await _ask_workers(callback, state, "2fa", dict(pool=pool, functions=functions, manager=manager))
-
-
 async def _twofa_prompt(message: Message, state: FSMContext, deps: dict):
     await state.set_state(SetPassword.password)
-    await message.answer("Введите новый пароль 2FA:", reply_markup=cancel_kb(SetPassword.password))
+    await message.answer("🔒 Пришлите новый пароль 2FA (сообщение удалю):",
+                         reply_markup=cancel_kb(SetPassword.password))
 
 
 @router.message(SetPassword.password)
 async def twofa_run(message: Message, state: FSMContext):
     if not message.text:
-        await message.answer("Ожидается текст. Попробуйте ещё раз.")
+        await message.answer("Нужен текст. Пришлите ещё раз:")
         return
     password = message.text
     await delete_quietly(message)
     if not password.strip():  # as the CLI: an empty one would mean no 2FA
-        await message.answer("Пароль не может быть пустым. Введите новый пароль 2FA:")
+        await message.answer("Пароль не может быть пустым. Пришлите новый пароль 2FA:")
         return
     # typed unseen and deleted: asked twice, as the CLI does, so a typo isn't set on every worker
     await state.update_data(new_password=password)
     await state.set_state(SetPassword.confirm)
-    await message.answer("Повторите пароль 2FA:", reply_markup=cancel_kb(SetPassword.confirm))
+    await message.answer("Пришлите пароль 2FA ещё раз — для проверки:", reply_markup=cancel_kb(SetPassword.confirm))
 
 
 @router.message(SetPassword.confirm)
 async def twofa_confirm(message: Message, state: FSMContext, pool: WorkerPool, functions: dict,
                         manager: JobManager):
     if not message.text:
-        await message.answer("Ожидается текст. Попробуйте ещё раз.")
+        await message.answer("Нужен текст. Пришлите ещё раз:")
         return
     await delete_quietly(message)
     password = (await state.get_data()).get("new_password")
     if message.text != password:
         await state.set_state(SetPassword.password)
-        await message.answer("Пароли не совпадают. Введите новый пароль 2FA:",
+        await message.answer("Пароли не совпадают. Пришлите новый пароль 2FA:",
                              reply_markup=cancel_kb(SetPassword.password))
         return
     only = await _picked(state)
@@ -470,30 +336,26 @@ async def twofa_confirm(message: Message, state: FSMContext, pool: WorkerPool, f
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(password, r),
-        "Установка 2FA…", "Готово ✅",
+        "Установка 2FA…",
         only=only,
     )
 
 
 # --- terminate other sessions (no input) ---
 
-@router.callback_query(FunctionCB.filter(F.key == "terminate"))
-async def terminate_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
-                          manager: JobManager):
-    await callback.answer()
-    if not await ensure_workers(callback, pool):
-        return
-    await _ask_workers(callback, state, "terminate", dict(pool=pool, functions=functions, manager=manager))
-
-
 # the step after the worker picker, by function key
 _NEXT = {
-    "bio": _bio_prompt,
-    "name": _name_prompt,
-    "username": _username_prompt,
+    **{key: _text_prompt(key) for key in TEXT_FIELDS},
     "photo": _photo_prompt,
     "clearchannel": _no_input("clearchannel"),
     "lastseen": _no_input("lastseen"),
     "2fa": _twofa_prompt,
     "terminate": _no_input("terminate"),
 }
+
+
+@router.callback_query(FunctionCB.filter(F.key.in_(_NEXT)))
+async def picker_start(callback: CallbackQuery, callback_data: FunctionCB, state: FSMContext, pool: WorkerPool):
+    """Every profile and security function begins with the worker picker."""
+    if await ensure_workers(callback, pool):
+        await _ask_workers(callback.message, state, callback_data.key, pool)

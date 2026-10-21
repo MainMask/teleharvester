@@ -58,7 +58,8 @@ class Proxy:
 
 
 def overlap(proxies, others) -> bool:
-    """Any proxy of `proxies` in `others` (by Proxy.key): the pool and the restricted workers' lists must not share one."""
+    """Any proxy of `proxies` in `others` (by Proxy.key): the pool and the restricted workers' lists
+    must not share one."""
     return bool({p.key() for p in proxies} & {p.key() for p in others})
 
 

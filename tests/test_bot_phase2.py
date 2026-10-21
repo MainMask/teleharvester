@@ -201,7 +201,7 @@ class TestPostLink:
             assert not BaseFunction.is_message_link(link), link
 
     def test_bot_steps_ask_again(self):
-        from bot.routers import activity, broadcasts
+        from bot.routers import activity, chat_broadcasts
 
         class _Msg:
             def __init__(self, text):
@@ -214,24 +214,28 @@ class TestPostLink:
             def __init__(self):
                 self.data = {}
 
+            async def get_data(self):
+                return dict(self.data)
+
             async def update_data(self, **kwargs):
                 self.data.update(kwargs)
 
             async def set_state(self, step):
                 self.data["step"] = step
 
-        for step in (activity.reactions_link, activity.poll_link):
+        for step in (activity.reactions_link, lambda m, state: activity.poll_link(m, state, ns(workers=[]), {})):
             m, state = _Msg("t.me/chan"), _State()
             asyncio.run(step(m, state))
             assert state.data == {} and "Нужна ссылка на пост" in m.replies[0]
 
         m, state = _Msg("@chan"), _State()
-        asyncio.run(broadcasts.com_link(m, state, ns(messages_count=0)))
-        assert state.data == {} and "Нужна ссылка на пост" in m.replies[0]
+        state.data["flow"] = "comments"
+        asyncio.run(chat_broadcasts.link_input(m, state, ns(messages_count=0)))
+        assert state.data == {"flow": "comments"} and "Нужна ссылка на пост" in m.replies[0]
 
         m, state = _Msg("t.me/chan/5"), _State()
-        asyncio.run(activity.poll_link(m, state))
-        assert state.data["link"] == "t.me/chan/5"
+        asyncio.run(activity.poll_link(m, state, ns(workers=[]), {}))  # no free worker: the number typed
+        assert state.data["link"] == "t.me/chan/5" and "Варианты не прочитаны" in m.replies[0]
 
     def test_statistics_one_code_several_countries(self):
         # +1 is the USA and Canada, +7 Russia and Kazakhstan: a row per country, not per code, the most first
@@ -318,9 +322,9 @@ class TestJobManager:
                 started.set()
                 await release.wait()
 
-            ok1 = await m.run(bot, 1, _Pool(), ns(), ns(risk="safe"), job, "H1", "done")
+            ok1 = await m.run(bot, 1, _Pool(), ns(), BOT_FUNCTIONS_BY_KEY["status"], job, "H1", "done")
             await started.wait()
-            ok2 = await m.run(bot, 1, _Pool(), ns(), ns(risk="safe"),
+            ok2 = await m.run(bot, 1, _Pool(), ns(), BOT_FUNCTIONS_BY_KEY["status"],
                               lambda f, r: asyncio.sleep(0), "H2", "done")
             release.set()
             await asyncio.sleep(0.05)
@@ -347,7 +351,7 @@ class TestJobManager:
                 started.set()
                 await asyncio.sleep(3600)
 
-            await m.run(bot, 1, _Pool([s]), ns(), ns(risk="safe"), job, "H", "done", stop_sessions=[s])
+            await m.run(bot, 1, _Pool([s]), ns(), BOT_FUNCTIONS_BY_KEY["status"], job, "H", "done", stop_sessions=[s])
             await started.wait()
             stopped = await m.stop()
             await asyncio.sleep(0.05)
@@ -374,7 +378,7 @@ class TestJobManager:
         async def scenario():
             m = JobManager()
             mine, other = S(), S()
-            await m.run(_Bot(), 1, _PickedPool([mine, other]), ns(), ns(risk="safe"),
+            await m.run(_Bot(), 1, _PickedPool([mine, other]), ns(), BOT_FUNCTIONS_BY_KEY["status"],
                         lambda f, r: asyncio.sleep(0), "H", "done")
             await asyncio.sleep(0.05)
             return mine.disconnected, other.disconnected
@@ -390,7 +394,7 @@ class TestJobManager:
 
         async def scenario():
             m = JobManager()
-            started = await m.run(_DeadBot(), 1, _Pool(), ns(), ns(risk="safe"),
+            started = await m.run(_DeadBot(), 1, _Pool(), ns(), BOT_FUNCTIONS_BY_KEY["status"],
                                   lambda f, r: asyncio.sleep(0), "H", "done")
             return started, m.active
 
@@ -410,7 +414,7 @@ class TestJobManager:
         async def scenario():
             m = JobManager()
             s = S()
-            await m.run(_Bot(), 1, _Pool([s]), ns(), ns(risk="safe"),
+            await m.run(_Bot(), 1, _Pool([s]), ns(), BOT_FUNCTIONS_BY_KEY["status"],
                         lambda f, r: asyncio.sleep(0), "H", "done", stop_sessions=[s])
             await asyncio.sleep(0.05)
             return s.session._entities
@@ -911,7 +915,7 @@ class TestSoftStop:
 
 class TestMailRunBusyGuard:
     def test_busy_does_not_touch_instance(self):
-        from bot.routers.broadcasts import mail_run
+        from bot.routers.mailing import mail_run
 
         class _Inst:
             def __init__(self):
@@ -992,7 +996,7 @@ class TestStaleFlowGuards:
 
     def test_an_old_reaction_button_in_another_flow_runs_nothing(self):
         from bot.routers.activity import reactions_run
-        from bot.states import Comments
+        from bot.states import ChatPost
 
         answered, cleared = [], []
 
@@ -1001,7 +1005,7 @@ class TestStaleFlowGuards:
                 return {"link": "https://t.me/chan/5"}
 
             async def get_state(self):
-                return Comments.message.state
+                return ChatPost.message.state
 
             async def clear(self):
                 cleared.append(True)
@@ -1482,6 +1486,7 @@ class TestChangePhotoFromChat:
 
                 func.run = fake_run
                 await factory(func, None)
+                kw["cleanup"]()  # as JobManager: once the job is over
                 return True
 
         state = _State()

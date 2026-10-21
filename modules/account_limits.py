@@ -20,9 +20,9 @@ class DailyCounter:
         self.counts: dict = {}
 
         if self.cap and self.cap > 0:
-            self._load()
+            self.counts = self._today()
 
-    def _load(self):
+    def _today(self) -> dict:
         try:
             data = json_file.load(self.path, {})
         except (OSError, ValueError):
@@ -31,7 +31,7 @@ class DailyCounter:
         # keep only today's counters; stale-date entries already count as 0, so dropping
         # them changes nothing but stops the file growing by one entry per account forever
         today = date.today().isoformat()
-        self.counts = {
+        return {
             key: entry for key, entry in data.items()
             if isinstance(entry, dict) and entry.get("date") == today
         }
@@ -49,6 +49,9 @@ class DailyCounter:
         if not self.cap or self.cap <= 0:
             return
 
+        # the file as it is now: another project's job, running at the same time, counts its own
+        # workers in it, and saving only what this one loaded at its start would erase them
+        self.counts.update(self._today())
         today = date.today().isoformat()
         entry = self.counts.get(str(key))
 

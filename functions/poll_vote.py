@@ -37,6 +37,14 @@ class PollVoteFunc(TelethonFunction):
             await report(f"[{me.first_name}] проголосовал")
             return True
 
+    async def answers(self, session, link) -> list[str]:
+        """The poll's options as its voters see them (the bot offers them as buttons), read on `session`."""
+        channel, post_id = await self.resolve_message(session, *self.parse_message_link(link), self.comment_id(link))
+        message = await session.get_messages(channel, ids=post_id)
+        if message is None or message.poll is None:
+            raise ValueError("в этом сообщении нет опроса")
+        return [answer.text.text for answer in message.poll.poll.answers]
+
     async def run(self, link, option_number, report):
         channel, post_id = self.parse_message_link(link)
         comment = self.comment_id(link)  # a poll in a comment: its link carries ?comment=

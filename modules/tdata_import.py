@@ -8,8 +8,10 @@ does not reconnect it again.
 """
 
 import glob
+import io
 import json
 import os
+import zipfile
 
 from opentele.api import UseCurrentSession
 from opentele.td import TDesktop
@@ -42,6 +44,19 @@ def load_proxies(path: str) -> list[Proxy]:
 
     with open(path, encoding="utf-8") as fileobj:
         return parse_proxies(fileobj.read())
+
+
+MAX_UNZIPPED = 100 * 1024 * 1024  # a tdata folder is small: a 10 MB archive mustn't fill the disk
+
+
+def unpack(archive_bytes: bytes, into: str) -> str | None:
+    """A ZIP of a tdata folder unpacked into the folder `into`: the tdata folder in it, or None.
+    ValueError for one that would unpack to more than MAX_UNZIPPED."""
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+        if sum(info.file_size for info in archive.infolist()) > MAX_UNZIPPED:
+            raise ValueError("Архив слишком велик в распакованном виде для папки tdata")
+        archive.extractall(into)
+    return find_tdata_dir(into)
 
 
 def find_tdata_dir(root: str) -> str | None:

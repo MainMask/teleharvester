@@ -5,6 +5,7 @@ import types
 
 from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
+from modules.registry import BOT_FUNCTIONS_BY_KEY
 
 
 def ns(**kw):
@@ -97,12 +98,13 @@ def test_job_manager_run_emits_report():
         async def job(f, r):
             await r("[A] sent. done")
 
-        await m.run(bot, 1, _Pool(), ns(), ns(risk="safe"), job, "Инвайт", "Готово ✅")
+        await m.run(bot, 1, _Pool(), ns(), BOT_FUNCTIONS_BY_KEY["status"], job, "Инвайт", "Готово ✅")
         await asyncio.sleep(0.05)
         return bot
 
     bot = asyncio.run(scenario())
-    assert any("Задача: Инвайт" in text for text, _ in bot.sent)
+    # the job is named as its button, not by its progress header
+    assert any(f"Задача: {BOT_FUNCTIONS_BY_KEY['status'].title}" in text for text, _ in bot.sent)
     assert any("Воркеров: 2" in text for text, _ in bot.sent)
 
 
@@ -142,7 +144,7 @@ def test_job_manager_reports_the_functions_counts():
             func.progress.ok += 3  # what BaseFunction.progress_ok does
             func.progress.failed += 1
 
-        await JobManager().run(bot, 1, _Pool(), ns(), ns(risk="safe"), job, "Инвайт", "Готово ✅")
+        await JobManager().run(bot, 1, _Pool(), ns(), BOT_FUNCTIONS_BY_KEY["status"], job, "Инвайт", "Готово ✅")
         await asyncio.sleep(0.05)
         return bot
 
@@ -168,7 +170,7 @@ def test_report_counts_the_workers_the_job_got():
         async def job(f, r):
             await r("[B] sent. done")
 
-        await JobManager().run(bot, 1, pool, ns(), ns(risk="safe"), job, "Инвайт", "Готово ✅")
+        await JobManager().run(bot, 1, pool, ns(), BOT_FUNCTIONS_BY_KEY["status"], job, "Инвайт", "Готово ✅")
         await asyncio.sleep(0.05)
         return bot
 

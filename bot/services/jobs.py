@@ -2,10 +2,15 @@ import asyncio
 import itertools
 
 from bot.keyboards.common import stop_kb
-from bot.keyboards.menu import main_menu
+from bot.keyboards.menu import back_kb
 from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
 from modules.storages.sessions_storage import release_client
+
+
+def busy(label: str) -> str:
+    """Why a job can't start now: another one holds the slot."""
+    return f"⛔ Занято: идёт «{label}». Дождитесь окончания или остановите в 📊 Задачи."
 
 
 class JobManager:
@@ -27,6 +32,7 @@ class JobManager:
 
     def __init__(self):
         self.key = next(self._keys)  # what its 📊 and ⏹ buttons name it by (/status lists every project's)
+        self.project_id = 0          # its project's (Workspace): a job's ⬅️ leads back into it
         self._active = False
         self._label = ""
         self._kind = None            # "task" | "interactive"
@@ -47,36 +53,52 @@ class JobManager:
     def label(self) -> str:
         return self._label
 
+    @property
+    def stoppable(self) -> bool:
+        """⏹ would stop it now (stop()): a job not yet finishing, or a dialog that can be cancelled."""
+        return self._active and (self._cancelable or self._soft_stop is not None)
+
     # --- coro jobs ---------------------------------------------------------
 
-    async def run(self, bot, chat_id, pool, instance, bot_function, factory, header, done, stop_sessions=None,
+    async def run(self, bot, chat_id, pool, instance, bot_function, factory, header, done=None, stop_sessions=None,
                   cleanup=None, only=None) -> bool:
+        """`done`: the summary of a job run to its end (by default "✅ Готово: <the function>"); `cleanup`
+        (e.g. a captured broadcast's temp files): called once, when the job is over or when it doesn't start at
+        all (False)."""
+        done = done or f"✅ Готово: {bot_function.title}"
         # Take the slot synchronously (before any await) to avoid a race between tasks.
         if self._active:
-            await bot.send_message(chat_id, f"⛔ Занят: {self._label}. Остановите текущую задачу.")
+            if cleanup is not None:
+                cleanup()
+            await bot.send_message(chat_id, busy(self._label),
+                                   reply_markup=back_kb(bot_function.category, self.project_id))
             return False
 
         self._active = True
-        self._label = header
+        self._label = bot_function.title  # as its button: in /status, in another job's busy()
         self._kind = "task"
         self._cancelable = True
         self.progress = Progress()
 
         reporter = TelegramReporter(
-            bot, chat_id, header=header, reply_markup=stop_kb(self.key),
-            job_label=header, workers=len(pool.workers), final_markup=main_menu(), progress=self.progress,
+            bot, chat_id, header=header, reply_markup=stop_kb(self.key), job_label=bot_function.title,
+            workers=len(pool.workers), final_markup=back_kb(bot_function.category, self.project_id),
+            progress=self.progress,
         )
         try:
             await reporter.start()
         except Exception:
             # Couldn't even post the status message (chat unreachable): free the slot and
-            # report "not started" so the caller runs its not-started cleanup (e.g. drops
-            # the captured broadcast's temp files) instead of leaking them past a raise.
+            # report "not started", its temp files dropped instead of leaking past a raise.
             self._clear()
+            if cleanup is not None:
+                cleanup()
             return False
 
         if self._cancel_requested:  # stopped while the status message was being posted
             self._clear()
+            if cleanup is not None:
+                cleanup()
             try:
                 await reporter.finish("⏹ Остановлено")
             except Exception:
@@ -96,11 +118,8 @@ class JobManager:
 
     async def _wrap(self, pool, instance, bot_function, factory, reporter, done, cleanup, only, own_workers):
         instance.progress = self.progress  # the function steps it (see BaseFunction.progress)
-        entered = False
 
         def start(func):  # pool.run calls it once it has given the job its workers
-            nonlocal entered
-            entered = True
             if own_workers:  # the ones it may connect: released at its end
                 self._stop_sessions = list(func.sessions)
             reporter.workers = len(func.sessions)  # the summary's count: a scraping worker is left out
@@ -117,9 +136,7 @@ class JobManager:
             self._cancelable = False  # as on success: a Stop must not swallow the error text
             await reporter.finish(f"⚠️ Ошибка: {err}")
         finally:
-            # not run (no free worker) or stopped before it began: the job's own finally,
-            # which drops its temp files, never ran
-            if not entered and cleanup is not None:
+            if cleanup is not None:  # run to its end, failed, stopped, or not run (no free worker)
                 cleanup()
             for session in self._stop_sessions:
                 await release_client(session)  # memory stays bounded to one job's worth

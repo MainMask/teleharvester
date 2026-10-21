@@ -316,7 +316,7 @@ def test_bot_members_stop_says_the_base_is_saved(monkeypatch, tmp_path):
     scrapes = JobManager()
 
     async def do_members(creds, params):
-        await menu.scrape_stop(types.SimpleNamespace(answer=_noop),  # the operator's ⏹
+        await menu.stop_job(types.SimpleNamespace(answer=_noop),  # the operator's ⏹
                                ChoiceCB(scope="scrape_stop", value=str(scrapes.key)),
                                                                        conftest.Workspaces(scrapes=scrapes))
         assert params.stop.is_set()

@@ -10,10 +10,10 @@ import pandas as pd
 
 from bot.callbacks import ChoiceCB
 from bot.keyboards.common import cancel_kb
-from bot.routers import audience, broadcasts
+from bot.routers import audience, mailing
 from bot.routers import scraping as scraping_router
 from bot.services import scraping
-from bot.states import Analysis, PmMailing, Verify
+from bot.states import Analysis, Verify
 from modules import scraped_files
 
 
@@ -44,6 +44,9 @@ class _Msg:
         self.bot, self.chat = object(), ns(id=1)
 
     async def answer(self, text, **kwargs):
+        self.answers.append((text, kwargs.get("reply_markup")))
+
+    async def edit_text(self, text, **kwargs):
         self.answers.append((text, kwargs.get("reply_markup")))
 
 
@@ -100,23 +103,23 @@ def test_mailing_offers_bases_and_takes_the_picked_one(tmp_path, monkeypatch):
     old, new = _bases_dir(tmp_path, monkeypatch)
     state, callback = _State(), _Callback()
 
-    asyncio.run(broadcasts.ask_recipients(callback.message, state, [(new, "OmniBase"), (old, "Old")]))
+    asyncio.run(mailing.ask_recipients(callback.message, state, [(new, "OmniBase"), (old, "Old")]))
     _, markup = callback.message.answers[0]
     assert [b.text for b in _buttons(markup)][0].startswith("📄 OmniBase")
     assert state.data["bases"] == [new, old]
 
     pick = _Callback()
-    asyncio.run(broadcasts.mail_base(pick, ChoiceCB(scope="mail_base", value="1"), state))
+    asyncio.run(mailing.mail_base(pick, ChoiceCB(scope="mail_base", value="1"), state))
     assert state.data["path"] == old
     assert pick.message.answers[0][0] == "Пропустить тех, кому уже писали раньше?"
 
 
-def test_mailing_without_bases_offers_only_cancel(tmp_path, monkeypatch):
+def test_mailing_without_bases_offers_the_default_list_and_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     callback = _Callback()
-    asyncio.run(broadcasts.ask_recipients(callback.message, _State(), []))  # a project with no base yet
+    asyncio.run(mailing.ask_recipients(callback.message, _State(), []))  # a project with no base yet
     text, markup = callback.message.answers[0]
-    assert markup == cancel_kb(PmMailing.path) and "выберите базу" not in text
+    assert [b.text for b in _buttons(markup)] == ["📄 assets/targets.txt", "✖️ Отмена"] and "выберите базу" not in text
 
 
 def test_contacts_button_launches_with_the_picked_base(tmp_path, monkeypatch):
@@ -188,7 +191,8 @@ class _WorkerStorage:
         return cm()
 
 
-USER_IDS = {"alice": 1, "carol": 30, "zed": 10, "yan": 11, "u3": 3, "u4": 4}  # usernames' owners as Telegram resolves them
+# usernames' owners as Telegram resolves them
+USER_IDS = {"alice": 1, "carol": 30, "zed": 10, "yan": 11, "u3": 3, "u4": 4}
 
 ROWS = [
     {"user_id": 1, "access_hash": 11, "username": "alice", "owner_id": OWNER},
@@ -550,7 +554,7 @@ def test_preflight_excludes_a_permanently_restricted_worker(monkeypatch, tmp_pat
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
     assert any("его контакты (1) ждут решения" in m for m in msgs)
     assert ("Контакты бессрочно ограниченных воркеров ждут решения (1 чел.): "
-            "📁 Проекты → 📁 Проект → 🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)") in msgs
+            "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)") in msgs
     assert not any(m.startswith("✅") for m in msgs)
 
 
@@ -719,7 +723,7 @@ def test_verify_without_a_window_asks_the_dates(tmp_path, monkeypatch):
     pick = _Callback()
     asyncio.run(scraping_router.verify.verify_channel_pick(
         pick, ChoiceCB(scope="verify_channel", value="0"), state, _one_account(), None, None))
-    assert pick.message.answers[0][0] == "Дата с:" and state.data["channel"] == "@omni"
+    assert pick.message.answers[0][0].startswith("Пришлите дату «с»") and state.data["channel"] == "@omni"
     assert calls == []
 
 
@@ -729,7 +733,7 @@ def test_verify_channel_buttons_come_a_page_at_a_time(tmp_path):
     state, msg = _State(), _Msg()
     asyncio.run(scraping_router.verify._ask_channel(msg, state, _one_account(), None, path))
     texts = [b.text for b in _buttons(msg.answers[-1][1])]
-    assert texts == [*(f"📢 @ch{i:02}" for i in range(20)), "⬅️", "📄 стр 1/2", "➡️", "✖️ Отмена"]
+    assert texts == [*(f"📢 @ch{i:02}" for i in range(20)), "◀️", "📄 стр 1/2", "▶️", "✖️ Отмена"]
 
     page, edited = _Callback(), []
 
@@ -740,12 +744,12 @@ def test_verify_channel_buttons_come_a_page_at_a_time(tmp_path):
     asyncio.run(scraping_router.verify.verify_channel_pick(
         page, ChoiceCB(scope="verify_channel", value="pg.1"), state, _one_account(), None, None))
     assert [b.text for b in _buttons(edited[0])] == [
-        *(f"📢 @ch{i:02}" for i in range(20, 25)), "⬅️", "📄 стр 2/2", "➡️", "✖️ Отмена"]
+        *(f"📢 @ch{i:02}" for i in range(20, 25)), "◀️", "📄 стр 2/2", "▶️", "✖️ Отмена"]
 
     pick = _Callback()  # a button of the second page: its channel, by its index in the whole list
     asyncio.run(scraping_router.verify.verify_channel_pick(
         pick, ChoiceCB(scope="verify_channel", value="22"), state, _one_account(), None, None))
-    assert state.data["channel"] == "@ch22" and pick.message.answers[0][0] == "Дата с:"
+    assert state.data["channel"] == "@ch22" and pick.message.answers[0][0].startswith("Пришлите дату «с»")
 
 
 def test_verify_channel_buttons_carry_the_channels_titles(tmp_path, monkeypatch):
@@ -780,7 +784,7 @@ def test_verify_typed_path_that_can_t_be_read_asks_the_channel(tmp_path):
     msg, state = _Msg(), _State()
     asyncio.run(scraping_router.verify._ask_channel(msg, state, _one_account(), None,
                                                     str(tmp_path / "missing.parquet")))
-    assert msg.answers == [("Канал (@name / t.me / числовой id):", cancel_kb(Verify.channel))]
+    assert msg.answers == [("Пришлите канал (@name / t.me / числовой id):", cancel_kb(Verify.channel))]
 
     typo = _Msg()
     typo.text = "канал омни"  # never asked on an account: typed again
@@ -813,7 +817,8 @@ def test_analysis_menu_is_russian():
     asyncio.run(scraping_router.analysis.analysis_project(msg, state, ns(name="Omni")))
     text, markup = msg.answers[0]
     labels = [b.text for b in _buttons(markup)]
-    assert labels == ["🔗 Ссылки на другие каналы", "🔎 Поиск постов по словам", "👀 Посмотреть файл", "➕ Ещё"]
+    assert labels == ["🔗 Ссылки на другие каналы", "🔎 Поиск постов по словам", "👀 Посмотреть файл", "➕ Ещё",
+                      "⬅️ 📥 Сбор"]
     assert "Аккаунты не нужны" in text
 
     more = _Callback()
@@ -821,7 +826,7 @@ def test_analysis_menu_is_russian():
     asyncio.run(scraping_router.analysis.analysis_tool(more, ChoiceCB(scope="an_tool", value=f"more.{token}"), state))
     assert [b.text for b in _buttons(more.message.answers[0][1])] == [
         "🧩 Объединить файлы постов", "💬 Комментарии одной таблицей",
-        "📊 Активность по месяцам", "🎲 Случайная выборка постов", "👥 Пересобрать базу участников"]
+        "📊 Активность по месяцам", "🎲 Случайная выборка постов", "👥 Пересобрать базу участников", "⬅️ Назад"]
 
 
 def test_output_path_next_to_the_input():
@@ -1159,7 +1164,8 @@ def test_a_released_restricted_worker_on_hold_is_out_for_good(monkeypatch, tmp_p
     restricted_workers.save_released(["sessions/w.jsession"])
     msgs, _ = _mailing([v], ROWS, monkeypatch, tmp_path, storage=storage, on_hold=[w])
 
-    assert [p.username for p in v.sent] == ["alice"]  # W's people go to the others; the no-username one only W could reach
+    # W's people go to the others; the no-username one only W could reach
+    assert [p.username for p in v.sent] == ["alice"]
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
 
 

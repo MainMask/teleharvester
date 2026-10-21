@@ -1,4 +1,4 @@
-"""A group's members as a project's base (bot/routers/projects.py)."""
+"""A group's members as a project's base (bot/routers/projects/card.py)."""
 import html
 from pathlib import Path
 
@@ -7,13 +7,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from bot.keyboards.common import cancel_kb, scrape_kb
-from bot.routers._common import menu_answer, require_text
+from bot.routers._common import require_text
 from bot.routers.scraping import common
 from bot.services import scraping
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Members
 from modules import projects, scraped_files
+from modules.registry import BASE, BOT_FUNCTIONS_BY_KEY
 from modules.scraper_creds import build_credentials
 from scraper.members import MembersParams
 from scraper.scrape import (
@@ -24,7 +25,7 @@ router = Router()
 
 
 async def members_project(message: Message, state: FSMContext, project, deps: dict):
-    """The members from a project's card (bot/routers/projects.py): the base is named after the
+    """The members from a project's 📥 Сбор (bot/routers/projects/card.py): the base is named after the
     project, so it is one of the project's bases (scraped_files.project_files)."""
     await state.clear()
     await state.update_data(only_project=project.name)
@@ -38,7 +39,8 @@ async def _ask_groups(message: Message, state: FSMContext, deps: dict):
     note += (" — новые участники добавятся к его базе, повторы не дублируются."
              if scraped_files.members_base(project).exists() else ".")
     await message.answer(
-        "Группы через запятую (@name / t.me ссылка / инвайт t.me/+… / числовой id).\n"
+        f"{BOT_FUNCTIONS_BY_KEY['members'].title} — группы через запятую "
+        "(@name / t.me ссылка / инвайт t.me/+… / числовой id).\n"
         "Аккаунт должен состоять в группе. Подписчики канала доступны только админам." + note,
         parse_mode="HTML", reply_markup=cancel_kb(Members.chats),
     )
@@ -74,11 +76,11 @@ async def _members_go(message: Message, state: FSMContext, name: str, pool: Work
 
     account = common.run_account(pool, personal, data.get("account", ""))
     if account is None:
-        await menu_answer(message, "Аккаунт не найден, начните заново.")
+        await common.to_collect(message, "Аккаунт не найден, начните заново.", scrapes)
         return
 
-    progress = await common.take_slot(scrapes, pool, account, "Участники чата",
-                                lambda text: menu_answer(message, text), message.answer)
+    progress = await common.take_slot(scrapes, pool, account, BOT_FUNCTIONS_BY_KEY["members"].title,
+                                      lambda text: common.to_collect(message, text, scrapes))
     if progress is None:
         return
     before = scraped_files.row_count(scraped_files.members_base(name))  # the base collected before: added to
@@ -90,7 +92,7 @@ async def _members_go(message: Message, state: FSMContext, name: str, pool: Work
         status = await message.answer("Собираю участников…", reply_markup=scrape_kb(scrapes.key))
         path, problems = await scraping.do_members(build_credentials(account.client), params)
     except (Exception, SystemExit) as err:  # connect() raises SystemExit on a logged-out session
-        await menu_answer(message, f"Ошибка: {err}")
+        await common.to_collect(message, f"⚠️ Ошибка: {err}", scrapes)
         return
     finally:
         await common.free_slot(scrapes, pool, status)
@@ -100,15 +102,15 @@ async def _members_go(message: Message, state: FSMContext, name: str, pool: Work
         named = projects.chat_list(projects.find(data["only_project"]), list(why), html=True, problems=why)
         await message.answer(f"Не всё удалось собрать:\n\n{named}", parse_mode="HTML")
     if path is None:
-        await menu_answer(message, "Ни одного участника не собрано.")
+        await common.to_collect(message, "Ни одного участника не собрано.", scrapes)
         return
     await common.send_files(message.bot, message.chat.id, [str(path)])
     total = scraped_files.row_count(path)
     where = (f"в проекте «{data['only_project']}» (новых: {total - before}, всего: {total}): 📇 В контакты и "
-             "📨 ЛС по базе — в его карточке")
-    await menu_answer(message, f"⏹ Остановлено. Собранные участники сохранены — база {where}."
-                if stop.is_set() and not common.shutting_down else
-                f"Готово ✅ База — {where}.")
+             f"📨 ЛС по базе — в «{BASE}»")
+    await common.to_collect(message, f"⏹ Остановлено. Собранные участники сохранены — база {where}."
+                            if stop.is_set() and not common.shutting_down else
+                            f"✅ Участники собраны. База — {where}.", scrapes)
 
 
 common.FLOW_NEXT["members"] = _ask_groups

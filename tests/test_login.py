@@ -1,5 +1,5 @@
 """Login codes and adding an account by phone (modules/login.py, bot/services/login.py,
-bot/routers/login.py; the codes, from an account's card: bot/routers/accounts.py)."""
+bot/routers/login.py; the codes, from an account's card: bot/routers/accounts/card.py)."""
 
 import asyncio
 import conftest
@@ -128,19 +128,19 @@ def test_a_read_cut_by_a_release_says_so(monkeypatch):
         raise asyncio.CancelledError
     monkeypatch.setattr(logins, "fetch_codes", cut)
     account = ns(path="sessions/w.jsession", label="W", client=_Worker())
-    text, markup = asyncio.run(accounts._codes(_pool(), account, 0))
+    text, markup = asyncio.run(accounts.card._codes(_pool(), account, 0))
     assert "соединение прервано" in text and markup is not None
 
 
 def test_scraping_worker_is_not_connected():
     worker = _Worker()
     account = ns(path="sessions/w.jsession", label="W", client=worker)
-    text, _ = asyncio.run(accounts._codes(_pool(scraping=ns(path=account.path)), account, 0))
+    text, _ = asyncio.run(accounts.card._codes(_pool(scraping=ns(path=account.path)), account, 0))
     assert "занят скрапом" in text and not worker.connected
 
 
 def test_codes_text_spaces_digits():
-    text = accounts._codes_text(ns(label="Ann (@ann)"), [("12345", NOW - timedelta(minutes=3))], NOW)
+    text = accounts.card._codes_text(ns(label="Ann (@ann)"), [("12345", NOW - timedelta(minutes=3))], NOW)
     assert "<code>1 2 3 4 5</code> · 3 мин назад" in text and "12345" not in text
 
 
@@ -209,6 +209,9 @@ class _Msg:
         self.answers, self.deleted = [], False
 
     async def answer(self, text, **kw):
+        self.answers.append(text)
+
+    async def edit_text(self, text, **kw):
         self.answers.append(text)
 
     async def delete(self):
@@ -372,8 +375,9 @@ def test_personal_account_found_after_sign_in_is_logged_out(monkeypatch, tmp_pat
 def test_the_role_is_asked_before_the_number():
     callback = ns(message=_Msg(), answer=lambda *a, **k: asyncio.sleep(0))
     state = _State()
-    asyncio.run(router.phone_role(callback, router.ChoiceCB(scope="phone_role", value="personal"), state))
-    assert state.state == AddByPhone.phone and state.data == {"role": "personal"}
+    asyncio.run(router.phone_role(callback, router.ChoiceCB(scope="phone_role", value="personal"), state,
+                                  ns(project_id=1)))
+    assert state.state == AddByPhone.phone and state.data == {"role": "personal", "project": 1}  # its ⬅️ at the end
 
 
 def test_personal_signs_in_without_a_proxy_and_stays_out_of_the_pool(monkeypatch, tmp_path):
@@ -417,8 +421,8 @@ def test_the_cards_offer_the_workers_then_the_personal_accounts():
     async def answer(text, **kw):
         sent.append([b.text for row in kw["reply_markup"].inline_keyboard for b in row])
     state = _State()
-    asyncio.run(accounts._list_personal(ns(answer=answer), state, ns(storage=workers), personal))
-    assert sent == [["🤖 w.session", "👤 me.session"]]  # as listed: the workers first
+    asyncio.run(accounts.card.list_personal(ns(answer=answer), state, ns(storage=workers), personal))
+    assert sent == [["🤖 w.session", "👤 me.session", "⬅️ 🤖 Аккаунты"]]  # as listed: the workers first
     assert state.data["acc_paths"] == ["sessions/w.session", "personal_sessions/me.session"]
 
 
@@ -431,7 +435,7 @@ def test_cancel_closes_the_sign_in_at_once(monkeypatch):
 
     class _FormState(_State):
         async def get_state(self):
-            return AddByPhone.code
+            return AddByPhone.code.state
 
     msg = _Msg("/cancel")
     asyncio.run(menu.cancel(msg, _FormState(), ns(active=False)))

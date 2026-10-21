@@ -20,24 +20,32 @@ PAGE_SIZE = 20  # choices per page of paged_kb: Telegram takes at most 100 butto
 
 
 def paged_kb(scope: str, options: list[tuple[str, str]], page: int, suffix: str = "") -> InlineKeyboardMarkup:
-    """choice_kb of one page of `options`, one per row; with more than a page, ⬅️ · 📄 · ➡️ under it, their
-    values "pg.<page>" + `suffix` (⬅️/➡️ the next page round, 📄 this one): the handler redraws that page."""
+    """choice_kb of one page of `options`, one per row; with more than a page, ◀️ · 📄 · ▶️ under it, their
+    values "pg.<page>" + `suffix` (◀️/▶️ the next page round, 📄 this one): the handler redraws that page."""
     pages = max(1, -(-len(options) // PAGE_SIZE))
     page %= pages
     shown = options[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
-    nav = [("⬅️", f"pg.{(page - 1) % pages}{suffix}"), (f"📄 стр {page + 1}/{pages}", f"pg.{page}{suffix}"),
-           ("➡️", f"pg.{(page + 1) % pages}{suffix}")] if pages > 1 else []
+    nav = [("◀️", f"pg.{(page - 1) % pages}{suffix}"), (f"📄 стр {page + 1}/{pages}", f"pg.{page}{suffix}"),
+           ("▶️", f"pg.{(page + 1) % pages}{suffix}")] if pages > 1 else []
     return choice_kb(scope, shown + nav, widths=(*[1] * len(shown), 3))
+
+
+def page_of(value: str) -> int | None:
+    """The page a paged_kb's ◀️ · 📄 · ▶️ asks for (its value "pg.<page>" + suffix); None for another button."""
+    if not value.startswith("pg."):
+        return None
+    page = value[3:].split(".")[0]
+    return int(page) if page.isdigit() else None
 
 
 def marks_kb(scope: str, labels: list[str], picked: list[int], page: int, actions: list[tuple[str, str]],
              widths: tuple[int, ...]) -> InlineKeyboardMarkup:
     """A list to tick, a page of it: each label ✅ or ⬜ (`picked`, by index), its value its index; with more
-    than a page, ⬅️ · 📄 · ➡️ ("prev", "page", "next") under it; then the `actions` (title, value), in rows of
+    than a page, ◀️ · 📄 · ▶️ ("prev", "page", "next") under it; then the `actions` (title, value), in rows of
     `widths`. The handler: marks_step."""
     pages = max(1, -(-len(labels) // PAGE_SIZE))
     shown = range(page * PAGE_SIZE, min((page + 1) * PAGE_SIZE, len(labels)))
-    nav = [("⬅️", "prev"), (f"📄 стр {page + 1}/{pages}", "page"), ("➡️", "next")] if pages > 1 else []
+    nav = [("◀️", "prev"), (f"📄 стр {page + 1}/{pages}", "page"), ("▶️", "next")] if pages > 1 else []
     options = [(f"{'✅' if index in picked else '⬜'} {labels[index]}", str(index)) for index in shown]
     return choice_kb(scope, options + nav + actions, widths=(*[1] * len(options), *([3] if nav else []), *widths))
 

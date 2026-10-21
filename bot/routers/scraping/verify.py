@@ -1,4 +1,4 @@
-"""The check of a project's posts file against the live channel (bot/routers/projects.py)."""
+"""The check of a project's posts file against the live channel (bot/routers/projects/card.py)."""
 import asyncio
 import os
 
@@ -7,14 +7,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB
-from bot.keyboards.common import cancel_kb, choice_kb, paged_kb, scrape_kb
-from bot.routers._common import menu_answer, require_text, send_chunked
+from bot.keyboards.common import cancel_kb, choice_kb, page_of, paged_kb, scrape_kb
+from bot.routers._common import pick_from, require_text, send_chunked, stale_tap
 from bot.routers.scraping import common
 from bot.services import scraping
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Verify
 from modules import projects, scraped_files
+from modules.registry import BOT_FUNCTIONS_BY_KEY
 from modules.scraper_creds import build_credentials
 from scraper.scrape import (
     bad_channels, bad_channels_text, chat_block, parse_date,
@@ -25,7 +26,7 @@ router = Router()
 
 
 async def verify_project(message: Message, state: FSMContext, project, deps: dict):
-    """The verify from a project's card (bot/routers/projects.py): its posts files only."""
+    """The verify from a project's 📥 Сбор (bot/routers/projects/card.py): its posts files only."""
     await state.clear()
     await state.update_data(only_project=project.name)
     await common.choose_account(message, state, "verify", **deps)
@@ -37,13 +38,13 @@ async def _ask_posts_file(message: Message, state: FSMContext, deps: dict):
     await state.update_data(files=[path for path, _ in files])  # buttons carry an index into this
     if files:
         await message.answer(
-            "Выберите файл с постами или пришлите путь к файлу/папке:",
+            "✅ Верификация — выберите файл с постами или пришлите путь к файлу или папке на сервере:",
             reply_markup=cancel_kb(Verify.input, choice_kb(
                 "verify_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(files)])),
         )
     else:
         await message.answer(
-            "У проекта нет файлов с постами. Пришлите путь к файлу или папке:",
+            "✅ Верификация — у проекта нет файлов с постами. Пришлите путь к файлу или папке на сервере:",
             reply_markup=cancel_kb(Verify.input),
         )
 
@@ -61,7 +62,7 @@ async def _ask_channel(message: Message, state: FSMContext, pool: WorkerPool, pe
     await state.set_state(Verify.channel)
 
     if not channels:
-        await message.answer("Канал (@name / t.me / числовой id):", reply_markup=cancel_kb(Verify.channel))
+        await message.answer("Пришлите канал (@name / t.me / числовой id):", reply_markup=cancel_kb(Verify.channel))
         return
 
     data = await state.get_data()
@@ -97,12 +98,12 @@ def _channels_kb(labels: list[str], page: int):
 @router.callback_query(Verify.input, ChoiceCB.filter(F.scope == "verify_base"))
 async def verify_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
                       pool: WorkerPool, personal):
-    await callback.answer()
-    files = (await state.get_data()).get("files", [])
-    index = int(callback_data.value)
-    if not 0 <= index < len(files):
+    path = pick_from((await state.get_data()).get("files", []), callback_data.value)
+    if path is None:  # a button of an older list of the files
+        await stale_tap(callback)
         return
-    await _ask_channel(callback.message, state, pool, personal, files[index])
+    await callback.answer()
+    await _ask_channel(callback.message, state, pool, personal, path)
 
 
 @router.message(Verify.input)
@@ -116,30 +117,26 @@ async def verify_input(message: Message, state: FSMContext, pool: WorkerPool, pe
 @router.callback_query(Verify.channel, ChoiceCB.filter(F.scope == "verify_channel"))
 async def verify_channel_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
                               pool: WorkerPool, personal, scrapes: JobManager):
-    await callback.answer()
     data = await state.get_data()
-    if callback_data.value.startswith("pg."):  # ⬅️ · 📄 · ➡️: another page of the channels
-        try:
-            await callback.message.edit_reply_markup(
-                reply_markup=_channels_kb(data.get("channel_labels", []), int(callback_data.value[3:])))
-        except Exception:  # 📄, the page shown: "message is not modified"
-            pass
+    if (page := page_of(callback_data.value)) is not None:  # ◀️ · 📄 · ▶️: another page of the channels
+        await callback.answer()
+        await callback.message.edit_reply_markup(reply_markup=_channels_kb(data.get("channel_labels", []), page))
         return
-    channels = data.get("channels", [])
-    index = int(callback_data.value)
-    if not 0 <= index < len(channels):
+    channel = pick_from(data.get("channels", []), callback_data.value)
+    if channel is None:  # a button of an older list of the channels
+        await stale_tap(callback)
         return
+    await callback.answer()
 
     window = data.get("window")
     if window:
         await state.clear()
         await _run_verify(callback.message, scrapes, pool, common.run_account(pool, personal, data.get("account", "")),
-                          data["input"], channels[index], *window)
+                          data["input"], channel, *window)
         return
 
-    await state.update_data(channel=channels[index])
-    await state.set_state(Verify.date_min)
-    await callback.message.answer("Дата с:", reply_markup=cancel_kb(Verify.date_min))
+    await state.update_data(channel=channel)
+    await _ask_verify_dmin(callback.message, state)
 
 
 @router.message(Verify.channel)
@@ -158,7 +155,7 @@ async def verify_channel(message: Message, state: FSMContext, pool: WorkerPool, 
 
 async def _ask_verify_dmin(message: Message, state: FSMContext, deps: dict | None = None):
     await state.set_state(Verify.date_min)
-    await message.answer("Дата с:", reply_markup=cancel_kb(Verify.date_min))
+    await message.answer(common.DATE_MIN_ASK, reply_markup=cancel_kb(Verify.date_min))
 
 
 @router.message(Verify.date_min)
@@ -168,7 +165,7 @@ async def verify_dmin(message: Message, state: FSMContext):
         return
     await state.update_data(date_min=date_min)
     await state.set_state(Verify.date_max)
-    await message.answer("Дата по:", reply_markup=cancel_kb(Verify.date_max))
+    await message.answer(common.DATE_MAX_ASK, reply_markup=cancel_kb(Verify.date_max))
 
 
 @router.message(Verify.date_max)
@@ -180,7 +177,7 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, pers
 
     data = await state.get_data()
     if parse_date(data["date_min"]) > parse_date(date_max, end_of_day=True):  # the step stays, as the scrape's
-        await message.answer("Дата 'с' позже даты 'по'. Пришлите дату 'по' ещё раз.")
+        await message.answer("Дата «с» позже даты «по». Пришлите дату «по» ещё раз:")
         return
     await state.clear()
     await _run_verify(message, scrapes, pool, common.run_account(pool, personal, data.get("account", "")),
@@ -190,7 +187,7 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, pers
 async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, account,
                       input_: str, channel: str, date_min: str, date_max: str):
     if account is None:
-        await menu_answer(message, "Аккаунт не найден, начните заново.")
+        await common.to_collect(message, "Аккаунт не найден, начните заново.", scrapes)
         return
 
     try:
@@ -204,15 +201,15 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
             comment_sample=0,
         )
     except (Exception, SystemExit) as err:  # parse_date raises SystemExit on a bad date
-        await message.answer(f"Неверные параметры: {err}")
+        await common.to_collect(message, f"Неверные параметры: {err}", scrapes)
         return
 
     if params.date_min > params.date_max:
-        await message.answer("Дата 'с' позже даты 'по'.")
+        await common.to_collect(message, "Дата «с» позже даты «по».", scrapes)
         return
 
-    progress = await common.take_slot(scrapes, pool, account, "Верификация",
-                                lambda text: menu_answer(message, text), message.answer)
+    progress = await common.take_slot(scrapes, pool, account, BOT_FUNCTIONS_BY_KEY["verify"].title,
+                                      lambda text: common.to_collect(message, text, scrapes))
     if progress is None:
         return
     params.on_progress = progress.update
@@ -239,29 +236,28 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
         else:
             interrupted = True
     except Exception as err:
-        await menu_answer(message, f"Ошибка: {err}")
+        await common.to_collect(message, f"⚠️ Ошибка: {err}", scrapes)
         return
     finally:
         await common.free_slot(scrapes, pool, status)
 
     if bad_input:
-        await menu_answer(message, f"Неверные параметры: {bad_input}")
+        await common.to_collect(message, f"Неверные параметры: {bad_input}", scrapes)
         return
 
     # The stale file was removed above, so its presence now means this run wrote it.
     wrote = os.path.exists(output)
 
     if wrote:
-        await message.answer("Готово ✅")
         await common.send_files(message.bot, message.chat.id, [output])
-        await menu_answer(message, "Верификация завершена. Вы в главном меню.")
+        await common.to_collect(message, "✅ Верификация завершена: пропущенные посты — в файле выше.", scrapes)
     elif interrupted and stop.is_set() and not common.shutting_down:
-        await menu_answer(message, "⏹ Верификация остановлена.")
+        await common.to_collect(message, "⏹ Верификация остановлена.", scrapes)
     elif interrupted:
         if not common.shutting_down:  # else the bot is going down: nothing to tell
-            await menu_answer(message, "Верификация прервана, повторите.")
+            await common.to_collect(message, "Верификация прервана, повторите.", scrapes)
     else:
-        await menu_answer(message, "Готово ✅ (пропущенных постов не найдено).")
+        await common.to_collect(message, "✅ Верификация завершена: пропущенных постов не найдено.", scrapes)
 
 
 common.FLOW_NEXT["verify"] = _ask_posts_file

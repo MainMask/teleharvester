@@ -40,6 +40,16 @@ def test_counts_persist_across_instances(tmp_path):
     assert DailyCounter(path, 3).reached("acc") is True   # 3 >= 3
 
 
+def test_two_projects_running_at_once_keep_each_others_counts(tmp_path):
+    path = str(tmp_path / "limits.json")
+    first, second = DailyCounter(path, 2), DailyCounter(path, 2)  # two mailings, each on its own workers
+    first.bump("a")
+    first.bump("a")
+    second.bump("b")  # saved after the first's: must not erase "a"
+
+    assert DailyCounter(path, 2).reached("a") is True  # a later run the same day sees "a" at its cap
+
+
 def test_stale_date_entries_reset(tmp_path):
     path = tmp_path / "limits.json"
     path.write_text(json.dumps({"acc": {"date": "2000-01-01", "count": 99}}))
