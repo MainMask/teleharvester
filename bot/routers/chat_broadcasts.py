@@ -10,12 +10,12 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb, choice_kb, yes_no_kb
 from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, back_answer, build_content, busy_step, left_flow,
-                                 require_post_link, require_text, resolve, start_form)
+                                 require_post_link, require_text, resolve, stale_tap, start_form)
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import ChatPost
 from functions.broadcast import MENTION_ADMINS, MENTION_USERS
-from modules.registry import ACTIVITY
+from modules.registry import ACTIVITY, title
 from modules.settings import Settings, count_text
 
 router = Router()
@@ -30,8 +30,8 @@ STICKERS = 4  # the mode that asks for a sticker set
 
 # what each flow asks first: its modes (instant, chat), or the post's link (comments)
 _MODES = {
-    "instant": ("⚡ Чат — сразу: что отправлять?", INSTANT_MODES),
-    "chat": ("🔔 Чат — по слову: что отправлять?\n💬 Ответом на сообщение — отправьте триггер ответом на нужное "
+    "instant": (f"{title('instant')} — что отправлять?", INSTANT_MODES),
+    "chat": (f"{title('chat')} — что отправлять?\n💬 Ответом на сообщение — отправьте триггер ответом на нужное "
              "сообщение: воркеры ответят на него.", MODE_OPTIONS),
 }
 # what its run needs, from the steps before the message: a stale message step has some missing
@@ -42,7 +42,8 @@ _NEEDS = {"comments": ("link",), "instant": ("choice", "link"), "chat": ("choice
 async def start(callback: CallbackQuery, callback_data: FunctionCB, state: FSMContext, pool: WorkerPool):
     flow = dict(flow=callback_data.key)
     if callback_data.key == "comments":
-        await start_form(callback, state, ChatPost.link, "🗨 Комментарии — пришлите ссылку на пост:", pool, data=flow)
+        await start_form(callback, state, ChatPost.link, f"{title('comments')} — пришлите ссылку на пост:", pool,
+                         data=flow)
         return
     ask, modes = _MODES[callback_data.key]
     await start_form(callback, state, ChatPost.mode, ask, pool, choice_kb("bc_mode", modes), data=flow)
@@ -133,7 +134,7 @@ async def _ask_trigger(say, state: FSMContext, settings: Settings):
         f"Триггер — текст, после которого воркеры начнут писать в чат. Сейчас: «{settings.trigger}».\n"
         "Оставьте его или пришлите новый:",
         reply_markup=cancel_kb(ChatPost.trigger,
-                               choice_kb("bc_trigger", [(f"✅ Оставить «{settings.trigger[:40]}»", "keep")])),
+                               choice_kb("bc_trigger", [(f"✅ Оставить: «{settings.trigger[:40]}»", "keep")])),
     )
 
 
@@ -141,7 +142,7 @@ async def _ask_count(say, state: FSMContext, settings: Settings):
     await state.set_state(ChatPost.count)
     await say(
         f"Сколько сообщений отправит каждый воркер? Сейчас: {count_text(settings.messages_count)}.\n"
-        "Пришлите число, оставьте текущее или «♾ Без лимита» — до ⏹:",
+        f"Пришлите число{', оставьте текущее' if settings.messages_count else ''} или нажмите «♾ Без лимита» — до ⏹:",
         reply_markup=cancel_kb(ChatPost.count, choice_kb(
             "bc_count", [*([(f"✅ Оставить: {count_text(settings.messages_count)}", "keep")]
                            if settings.messages_count else []), ("♾ Без лимита", "0")])),
@@ -155,9 +156,10 @@ async def _ask_message(say, state: FSMContext):
 
 @router.callback_query(ChatPost.trigger, ChoiceCB.filter(F.scope == "bc_trigger"))
 async def trigger_keep(callback: CallbackQuery, state: FSMContext, settings: Settings):
-    await callback.answer()
-    if not settings.trigger:
+    if not settings.trigger:  # emptied since its button was drawn: nothing to keep
+        await stale_tap(callback)
         return
+    await callback.answer()
     await state.update_data(trigger=settings.trigger)
     await _ask_count(callback.message.edit_text, state, settings)
 
@@ -183,7 +185,8 @@ async def count_keep(callback: CallbackQuery, callback_data: ChoiceCB, state: FS
 async def count_input(message: Message, state: FSMContext):
     raw = (message.text or "").strip()
     if not raw.isdecimal():
-        await message.answer("Нужно целое число: сколько сообщений от каждого воркера — или «♾ Без лимита» выше.")
+        await message.answer("Нужно целое число: сколько сообщений от каждого воркера — или «♾ Без лимита» выше. "
+                             "Пришлите ещё раз:")
         return
     await state.update_data(messages_count=int(raw))
     await _ask_message(message.answer, state)
@@ -214,7 +217,7 @@ async def _save_options(message: Message, data: dict, settings: Settings, manage
 def _job(flow: str, data: dict, content):
     """The flow's job, for manager.run: (factory, header, done; None: the default summary)."""
     if flow == "comments":
-        return lambda f, r: f.run(data["link"], content, None, r), "Рассылка в комментарии…", None
+        return lambda f, r: f.run(data["link"], content, r), "Рассылка в комментарии…", None
     mentions = (data.get("mention_all", False), data.get("mention_mode"), data.get("sticker_set"))
     if flow == "instant":
         return (lambda f, r: f.run(data["choice"], *mentions, content, data["link"], r),
@@ -223,7 +226,7 @@ def _job(flow: str, data: dict, content):
     async def listen(func, reporter):  # chat: the workers wait for the trigger
         broadcast = func.prepare(data["choice"], *mentions, content)
         await asyncio.gather(*func.listener_coros(broadcast, reporter))
-    return listen, "Слушатель рассылки запущен", "⏹ Слушатель остановлен"
+    return listen, "Слушатель рассылки…", None
 
 
 @router.message(ChatPost.message)

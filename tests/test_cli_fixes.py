@@ -1,11 +1,10 @@
 """Offline tests for small CLI fixes: the report's first account, the accounts list's phone,
-and the joiner's single-loop join (functions/report.py, accounts.py, joiner.py)."""
+the joiner's and the instant broadcast's CLI flows (functions/report.py, accounts.py, joiner.py,
+broadcast_instant.py)."""
 
 import asyncio
 import contextlib
 import types
-
-import pytest
 
 import functions.accounts as accounts
 import functions.joiner as joiner
@@ -49,7 +48,6 @@ def test_report_first_account_get_me_failure_is_reported(monkeypatch):
     monkeypatch.setattr(report, "console", ns(input=lambda *a: "", print=lambda *a, **k: printed.append(a[0])))
 
     func = ReportFunc(_Storage([Dead()]), _settings())
-    func.ask_accounts_count = lambda: None
     asyncio.run(func.execute())  # must not raise
     assert any("не удалось опросить аккаунт" in text and "proxy down" in text for text in printed)
 
@@ -113,86 +111,19 @@ def test_accounts_table_shows_the_spambot_status_restricted_last(monkeypatch):
     ]
 
 
-class _Worker:
-    def __init__(self, name, dead=False):
-        self.name, self.dead = name, dead
+def test_joiner_asks_as_the_bot_and_runs_every_worker(monkeypatch):
+    inputs = iter(["3", "1", "https://t.me/chat"])  # a mode that isn't one is asked again; the link
+    monkeypatch.setattr(joiner, "console", ns(input=lambda *a: next(inputs), print=lambda *a, **k: None))
+    monkeypatch.setattr(joiner.Confirm, "ask", lambda *a, **k: True)  # the captcha
+    func = JoinerFunc(_Storage(["a", "b"]), _settings())
+    calls = []
 
-    async def connect(self):
-        if self.dead:
-            raise OSError("proxy unreachable")
+    async def run(mode, link, report, captcha=False):
+        calls.append((mode, link, captcha, list(func.sessions)))
 
-    async def start(self):  # a logged-out worker's start() would wait for a phone number on stdin
-        pytest.fail("start() must not be called")
-
-    async def disconnect(self):
-        pass
-
-
-def _run_joiner(monkeypatch, broadcast_choice, joined, workers=None, speed="normal"):
-    """Drive JoinerFunc.execute (no captcha) with two workers; `joined` is what join() gives
-    each; fast: as the menu without its sessions connected. Returns (printed lines, broadcasts
-    as (worker, target))."""
-    printed, sent = [], []
-    inputs = iter(["1", "https://t.me/chat"])  # mode, link
-    monkeypatch.setattr(joiner, "console", ns(
-        input=lambda *a: next(inputs), print=lambda *a, **k: printed.append(" ".join(map(str, a))),
-        status=lambda *a: contextlib.nullcontext()))
-    monkeypatch.setattr(joiner.Prompt, "ask", lambda *a, **k: speed)
-    confirms = iter([broadcast_choice is not None, False])  # broadcast instantly?, captcha?
-    monkeypatch.setattr(joiner.Confirm, "ask", lambda *a, **k: next(confirms))
-    monkeypatch.setattr(joiner, "track", lambda iterable, *a, **k: iterable)
-
-    class FakeBroadcast:
-        def __init__(self, storage, settings):
-            pass
-
-        def ask(self, modes=None):
-            return broadcast_choice
-
-        async def broadcast(self, session, target, report):
-            sent.append((session.name, target))
-
-    monkeypatch.setattr(joiner, "Broadcast", FakeBroadcast)
-
-    workers = workers or [_Worker("a"), _Worker("b")]
-    func = JoinerFunc(_Storage(workers), _settings())
-    func.storage.initialize = speed != "fast"
-    func.ask_accounts_count = lambda: None
-    func.ask_int = lambda *a, **k: 0
-    results = iter(joined)
-
-    async def join(session, link, index, mode, report=None):
-        return next(results)
-
-    func.join = join
+    func.run = run
     asyncio.run(func.execute())
-    return printed, sent
-
-
-def test_a_worker_that_cant_connect_does_not_stop_the_others_joining(monkeypatch):
-    printed, _ = _run_joiner(monkeypatch, None, [False, "chat-b"], workers=[_Worker("a", dead=True), _Worker("b")])
-    assert any("аккаунт 1" in line and "proxy unreachable" in line for line in printed)
-    assert any("Вступило аккаунтов: 1" in line for line in printed)
-
-
-def test_fast_join_a_worker_that_cant_connect_does_not_stop_the_others(monkeypatch):
-    printed, _ = _run_joiner(monkeypatch, None, [False, "chat-b"], workers=[_Worker("a", dead=True), _Worker("b")],
-                             speed="fast")
-    assert any("аккаунт 1" in line and "proxy unreachable" in line for line in printed)
-    assert any("Вступило аккаунтов: 1" in line for line in printed)
-
-
-def test_broadcast_ask_leaves_the_accounts_count_to_its_caller(monkeypatch):
-    # the joiner has asked it already: a second prompt there was ignored
-    import functions.broadcast as broadcast
-
-    monkeypatch.setattr(broadcast, "console", ns(input=lambda *a: "1", print=lambda *a, **k: None))
-    monkeypatch.setattr(broadcast.Prompt, "ask", lambda *a, **k: "0")
-    monkeypatch.setattr(broadcast.Confirm, "ask", lambda *a, **k: False)
-    func = broadcast.Broadcast(_Storage(), _settings())
-    func.ask_accounts_count = lambda: pytest.fail("Broadcast.ask must not ask the accounts count")
-
-    assert func.ask() == 0
+    assert calls == [("1", "https://t.me/chat", True, ["a", "b"])]
 
 
 def test_broadcast_ask_offers_only_the_callers_modes(monkeypatch):
@@ -208,34 +139,25 @@ def test_broadcast_ask_offers_only_the_callers_modes(monkeypatch):
     assert len(shown) == 2 and "с медиа" not in " ".join(shown)
 
 
-def test_instant_broadcast_asks_the_accounts_count(monkeypatch):
+def test_instant_broadcast_runs_every_worker_through_run(monkeypatch):
     import functions.broadcast as broadcast
     import functions.broadcast_instant as instant
 
-    asked = []
+    def ask(self, modes=None):
+        self.choice = 4
+        self.sticker_set = "Pack"
+
     monkeypatch.setattr(instant, "console", ns(input=lambda *a: "https://t.me/chat"))
-    monkeypatch.setattr(broadcast.Broadcast, "ask", lambda self, modes=None: 0)
-    monkeypatch.setattr(broadcast.Broadcast, "ask_accounts_count", lambda self: asked.append(1))
+    monkeypatch.setattr(broadcast.Broadcast, "ask", ask)
+    monkeypatch.setattr(instant, "ask_run_options", lambda settings: ("go", 0))
+    monkeypatch.setattr(instant, "save_run_options", lambda settings, options: True)
+    func = instant.InstantBroadcastFunc(_Storage(["a", "b"]), _settings())
+    calls = []
 
-    asyncio.run(instant.InstantBroadcastFunc(_Storage(), _settings()).execute())
+    async def run(*args):
+        calls.append(args[:-1])
 
-    assert asked == [1]
+    func.run = run
+    asyncio.run(func.execute())
 
-
-def test_joiner_without_broadcast(monkeypatch):
-    printed, sent = _run_joiner(monkeypatch, None, ["chat-a", False])
-    assert sent == []
-    assert any("Вступило аккаунтов: 1" in line for line in printed)
-
-
-def test_joiner_broadcasts_after_all_joined(monkeypatch):
-    printed, sent = _run_joiner(monkeypatch, 0, ["chat-a", False])
-    # each worker writes to the chat it joined, or the link when it didn't
-    assert sent == [("a", "chat-a"), ("b", "https://t.me/chat")]
-
-
-def test_joiner_single_account_campaign_broadcasts_right_after_each_join(monkeypatch):
-    printed, sent = _run_joiner(monkeypatch, 1, ["chat-a", False])
-    assert sent == [("a", "chat-a"), ("b", "https://t.me/chat")]
-    # only the worker that really joined is reported as joined
-    assert sum("Аккаунт вступил" in line for line in printed) == 1
+    assert calls == [(4, False, None, "Pack", None, "https://t.me/chat")]

@@ -50,12 +50,12 @@ class TestRender:
 
         assert "4 / 10" in text and "40%" in text
         assert "██████░░░░░░░░░" in text  # 6 of 15 cells
-        assert "ETA 00:00:01:00" in text and "⏱ 00:00:00:40" in text
+        assert "осталось ~00:00:01:00" in text and "⏱ 00:00:00:40" in text
 
     def test_eta_estimating_before_first_step(self):
         p = Progress()
         p.start(5)
-        assert "0 / 5" in p.render("job") and "ETA оценивается" in p.render("job")
+        assert "0 / 5" in p.render("job") and "осталось: оценивается" in p.render("job")
 
     def test_without_total(self):
         assert "Прогресс недоступен" in Progress().render("Рассылка в чаты…")
@@ -64,7 +64,7 @@ class TestRender:
         p = Progress()
         p.set(0.5, 125)
         text = p.render("Скрап")
-        assert "50%" in text and "ETA 00:00:02:05" in text and " / " not in text
+        assert "50%" in text and "осталось ~00:00:02:05" in text and " / " not in text
 
     def test_fits_an_alert(self):
         p = Progress()
@@ -208,7 +208,7 @@ class TestCounterAndDrop:
             text = p.render("Рассылка в комментарии…")
 
         assert "Отправлено: 6 · ~3.0/мин" in text and "⏱ 00:00:02:00" in text
-        assert "ETA" not in text and "█" not in text
+        assert "осталось" not in text and "█" not in text
 
     def test_drop_shrinks_total_but_not_below_done(self):
         p = Progress()
@@ -249,7 +249,7 @@ def _comments(sessions, messages_count, fail_on):
 
     fn.delay = no_delay
     with patch("functions.broadcast_comments.rich_message.send", send):
-        asyncio.run(fn.run("https://t.me/chan/5", None, [0], report))
+        asyncio.run(fn.run("https://t.me/chan/5", None, report))
     return fn.progress
 
 
@@ -353,7 +353,7 @@ class TestPrepareNoteUpdate:
             clock.now += 10
             p.update(20, 100)
             text = p.render("Верификация")
-        assert "20 / 100" in text and "ETA 00:00:00:40" in text
+        assert "20 / 100" in text and "осталось ~00:00:00:40" in text
 
 
 class _InvSession:
@@ -400,7 +400,7 @@ class TestMoreJobs:
             pass
 
         fn.parse_targets, fn.resolve_source, fn.delay = parse_targets, resolve_source, no_delay
-        asyncio.run(fn.run("src", "dst", [0], report))
+        asyncio.run(fn.run("src", "dst", report))
         assert (fn.progress.total, fn.progress.done) == (1, 1)  # 3 never tried after the limit
 
     def test_report_replay_steps_per_worker(self):
@@ -509,7 +509,7 @@ class TestRecentRate:
                 p.step()
             text = p.render("job")
         # the window holds only the fast steps: 60 left × 1 s (the average would say 330 s)
-        assert "40 / 100" in text and "ETA 00:00:01:00" in text
+        assert "40 / 100" in text and "осталось ~00:00:01:00" in text
 
     def test_a_stall_raises_the_eta(self):
         clock = _Clock()
@@ -522,7 +522,7 @@ class TestRecentRate:
             before = p.render("job")
             clock.now += 90  # a flood wait: no steps
             after = p.render("job")
-        assert "ETA 00:00:00:10" in before and "ETA 00:00:01:40" in after
+        assert "осталось ~00:00:00:10" in before and "осталось ~00:00:01:40" in after
 
     def test_counter_rate_is_recent(self):
         clock = _Clock()
@@ -543,7 +543,7 @@ class TestRecentRate:
         p.step()
         p.step()
         text = p.render("job")
-        assert "100%" in text and "Завершение…" in text and "ETA" not in text
+        assert "100%" in text and "Завершение…" in text and "осталось" not in text
 
         p = Progress()
         p.set(1.0, 0, "Постов: 9")  # the scraper writing its files

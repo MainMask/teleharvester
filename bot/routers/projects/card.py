@@ -1,4 +1,4 @@
-"""A project's card's screens on its files (registry.PROJECT_FILES: 📥 Сбор, 📨 База и рассылка, ⚙️ Управление):
+"""A project's card's screens on its files (registry.PROJECT_FILES: 📥 Сбор, 📨 База и рассылка, 🛠 Управление):
 their buttons and functions, on the project's files and workers, its own settings (manage.py)."""
 import asyncio
 from dataclasses import dataclass
@@ -9,12 +9,11 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import FunctionCB, MenuAction, MenuCB
 from bot.routers import audience, mailing, scraping
-from bot.routers._common import NO_WORKERS
 from bot.routers.projects import manage, views
 from bot.services import screens
 from bot.services.workspaces import Workspace, Workspaces
 from modules import projects, scraped_files
-from modules.registry import BOT_FUNCTIONS, COLLECT, MANAGE, PROJECT_FILES, SCREENS
+from modules.registry import BOT_FUNCTIONS, COLLECT, MANAGE, NO_WORKERS, ON_WORKERS, PROJECT_FILES, SCREENS
 
 router = Router()
 
@@ -65,7 +64,7 @@ ACTIONS = {
     # 📨 База и рассылка
     "addcontacts": lambda tap: _base(tap, ("participants",), audience.ask_base),
     "pmmailing": lambda tap: _base(tap, ("participants", "list"), mailing.ask_recipients),
-    # ⚙️ Управление
+    # 🛠 Управление
     "channels": lambda tap: manage.ask_channels(tap.message, tap.state, tap.project),
     "rename": lambda tap: manage.ask_rename(tap.message, tap.state, tap.project),
     "clearbase": lambda tap: manage.offer_clear(tap.message, tap.state, tap.project),
@@ -73,7 +72,6 @@ ACTIONS = {
 }
 CARD_ACTIONS = {MenuAction(button.action) for title in PROJECT_FILES for button in SCREENS[title].buttons}
 CARD_FUNCTIONS = {function.key for function in BOT_FUNCTIONS if function.category in PROJECT_FILES}
-ON_WORKERS = {"addcontacts", "pmmailing"}  # the card's functions run by the workers, not on one account
 
 
 async def _press(callback: CallbackQuery, key: str, state: FSMContext, workspace: Workspace,
@@ -105,7 +103,7 @@ async def card_function(callback: CallbackQuery, callback_data: FunctionCB, stat
 
 
 def _files_screen(title: str):
-    """📥 Сбор's and ⚙️ Управление's view: what of them the project's files make (views.show_screen)."""
+    """📥 Сбор's and 🛠 Управление's view: what of them the project's files make (views.show_screen)."""
     async def view(message: Message, state: FSMContext, edit: bool, workspaces: Workspaces, **_):
         project = await views.current(message, state, workspaces)
         if project is not None:

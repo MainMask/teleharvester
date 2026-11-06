@@ -5,11 +5,15 @@ from rich.prompt import Confirm, Prompt
 from functions import add_contacts, pmmailing, scraper, scraper_analysis
 from functions.base import TelethonFunction
 from modules.cli_menu import menu_entries, print_menu
-from modules.registry import (ADD_CHANNELS, CARD, PROJECT_FILES, RISKY, SCREENS, by_category, children, risk_marker,
-                              trail)
+from modules.registry import (ADD_CHANNELS, CARD, NO_WORKERS, ON_WORKERS, PROJECT_FILES, RISKY, SCREENS, by_category,
+                              children, risk_marker, title, trail)
 from modules import projects, scraped_files
 from modules.storages.functions_storage import FunctionsStorage
-from scraper.scrape import bad_channels, bad_channels_text, parse_channels
+from scraper.scrape import CHAT_FORMAT, bad_channels, bad_channels_text, parse_channels
+
+# a project's screens' items that need no worker, as the bot's 📋 Список and ➕ Добавить: the others say NO_WORKERS
+# before they ask anything
+NO_WORKER_NEEDED = ("AccountsFunc", "AddByPhoneFunc")
 
 
 class ProjectsFunc(TelethonFunction):
@@ -39,8 +43,8 @@ class ProjectsFunc(TelethonFunction):
         if problem := projects.name_problem(name.strip(), items):
             console.print(f"[bold red]Не подходит: {self.safe(problem)}.[/]")
             return
-        channels = self._ask_channels("[bold red]каналы через запятую (Enter — без каналов: база из участников "
-                                      "групп или списка)[/]")
+        channels = self._ask_channels(f"[bold red]каналы или группы через запятую ({CHAT_FORMAT}; Enter — без "
+                                      "каналов: база из участников групп или списка)[/]")
         try:
             project = projects.add(name, channels)
         except (ValueError, OSError) as err:
@@ -65,7 +69,7 @@ class ProjectsFunc(TelethonFunction):
         except OSError as err:
             console.print(f"[bold red]Список не добавлен:[/] {self.safe(err)}")
             return
-        note = f" Пропущено строк: {skipped} — не @username и не номер." if skipped else ""
+        note = f" Пропущено строк: {skipped} — не @username, не ссылка t.me и не номер." if skipped else ""
         console.print(f"В список проекта добавлено: {added}, всего в нём: {total}.{note}",
                       style="bold green", markup=False)
 
@@ -79,7 +83,9 @@ class ProjectsFunc(TelethonFunction):
             return
         what = clearable[choice - 1]
         if not Confirm.ask(f"[bold red]очистить {labels[what]} проекта '{self.safe(project.name)}'? файл уйдёт в "
-                           f"{scraped_files.BASES_DIR}/{self.safe(project.name)}_previous/ (до следующего дособора)[/]",
+                           f"{scraped_files.BASES_DIR}/{self.safe(project.name)}_previous/ (до следующего "
+                           f"«{title('topup')}»); «{title('pmmailing')}» и «{title('addcontacts')}» его больше "
+                           "не увидят[/]",
                            default=False):
             return
         try:
@@ -124,16 +130,16 @@ class ProjectsFunc(TelethonFunction):
         # Numbered by their place in the registry, so a hidden one shifts none
         hidden = ([] if plan else ["topup"]) + ([] if clearable else ["clearbase"])
         titles = {"channels": ADD_CHANNELS} if not project.channels else {}
-        items = {title: self._items(title) if title in PROJECT_FILES else [(f"{title} ›", title)]
-                 for title in children(CARD)}
-        keys = [key for title in children(CARD) for _, key in items[title]]
+        items = {screen: self._items(screen) if screen in PROJECT_FILES else [(f"{screen} ›", screen)]
+                 for screen in children(CARD)}
+        keys = [key for screen in children(CARD) for _, key in items[screen]]
         number = {key: index for index, key in enumerate(keys, 1)}
         lines = []
-        for title in children(CARD):
-            shown = "  ".join(f"[{number[key]}] {titles.get(key, label)}" for label, key in items[title]
+        for screen in children(CARD):
+            shown = "  ".join(f"[{number[key]}] {titles.get(key, label)}" for label, key in items[screen]
                               if key not in hidden)
-            if title in PROJECT_FILES:
-                lines.append(f"{title}{self._risky(title)}:  {shown}")
+            if screen in PROJECT_FILES:
+                lines.append(f"{screen}{self._risky(screen)}:  {shown}")
             elif lines and lines[-1].startswith("["):  # the screens on its workers: one line
                 lines[-1] += f"  {shown}"
             else:
@@ -146,6 +152,9 @@ class ProjectsFunc(TelethonFunction):
             return self._screen(action, functions)
         if action in projects.MISSING_CHECKED and (why := projects.missing(project, action)):
             console.print(why, style="bold yellow", markup=False)
+            return
+        if action in ON_WORKERS and not len(storage):  # as the bot's card
+            console.print(NO_WORKERS, style="bold yellow", markup=False)
             return
         # each runs the function's own flow on the project's files only, on its workers
         if action == "scrape":
@@ -177,18 +186,19 @@ class ProjectsFunc(TelethonFunction):
             except (ValueError, OSError) as err:
                 console.print(f"[bold red]Не переименовано:[/] {self.safe(err)}")
                 return
-            console.print(f"[bold green]Проект теперь '{self.safe(renamed.name)}'. "
-                          f"Переименовано файлов и папок: {moved}.[/]")
+            console.print(f"✅ Проект «{project.name}» теперь «{renamed.name}». Переименовано файлов и папок: "
+                          f"{moved}.", style="bold green", markup=False)
         elif action == "channels":
             empty = "убрать все каналы" if project.channels else "оставить без каналов"
-            channels = self._ask_channels(f"[bold red]новый список каналов через запятую (заменит текущий; "
-                                          f"Enter — {empty})[/]")
+            channels = self._ask_channels(f"[bold red]новый список каналов или групп через запятую ({CHAT_FORMAT}; "
+                                          f"заменит текущий; Enter — {empty})[/]")
             try:
                 projects.set_channels(project.name, channels)
             except (ValueError, OSError) as err:
                 console.print(f"[bold red]Не сохранено:[/] {self.safe(err)}")
                 return
-            console.print("[bold green]Каналы проекта сохранены.[/]")
+            console.print(f"✅ Каналы сохранены: {len(channels)}." if channels else "✅ Каналы убраны.", style="bold green",
+                          markup=False)
         elif action == "delete" and Confirm.ask(
             f"[bold red]удалить проект '{self.safe(project.name)}'? файлы скрапа останутся; проект с аккаунтами не "
             "удаляется — сначала перенесите их[/]", default=False,
@@ -198,7 +208,7 @@ class ProjectsFunc(TelethonFunction):
             except (ValueError, OSError) as err:
                 console.print(f"[bold red]Не удалено:[/] {self.safe(err)}")
                 return
-            console.print("[bold green]Проект удалён, файлы скрапа на месте.[/]")
+            console.print(f"✅ Проект «{project.name}» удалён, файлы скрапа на месте.", style="bold green", markup=False)
 
     @staticmethod
     def _items(title) -> list[tuple[str, str]]:
@@ -220,5 +230,10 @@ class ProjectsFunc(TelethonFunction):
         entries = [entry for entry in menu_entries(functions.functions, project=True) if title in trail(entry[0])]
         print_menu(entries)
         raw = Prompt.ask("[bold red]пункт (пусто — выход)[/]", default="")
-        if raw.isdigit() and 1 <= int(raw) <= len(entries):
-            functions.run_instance(entries[int(raw) - 1][1])
+        if not (raw.isdigit() and 1 <= int(raw) <= len(entries)):
+            return
+        instance = entries[int(raw) - 1][1]
+        if type(instance).__name__ not in NO_WORKER_NEEDED and not len(functions.storage):  # as the bot's pop-up
+            console.print(NO_WORKERS, style="bold yellow", markup=False)
+            return
+        functions.run_instance(instance)

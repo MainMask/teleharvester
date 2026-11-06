@@ -214,11 +214,13 @@ async def scrape_run(message: Message, state: FSMContext):
     if date_max is None:
         return
 
+    if not await common.date_or_ask(message, date_max, end_of_day=True):
+        return
     data = {**await state.get_data(), "date_max": date_max}
     try:
         params = _scrape_params(data)
     except (Exception, SystemExit) as err:
-        await message.answer(f"Неверные параметры: {err}")  # the date can be sent again
+        await message.answer(f"⚠️ Неверные параметры: {err}")  # the date can be sent again
         return
 
     if params.date_min > params.date_max:
@@ -230,19 +232,20 @@ async def scrape_run(message: Message, state: FSMContext):
 
 
 async def _ask_go(message: Message, state: FSMContext, deps: dict | None = None):
-    """The summary before a scrape starts: ▶️ Запустить or ⚙️ Дополнительно (a top-up's, too)."""
+    """The summary before a scrape starts: ▶️ Запустить or 🎛 Дополнительно (a top-up's, too)."""
     data = await state.get_data()
     await state.set_state(Scrape.confirm)
     folder = html.escape(f"{data['out_dir']}/{data['name']}")
     if data.get("extend"):  # its keyword is the previous scrape's: no filter to set
         files = (f"Дособор к {html.escape(os.path.basename(data['extend']))}: новое вольётся в файлы проекта, "
                  f"заменённые уйдут в {folder}_previous/\n\n"
-                 "«Дополнительно» — комментарии, реакции, база участников, лимит постов.")
+                 "«🎛 Дополнительно» — комментарии, реакции, база участников, лимит постов.")
     else:
         files = (f"Файлы: {folder}_…\n\n"
-                 "«Дополнительно» — комментарии, реакции, база участников, фильтр по слову, лимит постов.")
+                 "«🎛 Дополнительно» — комментарии, реакции, база участников, фильтр по слову, лимит постов.")
     await message.answer(
-        f"Каналы:\n\n{projects.chat_list(projects.find(data['name']), parse_channels(data['channels']), html=True)}"
+        f"{html.escape(title('topup') if data.get('extend') else SCRAPE)} — каналы:\n\n"
+        f"{projects.chat_list(projects.find(data['name']), parse_channels(data['channels']), html=True)}"
         "\n\n"
         f"Период: {html.escape(data['date_min'])} – {html.escape(data['date_max'])}\n" + files,
         parse_mode="HTML",
@@ -258,7 +261,7 @@ def _settings_kb(data: dict):
     limit = data.get("max_messages") or "все"
     return cancel_kb(Scrape.confirm, choice_kb("scrape_opt", [
         (f"🗨 Комментарии {mark('comments')}", "comments"),
-        (f"❤️ Реакции {mark('reactors')} (медленно)", "reactors"),
+        (f"❤️ Реакции (медленно) {mark('reactors')}", "reactors"),
         (f"👥 База участников {mark('participants')}", "participants"),
         # a top-up keeps the previous scrape's keyword (scraper.scrape.run refuses another)
         *([] if data.get("extend") else [(f"🔎 Фильтр по слову: {keyword[:24]}", "keyword")]),
@@ -270,7 +273,7 @@ def _settings_kb(data: dict):
 async def _show_settings(message: Message, state: FSMContext, edit: bool = False):
     """🎛 Дополнительно: in the summary's place (`edit`), or after a typed value as a new message."""
     await state.set_state(Scrape.confirm)
-    await screens.send(message, edit)("🎛 Настройки скрапа (нажмите, чтобы изменить):",
+    await screens.send(message, edit)("🎛 Дополнительно — нажмите, чтобы изменить:",
                                       reply_markup=_settings_kb(await state.get_data()))
 
 
@@ -296,12 +299,12 @@ async def scrape_option(callback: CallbackQuery, callback_data: ChoiceCB, state:
         await callback.message.edit_reply_markup(reply_markup=_settings_kb(await state.get_data()))
     elif option == "keyword":
         await state.set_state(Scrape.keyword)
-        await callback.message.edit_text("Фильтр по слову: только посты с ним. Пришлите слово — или нажмите "
+        await callback.message.edit_text("🔎 Фильтр по слову — только посты с ним. Пришлите слово или нажмите "
                                          "«⏭ Без фильтра»:", reply_markup=cancel_kb(Scrape.keyword, choice_kb(
                                              "scrape_any", [("⏭ Без фильтра", "keyword")])))
     elif option == "max":
         await state.set_state(Scrape.max_messages)
-        await callback.message.edit_text("Максимум постов: пришлите число — или нажмите «♾ Все»:",
+        await callback.message.edit_text("🔢 Максимум постов — пришлите число или нажмите «♾ Все»:",
                                          reply_markup=cancel_kb(Scrape.max_messages, choice_kb(
                                              "scrape_any", [("♾ Все", "max_messages")])))
     elif option == "run":
@@ -342,10 +345,11 @@ async def _start_scrape(callback: CallbackQuery, state: FSMContext, pool: Worker
                         scrapes: JobManager):
     data = await state.get_data()
     await state.clear()
+    await callback.message.edit_reply_markup(reply_markup=None)  # ▶️ pressed once: one scrape
     try:
         params = _scrape_params(data)
     except (Exception, SystemExit) as err:
-        await common.to_collect(callback.message, f"Неверные параметры: {err}", scrapes)
+        await common.to_collect(callback.message, f"⚠️ Неверные параметры: {err}", scrapes)
         return
     await _run_scrape(callback.bot, callback.message.chat.id, scrapes, pool, personal, params)
 
@@ -358,7 +362,8 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
 
     account = common.run_account(pool, personal, params.account)
     if account is None:
-        await menu(f"Аккаунт {params.account} не найден: скрап с него можно продолжить только на нём.")
+        await menu(f"⚠️ Аккаунт {Path(params.account).stem} не найден: скрап с него можно продолжить только "
+                   "на нём.")
         return
 
     out_dir = str(params.out_dir)
@@ -366,7 +371,7 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
     try:
         before = scraping.dir_snapshot(out_dir)
     except OSError as err:
-        await menu(f"Папка вывода недоступна: {err}")
+        await menu(f"⚠️ Папка вывода недоступна: {err}")
         return
 
     progress = await common.take_slot(scrapes, pool, account, SCRAPE, menu)
@@ -379,7 +384,7 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
         _write_marker(pool.storage.home, {"out_dir": out_dir, "name": params.name, "account": params.account,
                                           "chat_id": chat_id, **(resumes or {})})
         status = await bot.send_message(
-            chat_id, f"Скрап запущен на аккаунте {account.label} — может занять долго.\n"
+            chat_id, f"{common.started(SCRAPE, account.label)}\n"
                      f"Остальные функции бота доступны{'' if account.personal else ' — без этого воркера'}.",
             reply_markup=scrape_kb(scrapes.key))
         await scraping.do_scrape(build_credentials(account.client), params)
@@ -388,19 +393,19 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
         # which exits before any output file is written
         if isinstance(err.code, str) and err.code:
             _drop_marker(pool.storage.home)
-            await menu(f"Скрап остановлен: {err}")
+            await menu(f"⚠️ Скрап не выполнен: {err}")
         elif stop.is_set() and not common.shutting_down:  # the operator's ⏹
             _drop_marker(pool.storage.home)
             await menu(f"⏹ Скрап остановлен. Собранное сохранено: нажмите «{SCRAPE}» — бот предложит продолжить.")
         elif not common.shutting_down:  # interrupted: the marker stays for a restart to continue it
-            await menu(f"Скрап прерван (сеть / флуд-бан). Собранное сохранено: нажмите «{SCRAPE}» — бот "
+            await menu(f"⚠️ Скрап прерван (сеть / флуд-бан). Собранное сохранено: нажмите «{SCRAPE}» — бот "
                        "предложит продолжить.")
         return
     except Exception as err:  # e.g. the scrape's process killed (out of memory)
         _drop_marker(pool.storage.home)
         saved = (f" Собранное сохранено: нажмите «{SCRAPE}» — бот предложит продолжить."
                  if pending_resume(out_dir, params.name) else "")
-        await menu(f"⚠️ Ошибка скрапа: {err}.{saved}")
+        await menu(f"⚠️ Ошибка: {err}.{saved}")
         return
     finally:
         await common.free_slot(scrapes, pool, status)
@@ -443,7 +448,7 @@ async def _resume(bot, scrapes: JobManager, pool: WorkerPool, personal):
                 marker["chat_id"],
                 f"⚠️ Автопродолжение скрапа «{marker['name']}» отключено: он падал при каждом запуске "
                 "на одном месте (вероятно, не хватает памяти на финальную сборку). Собранное сохранено — "
-                f"продолжите вручную: «{SCRAPE}».")
+                f"продолжите вручную: «{SCRAPE}».", reply_markup=back_kb(COLLECT, scrapes.project_id))
         except Exception:
             pass
         return

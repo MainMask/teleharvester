@@ -15,7 +15,7 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PmMailing
 from functions.pmmailing import GONE_SKIPPED, PmMailingFunc
-from modules.registry import BASE
+from modules.registry import BASE, title
 from modules.settings import Settings
 
 router = Router()
@@ -23,7 +23,7 @@ router = Router()
 DEFAULT_TARGETS = "assets/targets.txt"
 MAX_RECIPIENTS_FILE_SIZE = 5 * 1024 * 1024  # a recipients list is text; cap at 5 MB
 SKIP_ASK = "Пропустить тех, кому уже писали раньше?"
-LIMIT_ASK = "Сколько получателей? Пришлите число — или нажмите «♾ Все»:"
+LIMIT_ASK = "Сколько получателей? Пришлите число или нажмите «♾ Все»:"
 
 
 async def ask_recipients(message: Message, state: FSMContext, bases: list[tuple[str, str]]):
@@ -32,11 +32,9 @@ async def ask_recipients(message: Message, state: FSMContext, bases: list[tuple[
     await state.clear()  # an abandoned run's `recipients` would otherwise override a new path
     await state.set_state(PmMailing.path)
     await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
-    choose = "выберите базу ниже, " if bases else ""
-    await message.answer(
-        f"📨 ЛС по базе — получатели: {choose}пришлите <b>.txt файлом</b> или вставьте список — по одному "
-        "@username или номеру на строку (или путь к .parquet/.txt на сервере):",
-        parse_mode="HTML",
+    await message.edit_text(  # in 📨 База и рассылка's place, as a choice by button
+        f"{title('pmmailing')} — выберите базу ниже, пришлите .txt файлом или вставьте список — по одному "
+        "@username, ссылке t.me или номеру на строку (или путь к .parquet/.txt на сервере):",
         reply_markup=cancel_kb(PmMailing.path, choice_kb(
             "mail_base", [*((f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)),
                           (f"📄 {DEFAULT_TARGETS}", "default")])),
@@ -60,15 +58,15 @@ async def mail_path(message: Message, state: FSMContext):
     if message.document is not None:
         name = (message.document.file_name or "").lower()
         if name.endswith(".parquet"):
-            await message.answer("Для .parquet укажите путь к файлу (не загрузкой). Пришлите путь или .txt.")
+            await message.answer("Для .parquet нужен путь к файлу на сервере, не загрузка. Пришлите ещё раз:")
             return
         if (message.document.file_size or 0) > MAX_RECIPIENTS_FILE_SIZE:
-            await message.answer("Файл слишком большой. Пришлите .txt поменьше или укажите путь.")
+            await message.answer("Файл слишком большой. Пришлите .txt поменьше или путь к нему:")
             return
         buffer = await message.bot.download(message.document)
         recipients = PmMailingFunc.parse_list(buffer.read().decode("utf-8", "replace").splitlines())
         if not recipients:
-            await message.answer("В файле нет получателей. Пришлите список заново.")
+            await message.answer("В файле нет получателей. Пришлите ещё раз:")
             return
         await state.update_data(recipients=recipients, path=None)
     else:
@@ -82,7 +80,7 @@ async def mail_path(message: Message, state: FSMContext):
         else:
             recipients = PmMailingFunc.parse_list(raw.splitlines())
             if not recipients:
-                await message.answer("Пустой список. Пришлите получателей.")
+                await message.answer("Пустой список. Пришлите ещё раз:")
                 return
             await state.update_data(recipients=recipients, path=None)
 
@@ -150,7 +148,7 @@ async def mail_run(
             # is blocking (pq.read_table), which would otherwise stall the bot's polling loop
             recipients = await asyncio.to_thread(instance.load_recipients, data["path"])
         except Exception as err:
-            await end(f"Файл не прочитан: {err}")
+            await end(f"⚠️ Файл не прочитан: {err}")
             return
 
     def drop_gone(rows):  # the gone ones out before the limit: they take no place in it
@@ -161,7 +159,7 @@ async def mail_run(
     try:  # off the event loop, as the base: the stats grow with every recipient ever mailed
         recipients = await asyncio.to_thread(drop_gone, recipients)
     except Exception as err:
-        await end(f"Статистика не прочитана: {err}")
+        await end(f"⚠️ Статистика не прочитана: {err}")
         return
     if gone := before - len(recipients):
         await message.answer(f"{GONE_SKIPPED}: {gone}")
@@ -171,18 +169,22 @@ async def mail_run(
     if data.get("limit"):
         recipients = recipients[: data["limit"]]
 
-    if not recipients:
-        await end("Список получателей пуст.")
+    if not recipients:  # none at all, or none left once the gone, the mailed and the limit are out
+        await end("Список получателей пуст." if not before else
+                  "Некому писать: все уже получали рассылку или недоступны.")
         return
 
     content = await build_content(message, album)
-    if content is None:  # the run's data is read again with the next message: the step comes back
+    if content is None or manager.active:  # the run's data is read again with the next message: the step comes back
         await state.set_state(PmMailing.message)
         await state.update_data(**data)
+        if content is not None:  # another job took the slot while the message was being read
+            content.cleanup()
+            await busy_step(message, manager, BASE)
         return
 
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(recipients, content, None, r),
+        lambda f, r: f.run(recipients, content, r),
         f"Рассылка в ЛС ({len(recipients)})…", cleanup=content.cleanup,
     )

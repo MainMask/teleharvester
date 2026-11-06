@@ -9,12 +9,13 @@ from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb, marks_kb
 from bot.keyboards.menu import back_kb
 from bot.routers._common import back_answer, ensure_workers, marks_step
+from bot.routers.login import FREE
 from bot.services import screens
 from bot.services.delegation import WorkerPool
 from bot.services.workspaces import Workspace, Workspaces, move_out, take_free
 from bot.states import MoveWorkers
 from modules import projects
-from modules.registry import ACCOUNTS
+from modules.registry import ACCOUNTS, title
 from modules.scraper_creds import scrape_accounts
 
 router = Router()
@@ -23,8 +24,8 @@ router = Router()
 # The lists of the worker picker (profile.py, keyboards.marks_kb): ✅ / ⬜, ☑️ Все, ⬜ Никого, then ▶️.
 
 TICKS = [("☑️ Все", "all"), ("⬜ Никого", "none")]
-FREE_HEAD = "📦 <b>Свободные аккаунты</b> — ещё ни в одном проекте. Отмеченные станут воркерами этого проекта."
-OUT_HEAD = ("↪️ <b>Перенести воркеров</b> — в другой проект или в свободные. Ограничения от @SpamBot и прокси "
+FREE_HEAD = f"<b>{FREE}</b>\n\nАккаунты, ещё ни в одном проекте. Отмеченные станут воркерами этого проекта."
+OUT_HEAD = (f"{title('move')} — воркеров в другой проект или в свободные. Ограничения от @SpamBot и прокси "
             "аккаунты унесут с собой; люди, добавленные ими в контакты, в этом проекте перейдут к другим воркерам.")
 
 
@@ -53,7 +54,8 @@ async def _ticked(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMCo
     paths, labels, picked, page = data["move_paths"], data["move_labels"], data["picked"], data["move_page"]
     if callback_data.value == "go":
         if not picked:
-            await callback.answer("Отметьте хотя бы один аккаунт", show_alert=True)
+            await callback.answer("Отметьте хотя бы одного воркера" if scope == "mv_out" else
+                                  "Отметьте хотя бы один аккаунт", show_alert=True)
             return None
         await callback.answer()
         return [paths[index] for index in picked]
@@ -68,11 +70,12 @@ async def _ticked(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMCo
     return None
 
 
-def _moved_text(done: str, moved: list[str], failed: list[tuple[str, str]], total: int) -> str:
-    """The summary of a move: how many of the ticked, then each one not moved and why."""
+def _moved_text(done: str, moved: list[str], failed: list[tuple[str, str]], total: int,
+                not_done: str = "Не перенесены") -> str:
+    """The summary of a move: how many of the ticked, then each one not moved (`not_done`) and why."""
     lines = [f"{done}: {len(moved)} из {total}."]
     if failed:
-        lines += ["", "Не перенесены:", *(f"• {html.escape(label)} — {html.escape(why)}" for label, why in failed)]
+        lines += ["", f"{not_done}:", *(f"• {html.escape(label)} — {html.escape(why)}" for label, why in failed)]
     return "\n".join(lines)
 
 
@@ -98,7 +101,8 @@ async def free_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     await state.clear()
     moved, failed = take_free(pool, paths)
     await callback.message.edit_text(
-        _moved_text("✅ Добавлено в проект", moved, failed, len(paths)) + f"\n🤖 Воркеров в проекте: {pool.count()}",
+        _moved_text("✅ Добавлено в проект", moved, failed, len(paths), "Не добавлены")
+        + f"\n🤖 Воркеров в проекте: {pool.count()}",
         parse_mode="HTML", reply_markup=back_kb(ACCOUNTS, workspace.project_id, fresh=False))
 
 
@@ -109,8 +113,9 @@ async def move_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
         return
     # a StringSession has nothing to load it by elsewhere: moved by hand
     workers = [account for account in scrape_accounts(pool.storage) if account.path.endswith(".jsession")]
-    labels = [f"{account.label}{' ⏳ занят' if pool.busy(account.path) or pool.scraped(account.path) else ''}"
-              for account in workers]
+    def note(path: str) -> str:
+        return " ⏳ занят скрапом" if pool.scraped(path) else " ⏳ занят задачей" if pool.busy(path) else ""
+    labels = [f"{account.label}{note(account.path)}" for account in workers]
     await _ask_ticks(callback.message, state, MoveWorkers.out, OUT_HEAD, "mv_out",  # in 🤖 Аккаунты' place
                      [account.path for account in workers], labels, "▶️ Далее", edit=True)
 
@@ -129,7 +134,7 @@ async def move_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     await state.set_state(MoveWorkers.target)
     await state.update_data(move_chosen=paths)
     await callback.message.edit_text(
-        f"Куда перенести отмеченных — {len(paths)}?",
+        f"Куда перенести отмеченных ({len(paths)})?",
         reply_markup=cancel_kb(MoveWorkers.target, choice_kb(
             "mv_to", [*((f"📁 {project.name}", str(project.id)) for project in others), ("📦 В свободные", "free")])))
 

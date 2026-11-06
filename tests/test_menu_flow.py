@@ -203,7 +203,7 @@ def test_no_keyword_and_all_posts_by_button(key, value):
     state = _State({"keyword": "war", "max_messages": 50}, Scrape.keyword)
     asyncio.run(scrape.scrape_any(callback, ChoiceCB(scope="scrape_any", value=key), state))
     assert state.data[key] == value and state.state == Scrape.confirm
-    assert callback.message.edits[0][0].startswith("🎛 Настройки скрапа")  # in the prompt's place
+    assert callback.message.edits[0][0].startswith("🎛 Дополнительно — ")  # in the prompt's place
 
 
 def test_a_report_without_a_comment_by_button(monkeypatch):
@@ -217,7 +217,8 @@ def test_a_report_without_a_comment_by_button(monkeypatch):
 
     monkeypatch.setattr(moderation, "_report_user", report_user)
     callback = _Callback()
-    asyncio.run(moderation.no_comment(callback, _State(state=ReportUser.comment), None, {}, None))
+    asyncio.run(moderation.no_comment(callback, _State(state=ReportUser.comment), None, {},
+                                      types.SimpleNamespace(active=False)))
     assert runs == [""] and callback.message.markups == [None]  # pressed once: one report
 
 
@@ -230,7 +231,7 @@ def test_a_tdata_import_without_a_password_by_button(monkeypatch):
         passwords.append(password)
 
     monkeypatch.setattr(tdata, "_import", run_import)
-    asyncio.run(tdata.tdata_no_password(_Callback(), _State(), None, None))
+    asyncio.run(tdata.tdata_no_password(_Callback(), _State(), None, types.SimpleNamespace(active=False)))
     asyncio.run(tdata.tdata_password(_Msg("-"), _State(), None, None))  # typed, as before the button
     assert passwords == [None, None]
 
@@ -392,6 +393,8 @@ def test_the_poll_s_options_are_offered_as_buttons(monkeypatch):
     runs = []
 
     class _Manager:
+        active = False
+
         async def run(self, bot, chat_id, pool, instance, bot_function, factory, header):
             runs.append(factory(ns(run=lambda link, option, report: (link, option)), None))
 
@@ -418,9 +421,9 @@ def test_the_terminal_sets_a_daily_cap_as_the_bot_does(tmp_path, monkeypatch):
     settings = _settings(tmp_path, monkeypatch)
     printed = []
     monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "6")  # 🤝 Инвайты
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "4")  # 🤝 Инвайты
     monkeypatch.setattr(cli.SettingsFunc, "ask_int", staticmethod(lambda *a, **k: 25))
     cli.SettingsFunc(ns(sessions=[]), settings).execute()
-    assert "  [6] 🤝 Инвайты в сутки на аккаунт: без лимита" in printed[0]
+    assert "  [4] 🤝 Инвайты в сутки на аккаунт: без лимита" in printed[0]
     assert settings.invite_per_account_daily == 25
     assert toml.load(tmp_path / "config.toml")["limits"]["invite_per_account_daily"] == 25

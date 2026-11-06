@@ -14,6 +14,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.callbacks import ChoiceCB, NavCB
 from bot.keyboards.common import cancel_kb
+from bot.keyboards.menu import back_kb
 from bot.routers._common import require_text, send_chunked
 from bot.services import autoreply, screens
 from bot.services.workspaces import Workspaces
@@ -44,14 +45,14 @@ def _view(settings: Settings, workspaces: Workspaces) -> tuple[str, InlineKeyboa
 
 def _screen(settings: Settings, stats: dict, workspaces: Workspaces) -> str:
     on = settings.autoreply_enabled and settings.autoreply_text
-    status = "✅ включён" if on else "⏸ выключен"
+    status = "✅ включён" if on else "⭕ выключен"
     if settings.autoreply_enabled and not settings.autoreply_text:
         status += " (нет текста)"
     shown = settings.autoreply_text[:MAX_SHOWN_TEXT] + ("…" if len(settings.autoreply_text) > MAX_SHOWN_TEXT else "")
     text = settings.autoreply_text and f"<blockquote>{html.escape(shown)}</blockquote>"
 
     lines = [
-        f"📬 <b>Автоответ</b>: {status}",
+        f"{screens.title_line(AUTOREPLY)} — {status}",
         f"Проверка воркеров: раз в {max(1, settings.autoreply_interval // 60)} мин.",
         "",
         "Тем, кто ответил на рассылку в ЛС, воркер один раз отвечает этим текстом, "
@@ -100,7 +101,7 @@ async def autoreply_toggle(callback: CallbackQuery, settings: Settings, workspac
     try:
         settings.set_autoreply_enabled(enabled)
     except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
-        await callback.answer(f"Не удалось сохранить config.toml: {err}"[:200], show_alert=True)  # Telegram's cap
+        await callback.answer(f"⚠️ Не удалось сохранить config.toml: {err}"[:200], show_alert=True)  # Telegram's cap
         return
     text, markup = _view(settings, workspaces)
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
@@ -113,16 +114,17 @@ async def autoreply_workers(callback: CallbackQuery, workspaces: Workspaces):
     await callback.answer()
     stats = autoreply.reply_stats(autoreply.load_replied(), datetime.now())
     await send_chunked(callback.message, "📊 <b>Ответили на рассылку — по воркерам</b>",
-                        _worker_lines(stats, workspaces), sep="\n")
+                        _worker_lines(stats, workspaces), sep="\n", reply_markup=back_kb(AUTOREPLY, fresh=False))
 
 
 @router.callback_query(ChoiceCB.filter((F.scope == "autoreply") & (F.value == "text")))
 async def autoreply_text_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(SetAutoreplyText.input)
     await callback.message.answer(
-        "📬 Автоответ — пришлите новый текст одним сообщением, например:\n"
-        "<code>Спасибо за ответ! Для дальнейшей связи напишите @MainMask</code>",
+        f"{AUTOREPLY} — пришлите новый текст одним сообщением, например:\n"
+        "<code>Спасибо за ответ! Для дальнейшей связи напишите @your_manager</code>",
         parse_mode="HTML", reply_markup=cancel_kb(SetAutoreplyText.input),
     )
 

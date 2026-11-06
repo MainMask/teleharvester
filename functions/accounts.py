@@ -9,6 +9,7 @@ from functions.base import TelethonFunction
 # the module, not its *Func class: an imported *Func would be a second menu entry (as functions/projects.py)
 from functions import sign_in as cli_sign_in
 from modules import login as sign_in, phone_countries, projects, restricted_workers
+from modules.registry import menu_path
 from modules.scraped_files import unfinished_scrape
 from modules.scraper_creds import card_lines, find_account, personal_storage, scrape_accounts
 from modules.storages.sessions_storage import profile_order
@@ -59,8 +60,8 @@ class AccountsFunc(TelethonFunction):
         await self.card(accounts[int(raw) - 1], personal)
 
     async def card(self, account, personal):
-        """An account's card, as the bot's: what is stored, 🔑 Код входа, 🗑 Убрать (a personal one's)."""
-        actions = ["[1] 🔑 Код входа", *(["[2] 🗑 Убрать"] if account.personal else [])]
+        """An account's card, as the bot's: what is stored, 🔑 Код входа, 🗑 Удалить (a personal one's)."""
+        actions = ["[1] 🔑 Код входа", *(["[2] 🗑 Удалить"] if account.personal else [])]
         lines = card_lines(personal if account.personal else self.storage, account)
         console.print("\n" + "\n".join(lines + [""] + actions), markup=False, highlight=False)
         choice = console.input("[bold white]действие (Enter — назад)> [/]").strip()
@@ -73,7 +74,7 @@ class AccountsFunc(TelethonFunction):
         """The workers' table; the workers (scrape_accounts) in its order."""
         workers = self.storage.sessions
         if not workers:
-            console.print("[bold red]У проекта нет аккаунтов — добавьте: ➕ Добавить[/]")
+            console.print(f"У проекта нет воркеров. Добавьте: {menu_path('add')}.", style="bold red", markup=False)
             return []
 
         with console.status("Опрос аккаунтов..."):
@@ -157,13 +158,13 @@ async def remove_personal(personal, account) -> None:
     console.print(f"Будет завершена авторизация из файла {account.path} ({account.label}) и удалён сам файл. "
                   "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
                   "тот Desktop тоже выйдет из аккаунта.", markup=False, highlight=False)
-    if console.input("[bold white]Убрать? (y/n) [/]").strip() != "y":
+    if console.input("[bold white]🗑 Удалить личный аккаунт? (y/n) [/]").strip() != "y":
         console.print("Отменено.")
         return
 
     logged_out = await sign_in.remove_personal(personal, account)
     console.print(
-        f"✅ Личный аккаунт {account.label} убран: сессия завершена, файл удалён." if logged_out else
+        f"✅ Личный аккаунт {account.label} удалён: сессия завершена, файл стёрт." if logged_out else
         f"⚠️ Файл личного аккаунта {account.label} удалён, но завершить сессию не удалось — "
         "завершите её вручную: Telegram → Настройки → Устройства.",
         markup=False, highlight=False,

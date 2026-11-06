@@ -13,7 +13,7 @@ router = Router()
 
 @router.callback_query()
 async def stale_button(callback: CallbackQuery):
-    await callback.answer(STALE_BUTTON)
+    await callback.answer(STALE_BUTTON, show_alert=True)
 
 
 @router.message(StateFilter(None))  # not in a step (in one: button_step below)

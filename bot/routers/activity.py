@@ -6,11 +6,12 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb, choice_kb
-from bot.routers._common import STALE_BUTTON, require_post_link, resolve, start_form
+from bot.routers._common import busy_step, busy_tap, require_post_link, resolve, stale_tap, start_form
 from bot.services.delegation import WorkerPool, borrow
 from bot.services.jobs import JobManager
 from bot.states import PollVote, Reactions
 from functions.reactions import ReactionsFunc
+from modules.registry import ACTIVITY, title
 from scraper.scrape import CHAT_LOOKUP_TIMEOUT
 
 router = Router()
@@ -25,7 +26,8 @@ def _reactions_kb():
 
 @router.callback_query(FunctionCB.filter(F.key == "reactions"))
 async def reactions_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await start_form(callback, state, Reactions.link, "❤️ Реакции — пришлите ссылку на сообщение или пост:", pool)
+    await start_form(callback, state, Reactions.link, f"{title('reactions')} — пришлите ссылку на сообщение или пост:",
+                     pool)
 
 
 @router.message(Reactions.link)
@@ -34,7 +36,7 @@ async def reactions_link(message: Message, state: FSMContext):
     if link is None:
         return
     await state.update_data(link=link)
-    await message.answer("❤️ Какую реакцию ставят воркеры?", reply_markup=cancel_kb(Reactions.link, _reactions_kb()))
+    await message.answer("Какую реакцию ставят воркеры?", reply_markup=cancel_kb(Reactions.link, _reactions_kb()))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "reaction"))
@@ -43,11 +45,13 @@ async def reactions_run(
     pool: WorkerPool, functions: dict, manager: JobManager,
 ):
     data = await state.get_data()
-    await callback.answer()
     # a stale reaction button: after the state was cleared, or in another flow that has a link of its own
     if await state.get_state() != Reactions.link.state or "link" not in data:
-        await callback.message.answer(STALE_BUTTON)
+        await stale_tap(callback)
         return
+    if await busy_tap(callback, manager):
+        return
+    await callback.answer()
     await state.clear()
     await callback.message.edit_reply_markup(reply_markup=None)  # chosen once: one run
 
@@ -64,11 +68,11 @@ async def reactions_run(
 
 @router.callback_query(FunctionCB.filter(F.key == "poll"))
 async def poll_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await start_form(callback, state, PollVote.link, "🗳 Голосовать — пришлите ссылку на сообщение или пост с опросом:",
-                     pool)
+    await start_form(callback, state, PollVote.link,
+                     f"{title('poll')} — пришлите ссылку на сообщение или пост с опросом:", pool)
 
 
-POLL_ASK = "Пришлите номер варианта в опросе, например 1 или 2:"
+POLL_ASK = "Пришлите номер варианта в опросе, например, 1 или 2:"
 
 
 async def _poll_answers(pool: WorkerPool, functions: dict, link: str) -> list[str] | str:
@@ -102,17 +106,20 @@ async def poll_link(message: Message, state: FSMContext, pool: WorkerPool, funct
     await state.set_state(PollVote.option)
     answers = await _poll_answers(pool, functions, link)
     if isinstance(answers, str):  # the number typed, as before
-        await message.answer(f"ℹ️ Варианты не прочитаны: {answers}.\n{POLL_ASK}",
+        await message.answer(f"ℹ️ Варианты не прочитаны: {answers.rstrip('.')}.\n{POLL_ASK}",
                              reply_markup=cancel_kb(PollVote.option))
         return
+    await state.update_data(options=len(answers))  # a number typed instead is checked against them
     options = [(f"{number}. {text[:40]}", str(number - 1)) for number, text in enumerate(answers, 1)]
-    await message.answer("🗳 За какой вариант голосуют воркеры?",
+    await message.answer("За какой вариант голосуют воркеры?",
                          reply_markup=cancel_kb(PollVote.option, choice_kb("poll_opt", options)))
 
 
 @router.callback_query(PollVote.option, ChoiceCB.filter(F.scope == "poll_opt"))
 async def poll_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool,
                     functions: dict, manager: JobManager):
+    if await busy_tap(callback, manager):
+        return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)  # chosen once: one vote
     await _vote(callback.message, state, pool, functions, manager, int(callback_data.value))
@@ -123,6 +130,12 @@ async def poll_run(message: Message, state: FSMContext, pool: WorkerPool, functi
     raw = (message.text or "").strip()
     if not raw.isdecimal() or int(raw) < 1:
         await message.answer("Нужен номер варианта — число от 1. Пришлите ещё раз:")
+        return
+    if (count := (await state.get_data()).get("options")) and int(raw) > count:
+        await message.answer(f"Такого варианта нет: в опросе их {count}. Пришлите ещё раз:")
+        return
+    if manager.active:
+        await busy_step(message, manager, ACTIVITY, "пришлите номер ещё раз")
         return
     await _vote(message, state, pool, functions, manager, int(raw) - 1)
 

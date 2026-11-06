@@ -130,8 +130,6 @@ class ReportFunc(TelethonFunction):
         return False
 
     async def execute(self):
-        self.ask_accounts_count()
-
         if not self.sessions:
             return
 
@@ -145,7 +143,8 @@ class ReportFunc(TelethonFunction):
                 posts = [int(p) for p in parts]
                 break
 
-        comment = console.input("[bold red]комментарий для модераторов Telegram (необязательно)> [/]")
+        comment = console.input("[bold red]комментарий для модераторов Telegram (пусто или «-» — без него)> [/]")
+        comment = "" if comment.strip() == "-" else comment  # as the bot's
 
         first, rest = self.sessions[0], self.sessions[1:]
 

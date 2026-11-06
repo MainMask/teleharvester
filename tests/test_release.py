@@ -143,7 +143,8 @@ def test_the_button_releases_the_contacts(tmp_path):
 
     assert restricted_workers.load_released() == ["sessions/a.jsession"]
     (text, markup), = callback.message.edits
-    assert text.startswith("✅ Контакты @a переданы") and markup is None
+    assert text.startswith("✅ Контакты @a переданы")
+    assert [b.text for row in markup.inline_keyboard for b in row] == ["⬅️ 🤖 Аккаунты"]  # never a dead end
 
 
 def test_the_button_does_nothing_for_a_worker_no_longer_restricted(tmp_path):
@@ -159,27 +160,6 @@ def test_the_button_does_nothing_for_a_worker_no_longer_restricted(tmp_path):
 
 
 # --- review fixes ----------------------------------------------------------------------------
-
-def test_moving_restricted_sessions_keeps_the_ones_whose_people_wait(monkeypatch, tmp_path):
-    from modules import contacts_ledger, restricted_workers
-
-    monkeypatch.chdir(tmp_path)
-    waiting, dated, released, alone = (
-        _CheckedSession(1, tmp_path, reply=FOREVER), _CheckedSession(2, tmp_path, reply=UNTIL),
-        _CheckedSession(3, tmp_path, reply=FOREVER), _CheckedSession(4, tmp_path, reply=FOREVER))
-    contacts_ledger.save(conftest.home(), {"10": 1, "11": 2, "12": 3})  # `alone` has no contacts
-    storage = _checked_storage(monkeypatch, tmp_path, [waiting, dated, released, alone])
-    restricted_workers.save([released.path])
-    restricted_workers.save_released([released.path])
-
-    fn, _, blocks = _run(storage, [waiting, dated, released, alone])
-    kept = asyncio.run(fn.move_restricted(blocks))
-
-    assert kept == ["@w1", "@w2"]
-    assert (tmp_path / "sessions" / "w1.jsession").exists() and (tmp_path / "sessions" / "w2.jsession").exists()
-    assert (tmp_path / "sessions" / "restricted" / "permanent" / "w3.jsession").exists()
-    assert (tmp_path / "sessions" / "restricted" / "permanent" / "w4.jsession").exists()
-
 
 def test_only_permanent_replies_are_quoted_in_worker_order(monkeypatch, tmp_path):
     a, b, c = (_Slow(1, tmp_path, reply=FOREVER), _CheckedSession(2, tmp_path, reply=UNTIL),

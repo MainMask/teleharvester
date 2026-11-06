@@ -72,6 +72,9 @@ class _Msg:
     async def edit_text(self, text, **kwargs):  # in place: what is shown now, as an answer
         self.answers.append((text, kwargs.get("reply_markup")))
 
+    async def edit_reply_markup(self, reply_markup=None):
+        pass
+
 
 class _Callback:
     def __init__(self):
@@ -91,6 +94,8 @@ def _launches(monkeypatch=None):
     runs = []
 
     class _Manager:
+        active = False
+
         async def run(self, bot, chat_id, pool, instance, bot_function, job, *labels, only=None):
             async def run(report, **kwargs):
                 runs.append(kwargs)
@@ -282,6 +287,129 @@ def test_cli_settings_ask_again_and_save_as_the_bot_does(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "config.toml.bak")
 
 
+def test_cli_settings_leave_the_trigger_and_count_to_the_chat_campaign(tmp_path, monkeypatch):
+    from functions import settings as cli
+
+    settings = _settings(tmp_path, monkeypatch)
+    printed = []
+    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "")
+    cli.SettingsFunc(types.SimpleNamespace(sessions=[]), settings).execute()
+    assert "Триггер" not in printed[0] and "Сообщений на воркера" not in printed[0]  # as the bot's ⚙️
+
+
+def test_cli_chat_campaign_asks_its_trigger_and_count_as_the_bot_does(tmp_path, monkeypatch):
+    from functions import broadcast
+
+    settings = _settings(tmp_path, monkeypatch)
+    answers = iter(["", "", "abc", "5"])  # Enter keeps «go»; an empty count is asked again
+    monkeypatch.setattr(broadcast.Prompt, "ask", lambda *a, **k: next(answers) or k.get("default", ""))
+    monkeypatch.setattr(broadcast.console, "print", lambda *a, **k: None)
+    options = broadcast.ask_run_options(settings, trigger=True)
+    assert toml.load(tmp_path / "config.toml")["broadcast"]["messages_count"] == 0  # nothing written while asking
+    assert broadcast.save_run_options(settings, options)
+    config = toml.load(tmp_path / "config.toml")["broadcast"]
+    assert settings.trigger == config["trigger"] == "go" and settings.messages_count == config["messages_count"] == 5
+
+    answers = iter(["стоп", ""])  # a new trigger; Enter keeps the count of 5
+    assert broadcast.save_run_options(settings, broadcast.ask_run_options(settings, trigger=True))
+    assert (settings.trigger, settings.messages_count) == ("стоп", 5)
+    assert toml.load(tmp_path / "config.toml")["broadcast"]["trigger"] == "стоп"
+
+
+def test_cli_poll_vote_asks_again_for_an_option_beyond_the_poll_s(monkeypatch):
+    from functions import poll_vote
+
+    func = poll_vote.PollVoteFunc(ns(sessions=[]), ns(delay=[0]))
+    monkeypatch.setattr(func, "ask_message_link", lambda prompt: "https://t.me/chan/5")
+
+    async def answers(link):
+        return ["Да", "Нет"]
+
+    async def run(link, option, report):
+        voted.append(option)
+
+    monkeypatch.setattr(func, "_read_answers", answers)
+    monkeypatch.setattr(func, "run", run)
+    printed, voted, typed = [], [], iter(["3", "2"])
+    monkeypatch.setattr(poll_vote, "console", ns(print=lambda text="", *a, **k: printed.append(str(text)),
+                                                 input=lambda *a: next(typed), status=lambda *a: io.StringIO()))
+    asyncio.run(func.execute())
+    assert "[1] Да\n[2] Нет" in printed and "Такого варианта нет: в опросе их 2." in printed
+    assert voted == [1]
+
+
+
+def test_cli_reaction_is_one_of_the_list_as_the_bot_s_buttons(monkeypatch):
+    from functions import reactions
+
+    func = reactions.ReactionsFunc(ns(sessions=[]), ns(delay=[0]))
+    monkeypatch.setattr(func, "ask_message_link", lambda prompt: "https://t.me/chan/5")
+
+    async def run(link, reaction, report):
+        chosen.append(reaction)
+
+    monkeypatch.setattr(func, "run", run)
+    chosen, printed = [], []
+    for typed, expected in ((["🦄", "99", "2"], "❤️"), (["❤"], "❤️"), (["🔥"], "🔥"), ([""], "")):
+        answers = iter(typed)
+        monkeypatch.setattr(reactions, "console", ns(print=lambda text="", *a, **k: printed.append(str(text)),
+                                                     input=lambda *a: next(answers)))
+        asyncio.run(func.execute())
+        assert chosen.pop() == expected
+    assert printed.count("Такой реакции нет в списке: номер из него или пусто.") == 2
+
+
+@pytest.mark.parametrize("typed, sent", [("-", ""), (" - ", ""), ("", ""), ("спам", "спам")])
+def test_cli_user_report_dash_means_no_comment_as_in_the_bot(monkeypatch, typed, sent):
+    from functions import report_user
+
+    func = report_user.ReportUserFunc(ns(sessions=[]), ns(delay=[0]))
+
+    async def run(link, reason_type, comment, report):
+        comments.append(comment)
+
+    monkeypatch.setattr(func, "run", run)
+    comments, answers = [], iter(["1", typed])
+    monkeypatch.setattr(report_user.Prompt, "ask", lambda *a, **k: "@spammer")
+    monkeypatch.setattr(report_user, "console", ns(print=lambda *a, **k: None, input=lambda *a: next(answers)))
+    asyncio.run(func.execute())
+    assert comments == [sent]
+
+
+def test_cli_post_report_dash_means_no_comment_as_in_the_bot(monkeypatch):
+    from functions.report import ReportFunc
+
+    class _S:
+        async def get_me(self):
+            return ns(first_name="A")
+
+    storage = ns(sessions=[_S()], ainitialize_session=lambda session: _Nothing())
+    fn = ReportFunc(storage, ns(delay=[0]))
+    answers = iter(["https://t.me/x", "1"])
+    monkeypatch.setattr("functions.report.Prompt.ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr("functions.report.console.input", lambda *_: "-")
+    comments = []
+
+    async def resolve_and_report(session, link, posts, comment):
+        comments.append(comment)
+        return [0]
+
+    async def replay_rest(*args):
+        pass
+
+    fn.resolve_and_report, fn.replay_rest = resolve_and_report, replay_rest
+    asyncio.run(fn.execute())
+    assert comments == [""]
+
+
+class _Nothing:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
 # --- 2. names / usernames from a list ------------------------------------------------------
 
 def test_names_from_a_sent_txt(monkeypatch):
@@ -431,7 +559,7 @@ def test_scrape_asks_before_starting_then_runs_in_its_own_slot(monkeypatch):
     assert params.keyword == "" and params.with_reactors and params.with_comments and params.resume is False
     assert params.account == _ACC
     assert seen == [(True, False)]  # the scraper's slot is taken, the bot's task slot stays free
-    assert not scrapes.active and any("Скрап запущен на аккаунте" in t for t in _sent(go.bot))
+    assert not scrapes.active and any("▶️ Скрап проекта — запущено на аккаунте" in t for t in _sent(go.bot))
 
 
 def test_scrape_options_toggle_in_place_and_reach_the_run(monkeypatch):
@@ -447,13 +575,13 @@ def test_scrape_options_toggle_in_place_and_reach_the_run(monkeypatch):
     asyncio.run(router.scrape.scrape_go(more, ChoiceCB(scope="scrape_go", value="more"), state, _pool(), None,
                                  JobManager()))
     assert _buttons(more.message.edits[0][1]) == [  # in the summary's place
-        "🗨 Комментарии ✅", "❤️ Реакции ✅ (медленно)", "👥 База участников ✅",
+        "🗨 Комментарии ✅", "❤️ Реакции (медленно) ✅", "👥 База участников ✅",
         "🔎 Фильтр по слову: —", "🔢 Максимум постов: все", "▶️ Запустить", "✖️ Отмена"]
 
     toggle = _SCallback()
     asyncio.run(router.scrape.scrape_option(toggle, ChoiceCB(scope="scrape_opt", value="reactors"), state,
                                      _pool(), None, JobManager()))
-    assert _buttons(toggle.message.edited[0])[1] == "❤️ Реакции ❌ (медленно)"  # edited, not resent
+    assert _buttons(toggle.message.edited[0])[1] == "❤️ Реакции (медленно) ❌"  # edited, not resent
 
     ask = _SCallback()
     asyncio.run(router.scrape.scrape_option(ask, ChoiceCB(scope="scrape_opt", value="keyword"), state,
@@ -660,13 +788,13 @@ def test_many_accounts_to_scrape_on_are_paged():
     start = _SCallback()
     asyncio.run(router.members.members_project(start.message, state, ns(name="P"),
                                        dict(pool=pool, personal=None, scrapes=JobManager())))
-    assert _buttons(start.message.edits[0][1])[-4:] == ["◀️", "📄 стр 1/2", "▶️", "⬅️ 📥 Сбор"]
+    assert _buttons(start.message.edits[0][1])[-4:] == ["◀️", "📄 стр. 1/2", "▶️", "⬅️ 📥 Сбор"]
 
     page = _SCallback()
     asyncio.run(router.common.account_pick(page, ChoiceCB(scope="scr_acc", value="pg.1"), state, pool, None,
                                            JobManager()))
     assert _buttons(page.message.edited[-1]) == ["🤖 w20.jsession", "🤖 w21.jsession", "🤖 w22.jsession",
-                                                 "🤖 w23.jsession", "🤖 w24.jsession", "◀️", "📄 стр 2/2", "▶️",
+                                                 "🤖 w23.jsession", "🤖 w24.jsession", "◀️", "📄 стр. 2/2", "▶️",
                                                  "⬅️ 📥 Сбор"]
     asyncio.run(router.common.account_pick(_SCallback(), ChoiceCB(scope="scr_acc", value="22"), state, pool, None,
                                     JobManager()))
@@ -1039,7 +1167,7 @@ def test_cli_tdata_import_adds_the_new_workers_without_a_restart(tmp_path, monke
     asyncio.run(cli.TdataImportFunc(_Storage(), ns()).execute())
     new = os.path.join("sessions", "new.jsession")
     assert added == [new] and checked == [("client", new)]
-    assert said == ["✅ Импортировано аккаунтов: 1. Воркеров: 2."]
+    assert said == ["✅ Импортировано воркеров: 1. Воркеров в проекте: 2."]
 
     async def nothing(*args):
         return 0
@@ -1055,7 +1183,6 @@ def test_cli_photo_one_path_or_random_folder(tmp_path, monkeypatch):
     photo = tmp_path / "me.jpg"
     photo.write_bytes(b"x")
     fn = cpp.ChangeProfilePhotoFunc(ns(sessions=[]), ns())
-    fn.ask_accounts_count = lambda: None
     runs = []
 
     async def run(report, photo_path=None):
@@ -1103,7 +1230,7 @@ def test_cli_menu_is_the_bot_s_menu(monkeypatch):
     # a project's sections: its accounts (the screen's actions, then its function, as in the bot), their
     # profile and service, then one target for all its workers
     assert [e[2] for e in project if e[0] == "🤖 Аккаунты"] == [
-        "📋 Список", "🌐 Прокси", "➕ Добавить", "↪️ Перенести", "🛡 Проверка статуса (SpamBot)"]
+        "📋 Список", "🌐 Прокси", "➕ Добавить", "↪️ Перенести", "🛡 Проверка SpamBot"]
     assert [e[0] for e in project][-1] == "💬 Активность" and "🤝 Инвайтинг" in [e[2] for e in project]
     # nothing lost, nothing repeated; a project card's items and ➕ Добавить's tdata are other items'
     assert len(entries) + len(project) == len(functions) - len(NOT_MENU_ITEMS)
@@ -1334,7 +1461,7 @@ def test_picker_notes_scraping_and_restricted_workers():
     pool, callback = _jpool(_A, _B), _Callback()
     pool.scraping = ns(path=_B, label="B")
     asyncio.run(profile.picker_start(callback, FunctionCB(key="bio"), _State(), pool))
-    assert _buttons(callback.message.answers[0][1])[:2] == ["✅ @a ⛔", "✅ @b 🚫 до 01.11.2026 ⏳ скрап"]
+    assert _buttons(callback.message.answers[0][1])[:2] == ["✅ @a ⛔", "✅ @b 🚫 до 01.11.2026 ⏳ занят скрапом"]
 
 
 def test_picker_pages():
@@ -1345,10 +1472,10 @@ def test_picker_pages():
     pool, state, callback = _jpool(*paths), _State(), _Callback()
     asyncio.run(profile.picker_start(callback, FunctionCB(key="bio"), state, pool))
     buttons = _buttons(callback.message.answers[0][1])
-    assert buttons[0] == "✅ @w00" and buttons[19] == "✅ @w19" and "📄 стр 1/3" in buttons
+    assert buttons[0] == "✅ @w00" and buttons[19] == "✅ @w19" and "📄 стр. 1/3" in buttons
 
     buttons = _buttons(_pick("next", state, pool).message.edits[0][1])
-    assert buttons[0] == "✅ @w20" and "📄 стр 2/3" in buttons
+    assert buttons[0] == "✅ @w20" and "📄 стр. 2/3" in buttons
     _pick("prev", state, pool)
     buttons = _buttons(_pick("prev", state, pool).message.edits[0][1])  # wraps around to the last
     assert buttons[0] == "✅ @w40" and len([b for b in buttons if "@w" in b]) == 5
@@ -1369,6 +1496,8 @@ def test_picked_workers_reach_the_job():
     seen = []
 
     class _Manager:
+        active = False
+
         async def run(self, *args, only=None, **kw):
             seen.append(only)
 
@@ -1383,6 +1512,8 @@ def test_all_picked_runs_on_the_shown_workers_only():
     seen = []
 
     class _Manager:
+        active = False
+
         async def run(self, *args, only=None, **kw):
             seen.append(only)
 
@@ -1410,7 +1541,7 @@ def test_delegate_keeps_only_the_picked_workers(monkeypatch):
     ran = asyncio.run(pool.run(func, ns(risk="safe"), job, report, only=["sessions/b.session"]))
     assert ran is True and func.sessions == [b] and func.on_hold == [] and reports == []
 
-    ran = asyncio.run(pool.run(func, ns(risk="safe"), job, report, only=["sessions/gone.session"]))
+    ran = asyncio.run(pool.run(func, ns(risk="safe", key="name"), job, report, only=["sessions/gone.session"]))
     assert ran is False and "недоступны" in reports[0]
 
 
@@ -1467,7 +1598,7 @@ def test_scrape_channels_are_shown_by_name_up_to_the_confirmation(monkeypatch):
     confirm = _Msg(text="31.01.2024")
     asyncio.run(router.scrape.scrape_run(confirm, state))
     # one block each, as on the project's card
-    assert "Каналы:\n\n1. «Канал А»\n👤 @a\n\n2. «Канал Б»\n👤 @b\n\nПериод:" in confirm.answers[0][0]
+    assert "— каналы:\n\n1. «Канал А»\n👤 @a\n\n2. «Канал Б»\n👤 @b\n\nПериод:" in confirm.answers[0][0]
 
 
 def test_a_chat_not_found_asks_before_each_flow_goes_on(monkeypatch):
@@ -1486,7 +1617,7 @@ def test_a_chat_not_found_asks_before_each_flow_goes_on(monkeypatch):
         asyncio.run(handler(msg, state, _pool(), None))
         assert msg.answers[-2][0] == "1. @typo\n⚠️ нет такого"  # the list, then the question under it
         text, markup = msg.answers[-1]
-        assert text == "Пришлите список заново — или продолжите как есть:"
+        assert text == "Пришлите список заново или продолжите как есть:"
         assert _buttons(markup) == ["▶️ Продолжить всё равно", "✖️ Отмена"] and state.state == asking
         if next_state is None:
             continue
@@ -1559,7 +1690,7 @@ def test_a_failed_lookup_goes_on_with_the_input_as_typed(monkeypatch):
 
     confirm = _Msg(text="31.01.2024")
     asyncio.run(router.scrape.scrape_run(confirm, state))
-    assert "Каналы:\n\n1. @a\n\nПериод:" in confirm.answers[0][0]  # never named: as typed
+    assert "— каналы:\n\n1. @a\n\nПериод:" in confirm.answers[0][0]  # never named: as typed
 
 
 def test_a_check_cut_by_a_job_s_end_goes_on_with_the_input_as_typed(monkeypatch):
@@ -1585,7 +1716,7 @@ def test_an_empty_channel_list_is_asked_again(monkeypatch):
     msg = _Msg(text=" , ")
     asyncio.run(router.scrape.scrape_channels(msg, state, _pool(), None))
     assert looked_up == [] and state.state == Scrape.channels
-    assert msg.answers == [("Не вижу ни одного канала. Пришлите ещё раз:", None)]
+    assert msg.answers == [("Не вижу ни одного канала или группы. Пришлите ещё раз:", None)]
 
 
 def test_an_interrupted_scrape_is_offered_with_its_channels_names(monkeypatch, tmp_path):

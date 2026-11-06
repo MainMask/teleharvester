@@ -2,6 +2,7 @@ import asyncio
 import os
 import random
 from python_socks import ProxyError
+from rich.markup import escape
 from rich.prompt import Prompt, Confirm
 from modules.console import console
 from telethon import events, types
@@ -19,6 +20,7 @@ from functions.base import TelethonFunction
 from functions.base.base import AccountLimited
 from modules import rich_message
 from modules.rich_message import RichContent
+from modules.settings import count_text
 from modules.storages.sessions_storage import connect_client
 
 # Invisible mention carrier: each hidden mention is these two chars linked to a user.
@@ -26,6 +28,40 @@ _MENTION_CHARS = "⁬⁯"
 # hidden mentions per message: this many random admins, or random members (bot and CLI say so)
 MENTION_ADMINS = 2
 MENTION_USERS = 10
+
+
+def ask_run_options(settings, trigger: bool = False) -> tuple[str, int]:
+    """CLI: the run's trigger (`trigger`: 🔔 Чат — по слову's) and messages per worker, asked each run as the bot
+    asks them (bot/routers/chat_broadcasts.py), Enter keeping the current value; save_run_options writes them."""
+    new_trigger = settings.trigger
+    if trigger:
+        keep = f" (Enter — оставить «{settings.trigger}»)" if settings.trigger else ""
+        while True:  # never empty: it would fire on any caption-less media
+            new_trigger = Prompt.ask(f"[bold red]триггер — текст, после которого воркеры начнут писать в чат"
+                                     f"{escape(keep)}[/]", default=settings.trigger or "", show_default=False)
+            if new_trigger.strip():
+                break
+    keep = f", Enter — оставить: {count_text(settings.messages_count)}" if settings.messages_count else ""
+    while not (raw := Prompt.ask(f"[bold red]сколько сообщений отправит каждый воркер (0 — без лимита{keep})[/]",
+                                 default=str(settings.messages_count) if keep else "",
+                                 show_default=False).strip()).isdecimal():
+        console.print("[bold red]Нужно целое число.[/]")
+    return new_trigger, int(raw)
+
+
+def save_run_options(settings, options: tuple[str, int]) -> bool:
+    """The asked options (ask_run_options) to config.toml, which the run reads — right before it starts, as the
+    bot's _save_options, so a run left at a later question changes nothing. False (said) if they can't be."""
+    trigger, count = options
+    try:
+        if trigger != settings.trigger:
+            settings.set_trigger(trigger)
+        if count != settings.messages_count:
+            settings.set_messages_count(count)
+    except (OSError, ValueError) as err:  # ValueError: a config.toml broken by hand meanwhile
+        console.print(f"[bold red]⚠️ Не удалось сохранить config.toml:[/] {escape(str(err))}")
+        return False
+    return True
 
 # Every update a listening worker receives adds its users/chats to the session's in-memory
 # entity set, which never shrinks; a trigger listener runs for days, so past this many it
@@ -64,16 +100,16 @@ class Broadcast(TelethonFunction):
 
         self.choice = None
         self.content = None
+        self.mention_all, self.mention_mode, self.sticker_set = False, None, None  # set by ask() or configure()
         self._stickers = {}  # id(session) -> the sticker set's documents, fetched once per worker
 
-        # Labels only (menu display / choice numbering); all modes share one sender.
-        self.modes = (
-            "Рассылка текстом",
-            "Рассылка одним аккаунтом",
-            "Рассылка с медиа",
-            "Рассылка ответом на сообщение (триггер отправьте ответом на него)",
-            "Рассылка стикерами",
-        )
+        # The CLI's menu labels, by the choice the bot's buttons send (bot/routers/chat_broadcasts.py; its
+        # 2 — media — the CLI can't send); all modes share one sender
+        self.modes = {
+            0: "Рассылка текстом",
+            3: "Рассылка ответом на сообщение (триггер отправьте ответом на него)",
+            4: "Рассылка стикерами",
+        }
 
     def _base_content(self):
         """Base (text, entities, media) for one send.
@@ -277,9 +313,9 @@ class Broadcast(TelethonFunction):
         finally:
             session.remove_event_handler(handler, events.NewMessage)
 
-    def ask(self, modes=(0, 1, 3, 4)):
-        """CLI: the campaign's settings. `modes`: the indexes of self.modes that make sense for the
-        caller (the CLI sends config text only, so "с медиа" is never one of them)."""
+    def ask(self, modes=(0, 3, 4)):
+        """CLI: the campaign's settings, in the bot's order. `modes`: the keys of self.modes that make sense
+        for the caller."""
         if not self.settings.messages:  # the text each send picks from (_base_content); the bot asks its own
             raise ValueError("в config.toml [broadcast] messages нет ни одного сообщения — добавьте хотя бы одно")
         for number, mode in enumerate(modes, 1):
@@ -299,12 +335,6 @@ class Broadcast(TelethonFunction):
 
         self.choice = modes[int(choice) - 1]
 
-        if self.choice == 4:
-            self.sticker_set = console.input(
-                "[bold red]ссылка на стикерпак (например https://t.me/addstickers/AlbinoEmoji)> [/]")
-            self.sticker_set = self.sticker_set.replace("https://t.me/addstickers/", "")
-
-        self.delay_range = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
         self.mention_all = Confirm.ask("[bold red]добавлять в сообщения скрытые упоминания участников чата? "
                                        "(упомянутым придёт уведомление)[/]", default=True)
 
@@ -315,24 +345,14 @@ class Broadcast(TelethonFunction):
                 choices=["admins", "users"]
             )
 
+        if self.choice == 4:
+            self.sticker_set = console.input(
+                "[bold red]ссылка на стикерпак (например https://t.me/addstickers/AlbinoEmoji)> [/]")
+            self.sticker_set = self.sticker_set.replace("https://t.me/addstickers/", "")
+
         return self.choice
 
-    async def start_single_campaign(self, sessions, link, report):
-        for session in sessions:
-            async with self.storage.ainitialize_session(session):
-                await self.broadcast(
-                    session,
-                    link,
-                    report,
-                )
-
     async def start_campaign(self, report):
-        if self.choice == 1:
-            link = Prompt.ask("[bold red]ссылка на чат[/]")
-
-            await self.start_single_campaign(self.sessions, link, report)
-            return
-
         await report('[*] Отправьте «{trigger}» в чат'.format(trigger=self.settings.trigger))
 
         await asyncio.gather(*[

@@ -25,7 +25,7 @@ def paged_kb(scope: str, options: list[tuple[str, str]], page: int, suffix: str 
     pages = max(1, -(-len(options) // PAGE_SIZE))
     page %= pages
     shown = options[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
-    nav = [("◀️", f"pg.{(page - 1) % pages}{suffix}"), (f"📄 стр {page + 1}/{pages}", f"pg.{page}{suffix}"),
+    nav = [("◀️", f"pg.{(page - 1) % pages}{suffix}"), (f"📄 стр. {page + 1}/{pages}", f"pg.{page}{suffix}"),
            ("▶️", f"pg.{(page + 1) % pages}{suffix}")] if pages > 1 else []
     return choice_kb(scope, shown + nav, widths=(*[1] * len(shown), 3))
 
@@ -45,7 +45,7 @@ def marks_kb(scope: str, labels: list[str], picked: list[int], page: int, action
     `widths`. The handler: marks_step."""
     pages = max(1, -(-len(labels) // PAGE_SIZE))
     shown = range(page * PAGE_SIZE, min((page + 1) * PAGE_SIZE, len(labels)))
-    nav = [("◀️", "prev"), (f"📄 стр {page + 1}/{pages}", "page"), ("▶️", "next")] if pages > 1 else []
+    nav = [("◀️", "prev"), (f"📄 стр. {page + 1}/{pages}", "page"), ("▶️", "next")] if pages > 1 else []
     options = [(f"{'✅' if index in picked else '⬜'} {labels[index]}", str(index)) for index in shown]
     return choice_kb(scope, options + nav + actions, widths=(*[1] * len(options), *([3] if nav else []), *widths))
 

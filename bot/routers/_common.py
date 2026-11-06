@@ -3,9 +3,9 @@ from bot.keyboards.menu import back_kb, main_menu
 from bot.services import login as logins
 from bot.services.capture import capture
 from bot.services.jobs import busy
-from modules.registry import BOT_FUNCTIONS_BY_KEY, menu_path
+from modules.registry import BOT_FUNCTIONS_BY_KEY, NO_WORKERS
 from functions.base.base import POST_LINK_HINT, BaseFunction
-from scraper.scrape import bad_channels, bad_channels_text, parse_channels
+from scraper.scrape import CHAT_FORMAT, bad_channels, bad_channels_text, parse_channels
 
 # a stale tap: a button of an old message (stale_tap); a stale step: text sent to a step whose flow is gone
 STALE_BUTTON = "Кнопка устарела — откройте раздел заново."
@@ -68,9 +68,6 @@ def resolve(functions: dict, key: str):
     return functions[bot_function.classname](), bot_function
 
 
-NO_WORKERS = f"У проекта нет воркер-аккаунтов. Добавьте: {menu_path('add')}."
-
-
 async def ensure_workers(callback, pool) -> bool:
     """A function's button tapped (answered here): True if the project has a worker; else False after saying
     so in a pop-up over its screen."""
@@ -101,8 +98,8 @@ async def start_form(callback, state, step, text: str, pool=None, markup=None, p
     return True
 
 
-async def send_chunked(message, header: str, lines: list[str], sep: str = "\n\n"):
-    """Send header + cards (blank line between, or `sep`) in message-sized chunks."""
+async def send_chunked(message, header: str, lines: list[str], sep: str = "\n\n", reply_markup=None):
+    """Send header + cards (blank line between, or `sep`) in message-sized chunks; `reply_markup` under the last."""
     chunks, current = [], header
     for line in lines:
         if len(current) + len(line) + len(sep) > MAX_MESSAGE:
@@ -111,8 +108,8 @@ async def send_chunked(message, header: str, lines: list[str], sep: str = "\n\n"
         current += (sep if current else "") + line
     chunks.append(current)
 
-    for chunk in chunks:
-        await message.answer(chunk, parse_mode="HTML")
+    for index, chunk in enumerate(chunks, 1):
+        await message.answer(chunk, parse_mode="HTML", reply_markup=reply_markup if index == len(chunks) else None)
 
 
 async def menu_answer(message, text: str):
@@ -125,11 +122,19 @@ async def back_answer(message, text: str, screen: str, project: int = 0, **kwarg
     await message.answer(text, reply_markup=back_kb(screen, project), **kwargs)
 
 
-async def busy_step(message, manager, screen: str):
+async def busy_step(message, manager, screen: str, again: str = "пришлите сообщение ещё раз"):
     """A form's last step while the project's job slot is busy: said, with ⬅️ to `screen`; the step stays, so
-    what was sent is not lost — it can be sent again once that job is over."""
-    await back_answer(message, f"{busy(manager.label)}\nКогда она закончится, пришлите сообщение ещё раз.", screen,
-                      manager.project_id)
+    what was sent is not lost — it can be sent again (`again`) once that job is over."""
+    await back_answer(message, f"{busy(manager.label)}\nКогда она закончится, {again}.", screen, manager.project_id)
+
+
+async def busy_tap(callback, manager) -> bool:
+    """A form's last button while the project's job slot is busy: True after saying so in a pop-up over it; the
+    step and its buttons stay, to be tapped again once that job is over."""
+    if not manager.active:
+        return False
+    await callback.answer(f"{busy(manager.label)}\nКогда она закончится, нажмите ещё раз.", show_alert=True)
+    return True
 
 
 async def leave_form(message, state):
@@ -142,7 +147,7 @@ async def leave_form(message, state):
 async def read_text_document(message, max_size: int) -> str | None:
     """Text of a .txt the user sent; report and return None if it's too big."""
     if (message.document.file_size or 0) > max_size:
-        await message.answer("Файл слишком большой. Пришлите .txt поменьше.")
+        await message.answer("Файл слишком большой. Пришлите .txt поменьше:")
         return None
     buffer = await message.bot.download(message.document)
     return buffer.read().decode("utf-8", "replace")
@@ -174,10 +179,10 @@ async def require_post_link(message) -> str | None:
 
 
 async def typed_channels(message, raw: str) -> list[str] | None:
-    """The typed channels; None after asking for them again (none, or one that can't be a channel)."""
+    """The typed channels or groups; None after asking for them again (none, or one that can't be a chat)."""
     channels = parse_channels(raw)
     if not channels:
-        await message.answer("Не вижу ни одного канала. Пришлите ещё раз:")
+        await message.answer("Не вижу ни одного канала или группы. Пришлите ещё раз:")
         return None
     if bad := bad_channels(channels):
         await message.answer(f"{bad_channels_text(bad)} Пришлите список ещё раз:")

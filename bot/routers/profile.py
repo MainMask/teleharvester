@@ -9,9 +9,9 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb, choice_kb, marks_kb
-from bot.routers._common import (back_answer, delete_quietly, ensure_workers, marks_step, read_text_document,
-                                 require_text, resolve)
-from modules.registry import BOT_FUNCTIONS_BY_KEY, PROFILE
+from bot.routers._common import (back_answer, busy_step, busy_tap, delete_quietly, ensure_workers, marks_step,
+                                 read_text_document, require_text, resolve)
+from modules.registry import BOT_FUNCTIONS_BY_KEY, PROFILE, SECURITY
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import ChangePhoto, PickWorkers, ProfileText, SetPassword
@@ -84,7 +84,7 @@ async def _ask_workers(message: Message, state: FSMContext, key: str, pool: Work
     for account, worker in zip(accounts, keys):
         notes = profile_done.notes(worker, account.path, classname, ledger, forever, status)
         if account.path == scraping:
-            notes.append("⏳ скрап")
+            notes.append("⏳ занят скрапом")
         labels.append(" ".join([account.label, *notes]))
     new = [i for i, worker in enumerate(keys) if classname not in ledger["done"].get(worker, {})]
 
@@ -107,6 +107,8 @@ async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
     if value == "go":
         if not picked:
             await callback.answer("Отметьте хотя бы одного воркера", show_alert=True)
+            return
+        if data["pick_key"] in NO_INPUT and await busy_tap(callback, manager):  # it would run now
             return
         await callback.answer()
         # the paths, «all» too: a worker added meanwhile (by phone, tdata) was never shown nor picked
@@ -152,6 +154,11 @@ async def _run(key: str, message: Message, pool: WorkerPool, functions: dict, ma
     )
 
 
+def _screen(state_data: dict) -> str:
+    """The screen the picked function was started from (👤 Профиль, 🔐 Безопасность): its ⬅️."""
+    return BOT_FUNCTIONS_BY_KEY[state_data["pick_key"]].category
+
+
 def _no_input(key: str):
     """The step after the worker picker of a function that asks nothing more: run it on them."""
     async def run(message: Message, state: FSMContext, deps: dict):
@@ -177,16 +184,16 @@ def _full_name(name: str) -> dict:
 
 
 TEXT_FIELDS = {
-    "name": _TextField("Пришлите имя для выбранных аккаунтов (например «Иван Петров») — или .txt со списком "
-                       "имён, по одному на строку: каждый аккаунт получит случайное.",
+    "name": _TextField("Пришлите имя для выбранных воркеров (например, «Иван Петров») или .txt со списком "
+                       "имён, по одному на строку: каждый воркер получит случайное.",
                        NAMES_FILE, _full_name, lambda names: dict(names=names)),
     "username": _TextField("Пришлите основу для username (если занята — добавится случайное число: base24, "
-                           "base3071, …) — или .txt со списком username, по одному на строку: аккаунты получат их "
+                           "base3071, …) или .txt со списком username, по одному на строку: воркеры получат их "
                            "по порядку.",
                            USERNAMES_FILE, lambda base: dict(base=base),
                            lambda usernames: dict(usernames=[u.lstrip("@") for u in usernames])),
-    "bio": _TextField("Пришлите новый текст bio для выбранных аккаунтов — или .txt со списком вариантов, "
-                      "по одному на строку: каждый аккаунт получит случайный.",
+    "bio": _TextField("Пришлите новый текст bio для выбранных воркеров или .txt со списком вариантов, "
+                      "по одному на строку: каждый воркер получит случайный.",
                       BIOS_FILE, lambda bio: dict(bio=bio), lambda bios: dict(bios=bios)),
 }
 
@@ -211,26 +218,39 @@ async def _run_picked(message: Message, state: FSMContext, pool: WorkerPool, fun
 @router.callback_query(ProfileText.text, ChoiceCB.filter(F.scope == "text_file"))
 async def text_from_file(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
                          manager: JobManager):
-    await callback.answer()
     field = TEXT_FIELDS[(await state.get_data())["pick_key"]]
-    if lines := _file_lines(field.path):
-        await _run_picked(callback.message, state, pool, functions, manager, **field.listed(lines))
+    if not (lines := _file_lines(field.path)):  # emptied or removed since its button was drawn
+        await callback.answer(f"{field.path} пуст или не найден — пришлите текст или .txt.", show_alert=True)
+        return
+    if await busy_tap(callback, manager):
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)  # chosen once: one run
+    await _run_picked(callback.message, state, pool, functions, manager, **field.listed(lines))
 
 
 @router.message(ProfileText.text, F.document)
 async def text_list(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
     lines = await _sent_lines(message)
-    if lines is not None:
-        field = TEXT_FIELDS[(await state.get_data())["pick_key"]]
-        await _run_picked(message, state, pool, functions, manager, **field.listed(lines))
+    if lines is None:
+        return
+    data = await state.get_data()
+    if manager.active:
+        await busy_step(message, manager, _screen(data), "пришлите файл ещё раз")
+        return
+    await _run_picked(message, state, pool, functions, manager, **TEXT_FIELDS[data["pick_key"]].listed(lines))
 
 
 @router.message(ProfileText.text)
 async def text_typed(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
     text = await require_text(message)
-    if text is not None:
-        field = TEXT_FIELDS[(await state.get_data())["pick_key"]]
-        await _run_picked(message, state, pool, functions, manager, **field.typed(text))
+    if text is None:
+        return
+    data = await state.get_data()
+    if manager.active:
+        await busy_step(message, manager, _screen(data), "пришлите текст ещё раз")
+        return
+    await _run_picked(message, state, pool, functions, manager, **TEXT_FIELDS[data["pick_key"]].typed(text))
 
 
 # --- change profile photo ---
@@ -238,7 +258,7 @@ async def text_typed(message: Message, state: FSMContext, pool: WorkerPool, func
 async def _photo_prompt(message: Message, state: FSMContext, deps: dict):
     await state.set_state(ChangePhoto.photo)
     await message.answer(
-        "Пришлите картинку (фото или файлом) — она станет аватаром выбранных аккаунтов, прежние аватарки удалятся:",
+        "Пришлите картинку (фото или файлом) — она станет аватаром выбранных воркеров, прежние аватарки удалятся:",
         reply_markup=cancel_kb(ChangePhoto.photo, choice_kb("photo_src", [("📄 Из assets/photos", "folder")])),
     )
 
@@ -246,7 +266,10 @@ async def _photo_prompt(message: Message, state: FSMContext, deps: dict):
 @router.callback_query(ChangePhoto.photo, ChoiceCB.filter(F.scope == "photo_src"))
 async def photo_folder(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
                        manager: JobManager):
+    if await busy_tap(callback, manager):
+        return
     await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)  # chosen once: one run
     only = await _picked(state)
     await state.clear()
     instance, bot_function = resolve(functions, "photo")
@@ -265,7 +288,10 @@ async def photo_upload(message: Message, state: FSMContext, pool: WorkerPool, fu
     elif message.document and (message.document.mime_type or "").startswith("image/"):
         source = message.document
     else:
-        await message.answer("Ожидается картинка. Пришлите фото или файл-изображение.")
+        await message.answer("Нужна картинка — фото или файл-изображение. Пришлите ещё раз:")
+        return
+    if manager.active:
+        await busy_step(message, manager, PROFILE, "пришлите картинку ещё раз")
         return
     only = await _picked(state)
     await state.clear()
@@ -297,7 +323,7 @@ async def photo_upload(message: Message, state: FSMContext, pool: WorkerPool, fu
 
 async def _twofa_prompt(message: Message, state: FSMContext, deps: dict):
     await state.set_state(SetPassword.password)
-    await message.answer("🔒 Пришлите новый пароль 2FA (сообщение удалю):",
+    await message.answer("Пришлите новый пароль 2FA (сообщение удалю):",
                          reply_markup=cancel_kb(SetPassword.password))
 
 
@@ -330,6 +356,9 @@ async def twofa_confirm(message: Message, state: FSMContext, pool: WorkerPool, f
         await message.answer("Пароли не совпадают. Пришлите новый пароль 2FA:",
                              reply_markup=cancel_kb(SetPassword.password))
         return
+    if manager.active:  # the password stays asked for: confirmed again once that job is over
+        await busy_step(message, manager, SECURITY, "пришлите пароль ещё раз")
+        return
     only = await _picked(state)
     await state.clear()
     instance, bot_function = resolve(functions, "2fa")
@@ -343,6 +372,7 @@ async def twofa_confirm(message: Message, state: FSMContext, pool: WorkerPool, f
 
 # --- terminate other sessions (no input) ---
 
+NO_INPUT = ("clearchannel", "lastseen", "terminate")  # run right after the picker: nothing more to ask
 # the step after the worker picker, by function key
 _NEXT = {
     **{key: _text_prompt(key) for key in TEXT_FIELDS},

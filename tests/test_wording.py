@@ -38,7 +38,7 @@ def test_bot_report_offers_the_post_of_its_link():
     go = _SCallback()
     asyncio.run(moderation.rm_post(go, state))
     assert state.data["ids"] == [123] and state.state == ReportMessage.comment
-    assert go.message.answers[0][0] == moderation.COMMENT_ASK
+    assert go.message.edits[0][0] == moderation.COMMENT_ASK  # in the question's place
 
 
 def test_bot_report_asks_the_numbers_for_a_chat_link_and_takes_them_typed():

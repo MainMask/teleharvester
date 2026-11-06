@@ -70,7 +70,7 @@ async def cancel(message: Message, state: FSMContext, manager: JobManager | None
     stopped = manager is not None and await manager.stop()
     if not stopped and manager is not None and manager.active:  # a report already replaying, a tdata import
         await message.answer(
-            f"Задача «{manager.label}» не прерывается, дождитесь завершения.", reply_markup=main_menu()
+            f"Задача «{manager.label}» не прерывается, дождитесь окончания.", reply_markup=main_menu()
         )
         return
     await message.answer("Отменено." if stopped else "Нечего отменять.", reply_markup=main_menu())
@@ -112,7 +112,7 @@ async def cancel_button(callback: CallbackQuery, callback_data: ChoiceCB, state:
                         manager: JobManager | None = None, workspace: Workspace | None = None):
     """✖️ Отмена under a prompt (keyboards.common.cancel_kb): /cancel's form branch, only at its own step."""
     if await state.get_state() != callback_data.value.replace(".", ":"):
-        await callback.answer(STALE_BUTTON)
+        await callback.answer(STALE_BUTTON, show_alert=True)
         return
     await callback.answer()
     await _leave_form(callback.message, state, manager, workspace, edit=True)

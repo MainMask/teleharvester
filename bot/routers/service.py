@@ -6,11 +6,11 @@ from aiogram.types import CallbackQuery, InaccessibleMessage
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import ensure_workers, resolve
+from bot.routers._common import busy_tap, ensure_workers, resolve
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace
-from modules.registry import SECURITY
+from modules.registry import SECURITY, title
 
 router = Router()
 
@@ -25,7 +25,7 @@ async def clear_start(callback: CallbackQuery, pool: WorkerPool):
     if not await ensure_workers(callback, pool):
         return
     await callback.message.answer(  # a new message: its age (CONFIRM_TTL) is its own, not the screen's
-        "🧹 Очистить диалоги — ⚠️ очистить ВСЕ диалоги на воркерах (и выйти из каналов)? Это необратимо.",
+        f"{title('clear')} — ⚠️ очистить ВСЕ диалоги на воркерах (и выйти из каналов)? Это необратимо.",
         reply_markup=choice_kb("clear_confirm", [("🧹 Да, очистить", "yes"), ("↩️ Отмена", "no")], widths=(2,)),
     )
 
@@ -36,7 +36,9 @@ async def clear_run(callback: CallbackQuery, callback_data: ChoiceCB, pool: Work
     message = callback.message  # inaccessible: too old for the bot to read, its date is 0
     if callback_data.value == "yes" and (isinstance(message, InaccessibleMessage) or
                                          datetime.datetime.now(datetime.timezone.utc) - message.date > CONFIRM_TTL):
-        await callback.answer("Подтверждение устарело — запустите «Очистить диалоги» заново.", show_alert=True)
+        await callback.answer(f"Подтверждение устарело — запустите «{title('clear')}» заново.", show_alert=True)
+        return
+    if callback_data.value == "yes" and await busy_tap(callback, manager):
         return
     await callback.answer()
 

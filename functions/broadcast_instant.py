@@ -1,7 +1,7 @@
 import asyncio
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-from functions.broadcast import Broadcast
+from functions.broadcast import Broadcast, ask_run_options, save_run_options
 from modules.console import console
 
 
@@ -26,12 +26,10 @@ class InstantBroadcastFunc(TelethonFunction):
         ])
 
     async def execute(self):
-        link = console.input("[bold red]ссылка> [/]")
         broadcast = Broadcast(self.storage, self.settings)
-        broadcast.ask_accounts_count()
-        broadcast.ask(modes=(0, 4))  # no trigger: no reply to it, and every worker sends
-
-        await asyncio.gather(*[
-            self._one(broadcast, session, link, console_report)
-            for session in broadcast.sessions
-        ])
+        broadcast.ask(modes=(0, 4))  # no trigger: no reply to it
+        link = console.input("[bold red]ссылка на чат> [/]")
+        if not save_run_options(self.settings, ask_run_options(self.settings)):
+            return
+        await self.run(broadcast.choice, broadcast.mention_all, broadcast.mention_mode, broadcast.sticker_set,
+                       None, link, console_report)

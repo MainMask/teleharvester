@@ -45,7 +45,7 @@ def _run_campaign(n_recipients, cap=10_000):
     fn = PmMailingFunc(storage, settings)
 
     recipients = [f"user{i}" for i in range(n_recipients)]
-    asyncio.run(fn.run(recipients, RichContent(text="hi"), [0], anoop))
+    asyncio.run(fn.run(recipients, RichContent(text="hi"), anoop))
     return list(fn.stats)
 
 
@@ -228,7 +228,7 @@ def _run_workers(tmp_path, monkeypatch, recipients, workers, cap=0):
                                     jsessions_paths=jsessions, get_session_path=lambda s: s.path)
     settings = types.SimpleNamespace(delay=[0], per_account_daily=cap, account_pause=[0])
     fn = PmMailingFunc(storage, settings)
-    asyncio.run(fn.run(recipients, RichContent(text="hi"), [0], report))
+    asyncio.run(fn.run(recipients, RichContent(text="hi"), report))
     return reports, fn.stats
 
 

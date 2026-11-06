@@ -10,7 +10,7 @@ class _Bot:
     def __init__(self, fail_for=()):
         self.sent, self.fail_for = [], set(fail_for)
 
-    async def send_message(self, chat_id, text):
+    async def send_message(self, chat_id, text, **kwargs):
         if chat_id in self.fail_for:  # an admin who never opened the bot
             raise RuntimeError("Forbidden: bot can't initiate conversation with a user")
         self.sent.append((chat_id, text))

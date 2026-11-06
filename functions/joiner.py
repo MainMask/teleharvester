@@ -1,38 +1,26 @@
 import asyncio
 
-from rich.progress import track
 from modules.console import console
-from rich.prompt import Prompt, Confirm
-
-from time import perf_counter
-
-from python_socks import ProxyError
+from rich.prompt import Confirm
 
 from telethon import events, types
 from telethon.errors import UserAlreadyParticipantError
-from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
-from telethon.sync import TelegramClient
 
-from functions.broadcast import Broadcast
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
 from scraper.scrape import channel_slug
 
-CAPTCHA_WAIT = 30  # seconds a worker waits for a captcha after joining (bot mode)
+CAPTCHA_WAIT = 30  # seconds a worker waits for a captcha after joining
 
 
 class JoinerFunc(TelethonFunction):
     """Join chat"""
 
-    async def join(self, session, link, index, mode, report=None):
-        async def emit(msg):
-            if report is not None:
-                await report(msg)
-            else:
-                print(msg)
-
+    async def join(self, session, link, index, mode, report) -> bool:
+        """True if the worker is in the chat now (`mode` "2": the channel's comments group); else reports why."""
         # channel_slug: the scraper's parser, which drops a trailing "/", a ?query and a post id
         slug = channel_slug(link)
 
@@ -43,23 +31,17 @@ class JoinerFunc(TelethonFunction):
                 else:
                     updates = await self.safe_call(lambda: session(ImportChatInviteRequest(slug[1:])))
             except UserAlreadyParticipantError:  # only an invite raises it: the worker is in the chat already
-                try:  # ChatInviteAlready: the chat itself for the follow-up broadcast (an invite link is no peer)
-                    return (await self.safe_call(lambda: session(CheckChatInviteRequest(slug[1:])))).chat
-                except Exception:
-                    return link
+                return True
             except AccountLimited as error:
-                await emit(f"[!] [аккаунт {index + 1}] лимит: {error}")
+                await report(f"[!] [аккаунт {index + 1}] лимит: {error}")
                 return False
             except Exception as error:
-                await emit(f"[!] [аккаунт {index + 1}] {error}")
-            else:
-                if isinstance(updates, types.messages.ChatInviteJoinResultWebView):
-                    await emit(f"[!] [аккаунт {index + 1}] чат требует подтверждения вступления в web-app бота")
-                    return False
-                # the joined chat for the follow-up broadcast (an invite link is no peer);
-                # the result wraps the Updates on this layer, UpdatesTooLong has no chats
-                chats = getattr(getattr(updates, "updates", updates), "chats", None)
-                return chats[0] if chats else link
+                await report(f"[!] [аккаунт {index + 1}] {error}")
+                return False
+            if isinstance(updates, types.messages.ChatInviteJoinResultWebView):
+                await report(f"[!] [аккаунт {index + 1}] чат требует подтверждения вступления в web-app бота")
+                return False
+            return True
 
         elif mode == "2":
             try:
@@ -67,23 +49,23 @@ class JoinerFunc(TelethonFunction):
                 linked_id = full.full_chat.linked_chat_id
 
                 if not linked_id:
-                    await emit(f"[!] [аккаунт {index + 1}] у канала нет привязанного чата")
+                    await report(f"[!] [аккаунт {index + 1}] у канала нет привязанного чата")
                     return False
 
                 chat = next((c for c in full.chats if c.id == linked_id), None)
 
                 if chat is None:
-                    await emit(f"[!] [аккаунт {index + 1}] привязанный чат не найден")
+                    await report(f"[!] [аккаунт {index + 1}] привязанный чат не найден")
                     return False
 
                 await self.safe_call(lambda: session(JoinChannelRequest(chat)))
             except AccountLimited as error:
-                await emit(f"[!] [аккаунт {index + 1}] лимит: {error}")
+                await report(f"[!] [аккаунт {index + 1}] лимит: {error}")
                 return False
             except Exception as error:
-                await emit(f"[!] [аккаунт {index + 1}] {error}")
-            else:
-                return chat  # the linked chat, not the channel `link` points to
+                await report(f"[!] [аккаунт {index + 1}] {error}")
+                return False
+            return True
 
     async def join_with_captcha(self, session, link, index, mode, report):
         """Join, then wait up to CAPTCHA_WAIT for a captcha and click it."""
@@ -112,10 +94,8 @@ class JoinerFunc(TelethonFunction):
         finally:
             session.remove_event_handler(handler, events.NewMessage)
 
-    async def run(self, mode, link, delay, report, captcha=False):
-        """Simplified join for the bot: join `mode` into `link` on every worker."""
-        self.delay_range = delay
-
+    async def run(self, mode, link, report, captcha=False):
+        """Join `mode` into `link` on every worker (the bot and the terminal)."""
         joined = 0
         self.progress_total(len(self.sessions))
 
@@ -140,14 +120,6 @@ class JoinerFunc(TelethonFunction):
 
         await report(f"Итого: {joined}/{len(self.sessions)} аккаунтов")
 
-    def solve_captcha(self, session: TelegramClient):
-        # just a handler on the already-connected client: run_until_disconnected() here
-        # would disconnect the session on cancel (its finally calls disconnect())
-        session.add_event_handler(
-            self.on_message,
-            events.NewMessage
-        )
-
     async def on_message(self, msg: types.Message):
         """Click the first callback button of a message mentioning this account; True if clicked."""
         if not msg.mentioned:
@@ -162,131 +134,17 @@ class JoinerFunc(TelethonFunction):
         return False
 
     async def execute(self):
-        self.ask_accounts_count()
-
-        print()
-
+        """As the bot's: where (mode), the captcha, the link; every worker of the project."""
         console.print(
-            "[1] 🚪 В канал или группу по ссылке — туда, куда ведёт ссылка (подходит и приглашение t.me/+…)",
-            "[2] 💬 В чат комментариев канала — ссылка на канал: воркеры вступят в его группу для "
-            "комментариев, не в сам канал (только @name / t.me/name)",
+            "[1] 🚪 По ссылке — в канал или группу, куда она ведёт (и приглашение t.me/+…)",
+            "[2] 💬 В комментарии — в группу комментариев канала по его публичной ссылке: чтобы писать под "
+            "постами",
             sep="\n",
             style="bold white"
         )
-
-        print()
-
-        mode = console.input("[bold red]режим> [/]")
-
-        while mode not in ("1", "2"):
-            mode = console.input("[bold red]режим> [/]")
-
+        while (mode := console.input("[bold red]режим> [/]")) not in ("1", "2"):
+            pass
+        captcha = Confirm.ask(f"[bold red]нажимать капчу после вступления? (каждый воркер ждёт её до "
+                              f"{CAPTCHA_WAIT} с)[/]")
         link = console.input("[bold red]ссылка> [/]")
-
-        speed = Prompt.ask(
-            "[bold red]скорость (normal — по очереди, fast — все сразу)>[/]",
-            choices=["normal", "fast"]
-        )
-
-        broadcast = Confirm.ask("[bold red]сразу разослать сообщения?[/]")
-
-        if broadcast:
-            broadcast_func = Broadcast(self.storage, self.settings)
-            function_index = broadcast_func.ask(modes=(0, 1, 4))  # no trigger message to reply to
-
-        else:
-            function_index = None
-
-        joined = 0
-        captcha_sessions = []
-        targets = []  # per session: the chat it joined (or the link) for the broadcast
-
-        # finally: Ctrl-C or an error must not leave the captcha handler clicking buttons
-        # (initialize=True clients stay alive for the next menu functions)
-        try:
-            if speed == "normal":
-                delay = self.ask_int("[bold red]задержка[/]", default=0, min_value=0)
-                captcha = Confirm.ask("[bold red]проходить капчу?[/]")
-
-                start = perf_counter()
-
-                # the single-account campaign broadcasts right after each join, so its
-                # lines would break a progress bar: it gets plain prints instead
-                inline = function_index == 1
-                sessions = enumerate(self.sessions)
-                if not inline:
-                    sessions = track(sessions, "[yellow]Вступление[/]", total=len(self.sessions))
-
-                for index, session in sessions:
-                    # connect(), not start(): a logged-out worker's start() waits for a phone number on
-                    # stdin; a dead proxy ends this account only (its join below fails and is reported)
-                    try:
-                        await session.connect()
-                    except (OSError, ProxyError) as err:  # ProxyError: the proxy refused
-                        console.print(f"[!] [аккаунт {index + 1}] не подключился: {err}", markup=False)
-
-                    if captcha:
-                        self.solve_captcha(session)
-                        captcha_sessions.append(session)
-
-                    is_joined = await self.join(session, link, index, mode)
-                    targets.append(is_joined or link)
-
-                    if is_joined:
-                        joined += 1
-
-                    if inline:
-                        if is_joined:
-                            console.print("[bold green]Аккаунт вступил[/]")
-                        console.print("[bold white]Начинаю рассылку[/]")
-                        await broadcast_func.broadcast(session, is_joined or link, console_report)
-
-                    await asyncio.sleep(delay)
-
-            if speed == "fast":
-                if not self.storage.initialize:
-                    for index, session in track(
-                        enumerate(self.sessions),
-                        "[yellow]Подключение сессий[/]",
-                        total=len(self.sessions)
-                    ):
-                        # as in normal: a dead proxy ends this account only (its join fails and is reported)
-                        try:
-                            await session.connect()
-                        except (OSError, ProxyError) as err:  # ProxyError: the proxy refused
-                            console.print(f"[!] [аккаунт {index + 1}] не подключился: {err}", markup=False)
-
-                with console.status("Вступление"):
-                    start = perf_counter()
-
-                    results = await asyncio.gather(*[
-                        self.join(session, link, index, mode)
-                        for index, session in enumerate(self.sessions)
-                    ])
-
-                for result in results:
-                    if result:
-                        joined += 1
-
-                targets = [result or link for result in results]
-
-                if broadcast and function_index == 1:
-                    for session, target in zip(self.sessions, targets):
-                        await broadcast_func.broadcast(session, target, console_report)
-
-
-            joined_time = round(perf_counter() - start, 2)
-            console.print(f"[+] Вступило аккаунтов: {joined} за [yellow]{joined_time}[/] с")
-
-            if broadcast and function_index != 1:
-                await asyncio.gather(*[
-                    broadcast_func.broadcast(session, target, console_report)
-                    for session, target in zip(self.sessions, targets)
-                ])
-        finally:
-            for session in captcha_sessions:
-                session.remove_event_handler(self.on_message, events.NewMessage)
-
-            if not self.storage.initialize:
-                for session in self.sessions:
-                    await session.disconnect()
+        await self.run(mode, link, console_report, captcha=captcha)

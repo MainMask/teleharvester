@@ -4,10 +4,11 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB
 from bot.keyboards.common import cancel_kb, choice_kb
-from bot.routers._common import pick_from, require_text, resolve, stale_tap
+from bot.routers._common import busy_step, busy_tap, pick_from, require_text, resolve, stale_tap
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import AddContacts
+from modules.registry import BASE, title
 
 router = Router()
 
@@ -20,9 +21,8 @@ async def ask_base(message: Message, state: FSMContext, bases: list[tuple[str, s
     await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(AddContacts.path)
     await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
-    choose = "выберите базу из скрапа ниже или пришлите" if bases else "пришлите"
-    await message.answer(
-        f"📇 В контакты — {choose} путь к .parquet на сервере:",
+    await message.edit_text(  # in 📨 База и рассылка's place, as a choice by button
+        f"{title('addcontacts')} — выберите базу ниже или пришлите путь к .parquet на сервере:",
         reply_markup=cancel_kb(AddContacts.path, choice_kb(
             "contacts_base", [*((f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)),
                               (f"📄 {DEFAULT_DB}", "default")])),
@@ -33,7 +33,7 @@ async def _launch(message: Message, path: str, pool: WorkerPool, functions: dict
     instance, bot_function = resolve(functions, "addcontacts")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(path, None, r),
+        lambda f, r: f.run(path, r),
         "Добавление в контакты…",
     )
 
@@ -46,8 +46,11 @@ async def run_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMC
     if path is None:  # a button of an older list of the bases
         await stale_tap(callback)
         return
+    if await busy_tap(callback, manager):
+        return
     await callback.answer()
     await state.clear()
+    await callback.message.edit_reply_markup(reply_markup=None)  # chosen once: one run
     await _launch(callback.message, path, pool, functions, manager)
 
 
@@ -55,6 +58,9 @@ async def run_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMC
 async def run(message: Message, state: FSMContext, pool: WorkerPool, functions: dict, manager: JobManager):
     raw = await require_text(message)  # a file / photo must not fall back to the default base
     if raw is None:
+        return
+    if manager.active:
+        await busy_step(message, manager, BASE, "пришлите путь ещё раз")
         return
     await state.clear()
     path = DEFAULT_DB if raw == "-" else raw  # «-»: as before its button

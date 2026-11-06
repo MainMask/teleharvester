@@ -52,8 +52,6 @@ def _problems_only(report):
 class BaseFunction:
     rate_wait_limit = 300  # seconds; a longer wait means the account is exhausted
     max_rate_retries = 5   # consecutive rate-limit waits on one call before giving up
-    delay_range = None     # per-run delay override; set by functions that prompt for a
-                           # delay, so a choice doesn't leak into the shared Settings
     progress = None        # the bot's Progress for the running job (the 📊 button); None on the CLI
     on_hold = []           # workers the bot keeps out of this run for now (the one the scraper runs
                            # on, see WorkerPool.delegate): not gone, their people wait for them
@@ -396,18 +394,5 @@ class BaseFunction:
             if raw:
                 return raw
 
-    def ask_accounts_count(self):
-        if not self.sessions:
-            return  # nothing to choose from; functions guard the empty case themselves
-
-        accounts_count = self.ask_int(
-            "[bold magenta]сколько аккаунтов использовать? [/]",
-            default=len(self.sessions),
-            min_value=1,
-        )
-
-        # the ones left out keep their contacts' people (see split_queues), as a worker on hold
-        self.sessions, self.on_hold = self.sessions[:accounts_count], self.sessions[accounts_count:]
-
     async def delay(self):
-        await asyncio.sleep(pick_seconds(self.delay_range or self.settings.delay))
+        await asyncio.sleep(pick_seconds(self.settings.delay))

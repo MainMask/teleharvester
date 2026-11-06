@@ -7,19 +7,17 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from bot.keyboards.common import cancel_kb, scrape_kb
-from bot.routers._common import require_text
+from bot.routers._common import CHAT_FORMAT, require_text, typed_channels
 from bot.routers.scraping import common
 from bot.services import scraping
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Members
 from modules import projects, scraped_files
-from modules.registry import BASE, BOT_FUNCTIONS_BY_KEY
+from modules.registry import BASE, title
 from modules.scraper_creds import build_credentials
 from scraper.members import MembersParams
-from scraper.scrape import (
-    bad_channels, bad_channels_text, parse_channels,
-)
+from scraper.scrape import parse_channels
 
 router = Router()
 
@@ -39,8 +37,7 @@ async def _ask_groups(message: Message, state: FSMContext, deps: dict):
     note += (" — новые участники добавятся к его базе, повторы не дублируются."
              if scraped_files.members_base(project).exists() else ".")
     await message.answer(
-        f"{BOT_FUNCTIONS_BY_KEY['members'].title} — группы через запятую "
-        "(@name / t.me ссылка / инвайт t.me/+… / числовой id).\n"
+        f"{title('members')} — пришлите группы через запятую ({CHAT_FORMAT}).\n"
         "Аккаунт должен состоять в группе. Подписчики канала доступны только админам." + note,
         parse_mode="HTML", reply_markup=cancel_kb(Members.chats),
     )
@@ -51,12 +48,8 @@ async def members_chats(message: Message, state: FSMContext, pool: WorkerPool, p
     raw = await require_text(message)
     if raw is None:
         return
-    chats = parse_channels(raw)
-    if not chats:
-        await message.answer("Не вижу ни одной группы. Пришлите ещё раз:")
-        return
-    if bad := bad_channels(chats):
-        await message.answer(f"{bad_channels_text(bad)} Пришлите список групп ещё раз:")
+    chats = await typed_channels(message, raw)
+    if chats is None:
         return
     await state.update_data(chats=raw)
     # the groups get named on the project too: its messages show them by name
@@ -76,10 +69,10 @@ async def _members_go(message: Message, state: FSMContext, name: str, pool: Work
 
     account = common.run_account(pool, personal, data.get("account", ""))
     if account is None:
-        await common.to_collect(message, "Аккаунт не найден, начните заново.", scrapes)
+        await common.to_collect(message, "⚠️ Аккаунт не найден, начните заново.", scrapes)
         return
 
-    progress = await common.take_slot(scrapes, pool, account, BOT_FUNCTIONS_BY_KEY["members"].title,
+    progress = await common.take_slot(scrapes, pool, account, title("members"),
                                       lambda text: common.to_collect(message, text, scrapes))
     if progress is None:
         return
@@ -89,7 +82,8 @@ async def _members_go(message: Message, state: FSMContext, name: str, pool: Work
     stop = params.stop = scrapes.soft_stop()  # the job's own ⏹: a later job's can't relabel this one
     status = None
     try:
-        status = await message.answer("Собираю участников…", reply_markup=scrape_kb(scrapes.key))
+        status = await message.answer(common.started(title("members"), account.label),
+                                      reply_markup=scrape_kb(scrapes.key))
         path, problems = await scraping.do_members(build_credentials(account.client), params)
     except (Exception, SystemExit) as err:  # connect() raises SystemExit on a logged-out session
         await common.to_collect(message, f"⚠️ Ошибка: {err}", scrapes)
@@ -100,15 +94,15 @@ async def _members_go(message: Message, state: FSMContext, name: str, pool: Work
     if problems:
         why = {chat: str(problem) for chat, problem in problems}
         named = projects.chat_list(projects.find(data["only_project"]), list(why), html=True, problems=why)
-        await message.answer(f"Не всё удалось собрать:\n\n{named}", parse_mode="HTML")
+        await message.answer(f"⚠️ Не всё удалось собрать:\n\n{named}", parse_mode="HTML")
     if path is None:
         await common.to_collect(message, "Ни одного участника не собрано.", scrapes)
         return
     await common.send_files(message.bot, message.chat.id, [str(path)])
     total = scraped_files.row_count(path)
-    where = (f"в проекте «{data['only_project']}» (новых: {total - before}, всего: {total}): 📇 В контакты и "
-             f"📨 ЛС по базе — в «{BASE}»")
-    await common.to_collect(message, f"⏹ Остановлено. Собранные участники сохранены — база {where}."
+    where = (f"в проекте «{data['only_project']}» (новых: {total - before}, всего: {total}): "
+             f"«{title('addcontacts')}» и «{title('pmmailing')}» — в «{BASE}»")
+    await common.to_collect(message, f"⏹ Сбор участников остановлен. Собранные участники сохранены — база {where}."
                             if stop.is_set() and not common.shutting_down else
                             f"✅ Участники собраны. База — {where}.", scrapes)
 

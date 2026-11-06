@@ -541,22 +541,6 @@ def test_links_and_filter_handle_empty_content_after_xlsx(tmp_path):
     assert len(pd.read_excel(tmp_path / "f_unique.xlsx")) == 1
 
 
-def test_check_date_range_rejects_a_reversed_range():
-    from scraper.scrape import check_date_range
-
-    with pytest.raises(SystemExit, match="позже даты конца"):
-        check_date_range(parse_date("02.01.2024"), parse_date("01.01.2024", end_of_day=True),
-                         "02.01.2024", "01.01.2024")
-
-
-def test_check_date_range_allows_a_single_day():
-    from scraper.scrape import check_date_range
-
-    lo, hi = parse_date("01.01.2024"), parse_date("01.01.2024", end_of_day=True)
-    check_date_range(lo, hi, "01.01.2024", "01.01.2024")
-    assert (lo.hour, hi.hour) == (0, 23)
-
-
 def test_participants_reads_no_post_text_and_counts_per_person(tmp_path, monkeypatch):
     import json
 

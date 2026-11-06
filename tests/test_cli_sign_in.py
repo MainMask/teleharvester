@@ -121,7 +121,7 @@ def test_add_account_offers_the_tdata_import_as_the_bot_does(monkeypatch):
 
     monkeypatch.setattr(cli.TdataImportFunc, "execute", tdata)
     console, workers = _add(monkeypatch, ["3"], _Client([]))
-    assert "[3] Воркер — из tdata" in console.text and ran == ["TdataImportFunc"] and workers.added == []
+    assert "[3] 📥 Воркер — из tdata" in console.text and ran == ["TdataImportFunc"] and workers.added == []
 
 
 def test_a_worker_gets_a_pool_proxy_and_keeps_its_password(monkeypatch, tmp_path):
@@ -258,7 +258,7 @@ def test_the_accounts_list_shows_personal_ones_without_connecting(monkeypatch, t
 
 
 def _list_and_remove(console):
-    """📋 Список → the account's number → its card's [2] 🗑 Убрать → y."""
+    """📋 Список → the account's number → its card's [2] 🗑 Удалить → y."""
     console.status = lambda *a: contextlib.nullcontext()
     asyncio.run(accounts_cli.AccountsFunc(_Workers(), SETTINGS).execute())
 
@@ -266,7 +266,7 @@ def _list_and_remove(console):
 def test_removal_logs_out_and_deletes(monkeypatch, tmp_path):
     personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "2", "y"])
     _list_and_remove(console)
-    assert "👤 Личный (только для скрапа): me.jsession" in console.text and "[2] 🗑 Убрать" in console.text
+    assert "👤 Личный (только для скрапа): me.jsession" in console.text and "[2] 🗑 Удалить" in console.text
     assert me.logged_out and not (tmp_path / path).exists() and personal.sessions == []
     assert "✅" in console.printed[-1]
 

@@ -185,6 +185,9 @@ class _Msg:
         self.answers.append((text, reply_markup))
         return self.status
 
+    async def edit_text(self, text, reply_markup=None, **kw):  # the screen the flow was started from
+        self.edited = (text, reply_markup)
+
 
 def test_bot_flow_runs_with_progress_and_sends_the_base(monkeypatch, tmp_path):
     import asyncio
@@ -266,7 +269,7 @@ def test_bot_rejects_an_empty_group_list():
     state.state = Members.chats
     msg = _Msg(" , ", None)
     asyncio.run(router.members.members_chats(msg, state, None, None, None))
-    assert state.state == Members.chats and "Не вижу ни одной группы" in msg.answers[0][0]
+    assert state.state == Members.chats and "Не вижу ни одного канала или группы" in msg.answers[0][0]
 
     junk = _Msg("@grp, —", None)  # never asked on an account: typed again
     asyncio.run(router.members.members_chats(junk, state, None, None, None))
@@ -333,7 +336,7 @@ def test_bot_members_stop_says_the_base_is_saved(monkeypatch, tmp_path):
     asyncio.run(router.members._members_go(msg, state, "grp", pool, None, scrapes))
 
     assert _buttons_of(msg.answers[0][1]) == ["📊 Прогресс", "⏹ Стоп"]
-    assert bot.documents == [str(base)] and msg.answers[-1][0].startswith("⏹ Остановлено")
+    assert bot.documents == [str(base)] and msg.answers[-1][0].startswith("⏹ Сбор участников остановлен")
     assert not scrapes.active  # the slot (and its ⏹) is free
 
 
@@ -460,7 +463,7 @@ def test_bot_report_names_the_chats_by_their_titles(monkeypatch, tmp_path):
     msg = _Msg("grp", _Bot())
     asyncio.run(router.members._members_go(msg, state, "grp", pool, None, JobManager()))
     # one block each, as on the project's card, with why
-    assert ("Не всё удалось собрать:\n\n1. «Канал»\n👤 @chan · 🆔 <code>-1007</code>\n⚠️ список участников скрыт"
+    assert ("⚠️ Не всё удалось собрать:\n\n1. «Канал»\n👤 @chan · 🆔 <code>-1007</code>\n⚠️ список участников скрыт"
             in [t for t, _ in msg.answers])
 
 

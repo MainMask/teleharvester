@@ -76,9 +76,8 @@ class AddContactsFunc(TelethonFunction):
             contacts_ledger.save(self.storage.home, self.ledger)
             self._unsaved = 0
 
-    async def run(self, path, delay, report):
+    async def run(self, path, report):
         self._report = report
-        self.delay_range = delay
         self.added = 0
         self.skipped = 0
         self._me_cache = {}
@@ -144,14 +143,10 @@ class AddContactsFunc(TelethonFunction):
             )
 
     async def execute(self, bases):  # bases: the project's own (functions/projects.py)
-        self.ask_accounts_count()
-
         path = self.ask_file(
             "[bold red]путь к .parquet[/]",
             bases,
             default="assets/contacts.parquet",
         )
 
-        delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
-
-        await self.run(path, delay, console_report)
+        await self.run(path, console_report)

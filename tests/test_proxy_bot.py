@@ -227,7 +227,8 @@ class _Bot:
 
 
 def _workspace(storage, project_id=7, active=False):
-    return ns(project_id=project_id, pool=_Pool(storage), manager=ns(active=active, label="Рассылка"))
+    return ns(project_id=project_id, pool=_Pool(storage),
+              manager=ns(active=active, label="Рассылка", project_id=project_id))
 
 
 def test_the_status_check_offers_the_move_only_when_there_is_one(tmp_path, monkeypatch):

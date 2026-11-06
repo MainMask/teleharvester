@@ -178,7 +178,8 @@ async def poll_once(pool, text: str, replied: dict, notify):
         if pool.scraping is not None and pool.scraping.path == path:
             continue  # the scraper drives this account from its own client
 
-        label = pool.storage.usernames.get(path) or os.path.basename(path or "")
+        username = pool.storage.usernames.get(path)  # @-prefixed, as the 📬 Автоответ screen names it
+        label = f"@{username}" if username else os.path.basename(path or "")
         pool.polling = path  # before any await: a scrape must not start on it meanwhile
         async def connect_and_poll():
             await connect_client(client)  # a no-op if a job already has it connected

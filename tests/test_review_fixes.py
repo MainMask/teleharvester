@@ -63,25 +63,6 @@ async def _no_sleep(*_):
 
 # --- functions/ --------------------------------------------------------------
 
-class TestJoinerCaptcha:
-    def test_handler_only_no_run_until_disconnected(self):
-        from functions.joiner import JoinerFunc
-
-        class _S:
-            handlers = []
-
-            def add_event_handler(self, cb, ev):
-                self.handlers.append(cb)
-
-            async def run_until_disconnected(self):  # would disconnect on cancel
-                raise AssertionError("must not be used")
-
-        fn = JoinerFunc(_Storage(), ns(delay=[0]))
-        s = _S()
-        assert fn.solve_captcha(s) is None  # plain call, no task to cancel
-        assert s.handlers == [fn.on_message]
-
-
 class TestCtrlCCancelsFunction:
     def test_task_cancelled_and_sessions_reconnected(self):
         from modules.storages.functions_storage import FunctionsStorage
@@ -146,7 +127,6 @@ class TestChangeNameBlankLines:
         monkeypatch.setattr("functions.changename.console.input", lambda *_: "y")
 
         fn = ChangeNameFunc(_Storage(), ns(delay=[0], profile_pause=[0]))
-        fn.ask_accounts_count = lambda: None
         got = []
 
         async def run(report, names=None, **_):
@@ -197,7 +177,6 @@ class TestReportCli:
 
         first, other = _S(), _S()
         fn = ReportFunc(_Storage([first, other]), ns(delay=[0]))
-        fn.ask_accounts_count = lambda: None
         answers = iter(["https://t.me/x", "1"])
         monkeypatch.setattr("functions.report.Prompt.ask", lambda *a, **k: next(answers))
         monkeypatch.setattr("functions.report.console.input", lambda *_: "c")
@@ -244,31 +223,7 @@ class TestCommentsErrorReset:
         assert len(sends) == 10  # 4 errors never reach the 5-error stop once reset
 
 
-class TestSpamBlockMove:
-    def test_moved_session_is_forgotten(self, monkeypatch, tmp_path):
-        from functions.spamblock import SpamBlockFunc
-
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "sessions").mkdir()
-        (tmp_path / "sessions" / "a.session").write_text("x")
-        path = "sessions/a.session"
-
-        storage = _Storage()
-        storage.get_session_path = lambda s: path
-        class _S:
-            disconnected = False
-
-            async def disconnect(self):
-                self.disconnected = True
-
-        session = _S()
-        fn = SpamBlockFunc(storage, ns(delay=[0]))
-        asyncio.run(fn.move_restricted({"permanent": [session]}))
-
-        assert (tmp_path / "sessions" / "restricted" / "permanent" / "a.session").exists()
-        assert storage.forgotten == [path]
-        assert session.disconnected  # CLI clients stay connected: a forgotten one would run on
-
+class TestSpamBlockUnblock:
     def test_unblock_failure_is_reported(self):
         from telethon.errors import YouBlockedUserError
         from functions.spamblock import SpamBlockFunc
@@ -775,6 +730,8 @@ class TestUpdaterPullFailure:
 # --- bot/ --------------------------------------------------------------------
 
 class _Manager:
+    active = False
+
     def __init__(self):
         self.released = 0
 
@@ -788,7 +745,7 @@ def _callback(value):
     async def answer(*a, **k):
         answers.append(a)
 
-    cb = ns(message=ns(chat=ns(id=7), answer=answer), answer=answer, bot=None)
+    cb = ns(message=ns(chat=ns(id=7), message_id=5, answer=answer), answer=answer, bot=None)  # the options' message
     return cb, ns(value=str(value)), answers
 
 
@@ -806,7 +763,7 @@ class TestReportFlowConcurrency:
             stepped.append(option)
             return "choose", []
 
-        flow = {"busy": True, "selections": []}
+        flow = {"busy": True, "selections": [], "menu": 5}
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
         cb, data, _ = _callback(0)
         asyncio.run(moderation.rm_choose(cb, data, _Manager(), ns(in_job=[])))
@@ -824,7 +781,7 @@ class TestReportFlowConcurrency:
             async def disconnect(self):
                 return None
 
-        flow = {"busy": False, "selections": [], "session": _Session()}
+        flow = {"busy": False, "selections": [], "session": _Session(), "menu": 5}
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
         cb, data, _ = _callback(0)
         manager = _Manager()
@@ -836,7 +793,7 @@ class TestReportFlowConcurrency:
     def test_stale_index_ignored(self):
         from bot.routers import moderation
 
-        flow = {"busy": False, "selections": []}
+        flow = {"busy": False, "selections": [], "menu": 5}
         moderation._FLOWS[7] = (ns(step=None), flow, [ns(option=b"a")])
         cb, data, _ = _callback(5)
         asyncio.run(moderation.rm_choose(cb, data, _Manager(), ns(in_job=[])))
@@ -917,7 +874,7 @@ class TestExcelFormulas:
         assert (cell.value, cell.data_type) == ("=== NEWS ===", "s")
 
 
-class TestJoinReturnsTarget:
+class TestJoinResult:
     def _join(self, link, mode, reply):
         from functions.joiner import JoinerFunc
 
@@ -929,39 +886,37 @@ class TestJoinReturnsTarget:
         _, report = collect()
         return asyncio.run(fn.join(_S(), link, 0, mode, report))
 
-    def test_invite_link_returns_joined_chat(self):
-        chat = ns(id=5)
-        assert self._join("https://t.me/joinchat/abc", "1", lambda r: ns(chats=[chat])) is chat
+    def test_an_invite_link_is_a_join(self):
+        assert self._join("https://t.me/joinchat/abc", "1", lambda r: ns(chats=[ns(id=5)])) is True
 
     def test_invite_of_a_chat_already_joined_is_a_join(self):
-        """USER_ALREADY_PARTICIPANT on an invite: the worker is in the chat — a join, with its chat
-        for the follow-up broadcast, as the inviting's resolve_source takes it."""
+        """USER_ALREADY_PARTICIPANT on an invite: the worker is in the chat — a join."""
         from telethon.errors import UserAlreadyParticipantError
-        from telethon.tl.functions.messages import CheckChatInviteRequest
-
-        chat = ns(id=5)
 
         def reply(request):
-            if isinstance(request, CheckChatInviteRequest):
-                return ns(chat=chat)  # ChatInviteAlready
             raise UserAlreadyParticipantError(request=request)
 
-        assert self._join("https://t.me/+abc", "1", reply) is chat
+        assert self._join("https://t.me/+abc", "1", reply) is True
 
-    def test_falls_back_to_link_without_chats(self):
-        assert self._join("@chan", "1", lambda r: ns(chats=[])) == "@chan"
+    def test_mode2_joins_the_linked_chat(self):
+        from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 
-    def test_mode2_returns_linked_chat(self):
-        from telethon.tl.functions.channels import GetFullChannelRequest
-
-        linked = ns(id=9)
+        linked, joined = ns(id=9), []
 
         def reply(request):
             if isinstance(request, GetFullChannelRequest):
                 return ns(full_chat=ns(linked_chat_id=9), chats=[ns(id=1), linked])
+            if isinstance(request, JoinChannelRequest):
+                joined.append(request.channel)
             return ns(chats=[])
 
-        assert self._join("@channel", "2", reply) is linked
+        assert self._join("@channel", "2", reply) is True and joined == [linked]
+
+    def test_an_error_is_not_a_join(self):
+        def reply(request):
+            raise ValueError("нет такого чата")
+
+        assert self._join("@chan", "1", reply) is False
 
     def test_webview_join_is_not_counted(self):
         # the join waits for a confirmation in the chat's bot web app: not joined
@@ -1290,7 +1245,7 @@ class TestReportCancelDuringConnect:
             return "done", None
 
         class _Manager:
-            label = ""
+            active, label = False, ""
 
             def acquire(self, *a, **k):
                 return True
@@ -1417,11 +1372,12 @@ class TestExcelHeaderFormula:
         assert (cell.value, cell.data_type) == ("=promo", "s")
 
 
-class TestScrapeFuncSwappedDates:
-    def test_reports_and_does_not_run(self, monkeypatch):
+class TestScrapeFuncDates:
+    def test_a_bad_or_swapped_date_is_asked_again(self, monkeypatch):
+        # as the bot's steps: a typo in «с», then «по» before «с», each asked again; the scrape goes on
         from functions import scraper as fs
 
-        answers = iter(["@chan", "31.12.2024", "01.01.2024", ""])
+        answers = iter(["@chan", "32.13.2024", "01.01.2024", "31.12.2023", "31.01.2024", ""])
         monkeypatch.setattr(fs, "pick_session",
                             lambda storage, personal=None: ns(path="sessions/a.jsession", client=object(),
                                                               personal=False))
@@ -1429,14 +1385,15 @@ class TestScrapeFuncSwappedDates:
         monkeypatch.setattr(fs.Confirm, "ask", lambda *a, **k: False)
         printed = []
         monkeypatch.setattr(fs.console, "print", lambda *a, **k: printed.append(str(a[0])))
-        ran = []
-        monkeypatch.setattr(fs, "scrape_run", lambda *a: ran.append(1))
 
         f = fs.ScrapeFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h"))
         f.ask_int = lambda *a, **k: 100
+        ran = []
+        f._run = lambda account, params: ran.append(params)
         f.scrape("name")
 
-        assert ran == [] and any("позже даты конца" in p for p in printed)
+        assert [(p.date_min.day, p.date_max.day, p.date_max.hour) for p in ran] == [(1, 31, 23)]
+        assert any("Неверная дата" in p for p in printed) and any("позже даты «по»" in p for p in printed)
 
 
 class TestInvitingMissingInvitees:
@@ -1655,12 +1612,6 @@ class TestInviteJoinResult:
         with pytest.raises(ValueError, match="web-app"):
             asyncio.run(fn.resolve_source(_S(), "https://t.me/+abcdef"))
 
-    def test_joiner_reads_chat_from_wrapped_updates(self):
-        chat = ns(id=5)
-        got = TestJoinReturnsTarget()._join("https://t.me/joinchat/abc", "1",
-                                            lambda r: ns(updates=ns(chats=[chat])))
-        assert got is chat
-
 
 class TestMentionsAndCaptions:
     def test_mention_converted_to_input_entity(self):
@@ -1746,23 +1697,24 @@ class TestScraperCredentials:
                                 "app_version": "10.3", "lang_code": "en", "system_lang_code": "en-US"}
 
 
-class TestVerifyFuncSwappedDates:
-    def test_reports_and_does_not_run(self, monkeypatch):
+class TestVerifyFuncDates:
+    def test_a_swapped_date_is_asked_again_and_the_missed_go_next_to_the_posts(self, monkeypatch):
         from functions import scraper as fs
 
-        answers = iter(["posts.parquet", "@chan", "31.12.2024", "01.01.2024", ""])
-        monkeypatch.setattr(fs, "pick_session", lambda storage, personal=None: object())
+        answers = iter(["posts.parquet", "@chan", "31.12.2024", "01.01.2024", "31.12.2024"])
+        monkeypatch.setattr(fs, "pick_session", lambda storage, personal=None: ns(label="a", client=None))
+        monkeypatch.setattr(fs, "build_credentials", lambda client: None)
         monkeypatch.setattr(fs.Prompt, "ask", lambda *a, **k: next(answers))
         printed = []
         monkeypatch.setattr(fs.console, "print", lambda *a, **k: printed.append(str(a[0])))
         ran = []
-        monkeypatch.setattr(fs, "verify_run", lambda *a: ran.append(1))
+        monkeypatch.setattr(fs, "verify_run", lambda credentials, params: ran.append(params))
 
-        f = fs.VerifyFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h"))
-        f.ask_int = lambda *a, **k: 0
-        f.execute(posts=[], project="P")
+        fs.VerifyFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h")).execute(posts=[], project="P")
 
-        assert ran == [] and any("позже даты конца" in p for p in printed)
+        assert any("позже даты «по»" in p for p in printed)
+        assert [(p.date_min.month, p.date_max.month, p.output, p.comment_sample) for p in ran] == [
+            (12, 12, fs.scraped_files.missed_path("posts.parquet", "@chan"), 0)]
 
 
 class TestExcelErrorStrings:
@@ -1811,9 +1763,9 @@ class TestReportAbortDuringAnswer:
         async def answer(*a, **k):
             moderation._FLOWS.pop(7, None)  # /cancel ran _abort meanwhile
 
-        flow = {"busy": False, "selections": []}
+        flow = {"busy": False, "selections": [], "menu": 5}
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
-        cb = ns(message=ns(chat=ns(id=7), answer=answer), answer=answer, bot=None)
+        cb = ns(message=ns(chat=ns(id=7), message_id=5, answer=answer), answer=answer, bot=None)
         try:
             asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager(), ns(in_job=[])))
         finally:
@@ -2232,7 +2184,7 @@ class TestJoinerBotCaptcha:
         fn = joiner.JoinerFunc(_Storage(), ns(delay=[0]))
         fn.sessions = [session]
         msgs, report = collect()
-        asyncio.run(fn.run("1", "@chat", [0], report, captcha=captcha))
+        asyncio.run(fn.run("1", "@chat", report, captcha=captcha))
         return msgs
 
     def test_captcha_clicked(self, monkeypatch):
@@ -2340,9 +2292,10 @@ class TestReportAnswerFailure:
         async def answer(*a, **k):
             return None
 
-        flow = {"busy": False, "selections": []}
+        flow = {"busy": False, "selections": [], "menu": 5}
         moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
-        cb = ns(message=ns(chat=ns(id=7), answer=answer, edit_text=answer), answer=failing_answer, bot=None)
+        cb = ns(message=ns(chat=ns(id=7), message_id=5, answer=answer, edit_text=answer), answer=failing_answer,
+                bot=None)
         try:
             asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager(), ns(in_job=[])))
             assert stepped == [b"a"] and moderation._FLOWS[7][1]["busy"] is False
@@ -2432,7 +2385,7 @@ class TestReportFlowHoldsItsWorkers:
             return "choose", [ns(text="spam", option=b"1")]
 
         class _Manager:
-            label = ""
+            active, label = False, ""
 
             def acquire(self, *a, **k):
                 return True
@@ -2448,7 +2401,7 @@ class TestReportFlowHoldsItsWorkers:
                 return None
 
         async def answer(*a, **k):
-            return None
+            return ns(message_id=5)  # the options' message
 
         workers = [_First(), _First()]
         pool = ns(delegate=lambda inst: workers, in_job=[])
@@ -2509,7 +2462,7 @@ class TestDeadWorkerIsSkipped:
 
         dead, alive, msgs = self._run(
             CommentsBroadcastFunc,
-            lambda f, r: f.run("https://t.me/name/5", RichContent(text="hi"), [0], r),
+            lambda f, r: f.run("https://t.me/name/5", RichContent(text="hi"), r),
             ns(messages_count=1),
         )
         assert not dead.requests and len(alive.requests) == 1
@@ -2665,6 +2618,8 @@ def _clear(age):
             alerts.append(text)
 
     class _Manager:
+        active = False
+
         async def run(self, *args, **kwargs):
             runs.append(args)
 

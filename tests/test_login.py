@@ -225,6 +225,9 @@ class _State:
     async def set_state(self, state):
         self.state = state
 
+    async def get_state(self):
+        return getattr(self.state, "state", self.state)
+
     async def get_data(self):
         return dict(self.data)
 
@@ -331,7 +334,7 @@ def test_a_hung_resend_is_timed_out(monkeypatch):
     client.send_code_request = hang
     callback = ns(message=_Msg(), answer=lambda *a, **k: asyncio.sleep(0))
     asyncio.run(router.phone_resend(callback, state))
-    assert callback.message.answers[-1] == "⚠️ Код не отправлен: TimeoutError" and 7 in logins._logins
+    assert callback.message.answers[-1] == "⚠️ Код не отправлен: TimeoutError." and 7 in logins._logins
 
 
 @pytest.mark.parametrize("where", ["workers", "personal"])

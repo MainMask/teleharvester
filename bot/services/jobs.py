@@ -5,12 +5,13 @@ from bot.keyboards.common import stop_kb
 from bot.keyboards.menu import back_kb
 from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
+from modules.registry import TASKS
 from modules.storages.sessions_storage import release_client
 
 
 def busy(label: str) -> str:
     """Why a job can't start now: another one holds the slot."""
-    return f"⛔ Занято: идёт «{label}». Дождитесь окончания или остановите в 📊 Задачи."
+    return f"⛔ Занято: идёт «{label}». Дождитесь окончания или остановите в {TASKS}."
 
 
 class JobManager:

@@ -4,11 +4,12 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import cancel_kb, choice_kb, yes_no_kb
-from bot.routers._common import STALE_STEP, left_flow, require_text, resolve, start_form
+from bot.routers._common import STALE_STEP, back_answer, busy_step, left_flow, require_text, resolve, start_form
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Join
 from functions.joiner import CAPTCHA_WAIT
+from modules.registry import ACTIVITY, title
 
 router = Router()
 
@@ -17,7 +18,7 @@ router = Router()
 async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await start_form(
         callback, state, Join.mode,
-        "🚪 <b>Вступить в чат</b> — куда вступят воркеры?\n\n"
+        f"{title('join')} — куда вступят воркеры?\n\n"
         "🚪 <b>По ссылке</b> — в канал или группу, куда она ведёт (и приглашение t.me/+…).\n"
         "💬 <b>В комментарии</b> — в группу комментариев канала по его публичной ссылке: чтобы писать под "
         "постами.",
@@ -43,7 +44,7 @@ async def pick_captcha(callback: CallbackQuery, callback_data: ChoiceCB, state: 
         return
     await state.update_data(captcha=callback_data.value == "yes")
     await state.set_state(Join.link)
-    await callback.message.edit_text("🚪 Вступить в чат — пришлите ссылку на чат или канал:",
+    await callback.message.edit_text("Пришлите ссылку на чат или канал:",
                                      reply_markup=cancel_kb(Join.link))
     await callback.answer()
 
@@ -61,15 +62,18 @@ async def got_link(
         return
 
     data = await state.get_data()
-    await state.clear()
-
     if "mode" not in data:  # stale flow after a state clear
-        await message.answer(STALE_STEP)
+        await state.clear()
+        await back_answer(message, STALE_STEP, ACTIVITY, manager.project_id)
         return
+    if manager.active:
+        await busy_step(message, manager, ACTIVITY, "пришлите ссылку ещё раз")
+        return
+    await state.clear()
 
     instance, bot_function = resolve(functions, "join")
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(data["mode"], link, None, r, captcha=data.get("captcha", False)),
+        lambda f, r: f.run(data["mode"], link, r, captcha=data.get("captcha", False)),
         "Вступление…",
     )

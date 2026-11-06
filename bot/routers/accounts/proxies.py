@@ -9,13 +9,13 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import ensure_workers
+from bot.routers._common import back_answer, ensure_workers
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager, busy
 from bot.states import SetProxy
 from functions.spamblock import rehome, rehome_report, set_restricted_proxies
 from modules import projects, restricted_workers, tdata_import
-from modules.registry import ACCOUNTS, MAIN_MENU
+from modules.registry import ACCOUNTS, menu_path, title
 from modules.types.proxy import ACCOUNTS_PER_PROXY, overlap, parse_proxies
 
 router = Router()
@@ -24,11 +24,11 @@ MAX_PROXY_FILE_SIZE = 256 * 1024       # a proxy list is tiny; reject anything c
 
 SPARE_PROMPT = (
     "Ещё, по желанию: отдельные прокси для <b>бессрочно ограниченных</b> воркеров — они освободят места на "
-    "основных и продолжат отвечать на входящие. Хватит одного-двух: пришлите их так же или нажмите ⏭ Пропустить."
+    "основных и продолжат отвечать на входящие. Хватит одного-двух: пришлите их так же или нажмите «⏭ Пропустить»."
 )
 
 PROXY_PROMPT = (
-    "🌐 Прокси — пришлите список прокси <b>.txt файлом</b> или текстом, по одному на строку:\n"
+    f"{title('proxy')} — пришлите список прокси <b>.txt файлом</b> или текстом, по одному на строку:\n"
     "<code>scheme://user:pass@ip:port</code> (socks5/socks4/http).\n\n"
     f"Они распределятся по аккаунтам проекта: один прокси на {ACCOUNTS_PER_PROXY} аккаунта. Новые аккаунты "
     "проекта тоже получат прокси из этого списка."
@@ -38,10 +38,10 @@ PROXY_PROMPT = (
 async def proxies_busy(message, pool, manager) -> bool:
     """A proxy change now would rebuild clients in use (a job, the autoreply poll): told, True."""
     if manager.active:  # a job may have started since the prompt or the button
-        await message.answer(busy(manager.label))
+        await back_answer(message, busy(manager.label), ACCOUNTS, manager.project_id)
         return True
     if pool.polling is not None:  # its old client is connected through the old proxy until the poll ends
-        await message.answer("⛔ Идёт проверка автоответа. Повторите через минуту.")
+        await back_answer(message, "⛔ Идёт проверка автоответа. Повторите через минуту.", ACCOUNTS, manager.project_id)
         return True
     return False
 
@@ -55,7 +55,7 @@ async def rehome_now(message, pool) -> str | None:
     try:
         return rehome_report(rehome(pool.storage, busy=busy))
     except ValueError as err:  # a list edited by hand
-        await message.answer(f"⚠️ Пересадка невозможна: {err}. Исправьте — 🌐 Прокси.")
+        await message.answer(f"⚠️ Пересадка невозможна: {err}. Исправьте: {menu_path('proxy')}.")
         return None
 
 
@@ -65,9 +65,10 @@ async def proxy_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPo
         return
 
     if manager.active:
-        await callback.message.answer(busy(manager.label))
+        await back_answer(callback.message, busy(manager.label), ACCOUNTS, manager.project_id)
         return
 
+    await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(SetProxy.input)
     await callback.message.answer(PROXY_PROMPT, parse_mode="HTML", reply_markup=cancel_kb(SetProxy.input))
 
@@ -76,7 +77,7 @@ async def _proxy_list(message: Message):
     """The proxies a message holds (a .txt or text) and its raw text; None once the problem is told."""
     if message.document is not None:
         if (message.document.file_size or 0) > MAX_PROXY_FILE_SIZE:
-            await message.answer("Файл слишком большой для списка прокси. Пришлите .txt поменьше.")
+            await message.answer("Файл слишком большой для списка прокси. Пришлите .txt поменьше:")
             return None
         buffer = await message.bot.download(message.document)
         raw = buffer.read().decode("utf-8", "replace")
@@ -90,12 +91,12 @@ async def _proxy_list(message: Message):
         return None
 
     if not proxies:
-        await message.answer("Пустой список. Пришлите хотя бы один прокси.")
+        await message.answer("Пустой список. Пришлите ещё раз:")
         return None
     return proxies, raw
 
 
-@router.message(SetProxy.input, ~F.text.in_(MAIN_MENU))
+@router.message(SetProxy.input)
 async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager):
     if (got := await _proxy_list(message)) is None:
         return
@@ -106,12 +107,12 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
         await state.set_state(SetProxy.spare)
         await message.answer(
             f"⚠️ Список прокси для ограниченных испорчен ({err}). Сначала пришлите его заново или нажмите "
-            "«🗑 Не отделять», затем снова 🌐 Прокси с основным списком.",
+            f"«🗑 Не отделять», затем снова «{title('proxy')}» с основным списком.",
             reply_markup=cancel_kb(SetProxy.spare, choice_kb("proxy_spare", [("🗑 Не отделять", "clear")])))
         return
     if overlap(proxies, spare):
         await message.answer("⚠️ В списке есть прокси для бессрочно ограниченных. Уберите их — или сначала "
-                             "отключите отделение: 🌐 Прокси без них, затем «🗑 Не отделять».")
+                             f"отключите отделение: «{title('proxy')}» без них, затем «🗑 Не отделять».")
         return
     if await proxies_busy(message, pool, manager):
         return
@@ -119,7 +120,7 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
     try:
         summary = pool.storage.apply_proxies(proxies, spare, set(restricted_workers.load()))
     except ValueError as err:
-        await message.answer(f"⚠️ {err}. Пришлите больше прокси.")
+        await message.answer(f"⚠️ {err}. Пришлите больше прокси:")
         return
 
     tdata_import.save_proxies(raw, projects.proxies_path(pool.storage.home))
@@ -127,7 +128,7 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
     await state.set_state(SetProxy.spare)
 
     text = (
-        f"✅ Прокси применены к <b>{summary['accounts']}</b> аккаунтам "
+        f"✅ Прокси применены, аккаунтов: <b>{summary['accounts']}</b> "
         f"(использовано прокси: {summary['proxies_used']})."
     )
     if summary["restricted"]:
@@ -164,7 +165,7 @@ async def proxy_spare_choice(callback: CallbackQuery, callback_data: ChoiceCB, s
                                      reply_markup=back_kb(ACCOUNTS, manager.project_id, fresh=False))
 
 
-@router.message(SetProxy.spare, ~F.text.in_(MAIN_MENU))
+@router.message(SetProxy.spare)
 async def proxy_spare_apply(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager):
     if (got := await _proxy_list(message)) is None:
         return
@@ -172,7 +173,7 @@ async def proxy_spare_apply(message: Message, state: FSMContext, pool: WorkerPoo
     try:
         main = tdata_import.load_proxies(projects.proxies_path(pool.storage.home))
     except ValueError as err:
-        await message.answer(f"⚠️ Основной список прокси испорчен ({err}): пришлите его заново — 🌐 Прокси.")
+        await message.answer(f"⚠️ Основной список прокси испорчен ({err}): пришлите его заново: {menu_path('proxy')}.")
         return
     if overlap(spare, main):
         await message.answer("⚠️ Эти прокси уже в основном списке: для ограниченных нужны другие.")

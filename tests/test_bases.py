@@ -49,6 +49,9 @@ class _Msg:
     async def edit_text(self, text, **kwargs):
         self.answers.append((text, kwargs.get("reply_markup")))
 
+    async def edit_reply_markup(self, reply_markup=None):
+        pass
+
 
 class _Callback:
     def __init__(self):
@@ -119,7 +122,8 @@ def test_mailing_without_bases_offers_the_default_list_and_cancel(tmp_path, monk
     callback = _Callback()
     asyncio.run(mailing.ask_recipients(callback.message, _State(), []))  # a project with no base yet
     text, markup = callback.message.answers[0]
-    assert [b.text for b in _buttons(markup)] == ["📄 assets/targets.txt", "✖️ Отмена"] and "выберите базу" not in text
+    assert [b.text for b in _buttons(markup)] == ["📄 assets/targets.txt", "✖️ Отмена"] and text.startswith(
+        "📨 ЛС по базе — выберите базу ниже")  # its default list, a button too
 
 
 def test_contacts_button_launches_with_the_picked_base(tmp_path, monkeypatch):
@@ -128,10 +132,12 @@ def test_contacts_button_launches_with_the_picked_base(tmp_path, monkeypatch):
     runs = []
 
     class _Manager:
+        active = False
+
         async def run(self, bot, chat_id, pool, instance, bot_function, job, *labels):
             calls = []
 
-            async def fake_run(path, delay, report):
+            async def fake_run(path, report):
                 calls.append(path)
 
             await job(ns(run=fake_run), None)
@@ -224,7 +230,7 @@ def _mailing(sessions, rows, monkeypatch, tmp_path, storage=None, on_hold=()):
     async def report(text):
         msgs.append(text)
 
-    asyncio.run(fn.run(rows, None, [0], report))
+    asyncio.run(fn.run(rows, None, report))
     return msgs, delays
 
 
@@ -334,7 +340,7 @@ def test_contacts_foreign_base(monkeypatch, tmp_path):
     async def report(text):
         msgs.append(text)
 
-    asyncio.run(fn.run(str(path), [0], report))
+    asyncio.run(fn.run(str(path), report))
     assert [u.username for u in other.added] == ["alice"]
     assert "Пропущено без username (база другого аккаунта): 1" in msgs
 
@@ -355,7 +361,7 @@ def _contacts(sessions, rows, tmp_path, storage=None, progress=None, on_hold=())
     async def report(text):
         msgs.append(text)
 
-    asyncio.run(fn.run(str(path), [0], report))
+    asyncio.run(fn.run(str(path), report))
     return msgs
 
 
@@ -554,7 +560,7 @@ def test_preflight_excludes_a_permanently_restricted_worker(monkeypatch, tmp_pat
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
     assert any("его контакты (1) ждут решения" in m for m in msgs)
     assert ("Контакты бессрочно ограниченных воркеров ждут решения (1 чел.): "
-            "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)") in msgs
+            "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка SpamBot") in msgs
     assert not any(m.startswith("✅") for m in msgs)
 
 
@@ -661,7 +667,8 @@ def test_verify_offers_posts_files(tmp_path, monkeypatch):
     state, msg = _State(), _Msg()
 
     asyncio.run(scraping_router.verify.verify_project(msg, state, ns(name="Omni"), _deps()))
-    _, markup = msg.answers[0]
+    assert msg.answers[0] == ("🔍 Верификация — аккаунт: 🤖 w1 (+1)", None)  # its one account, in the screen's place
+    _, markup = msg.answers[-1]
     assert [b.text for b in _buttons(markup)] == ["📄 posts · 01.05.2022-27.09.2026 · 1", "✖️ Отмена"]
     assert state.data["files"] == [path]
 
@@ -670,7 +677,7 @@ def test_verify_without_posts_files_explains(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     msg = _Msg()
     asyncio.run(scraping_router.verify.verify_project(msg, _State(), ns(name="Omni"), _deps()))
-    text, markup = msg.answers[0]
+    text, markup = msg.answers[-1]
     assert markup == cancel_kb(Verify.input) and "нет файлов с постами" in text
 
 
@@ -733,7 +740,7 @@ def test_verify_channel_buttons_come_a_page_at_a_time(tmp_path):
     state, msg = _State(), _Msg()
     asyncio.run(scraping_router.verify._ask_channel(msg, state, _one_account(), None, path))
     texts = [b.text for b in _buttons(msg.answers[-1][1])]
-    assert texts == [*(f"📢 @ch{i:02}" for i in range(20)), "◀️", "📄 стр 1/2", "▶️", "✖️ Отмена"]
+    assert texts == [*(f"📢 @ch{i:02}" for i in range(20)), "◀️", "📄 стр. 1/2", "▶️", "✖️ Отмена"]
 
     page, edited = _Callback(), []
 
@@ -744,7 +751,7 @@ def test_verify_channel_buttons_come_a_page_at_a_time(tmp_path):
     asyncio.run(scraping_router.verify.verify_channel_pick(
         page, ChoiceCB(scope="verify_channel", value="pg.1"), state, _one_account(), None, None))
     assert [b.text for b in _buttons(edited[0])] == [
-        *(f"📢 @ch{i:02}" for i in range(20, 25)), "◀️", "📄 стр 2/2", "▶️", "✖️ Отмена"]
+        *(f"📢 @ch{i:02}" for i in range(20, 25)), "◀️", "📄 стр. 2/2", "▶️", "✖️ Отмена"]
 
     pick = _Callback()  # a button of the second page: its channel, by its index in the whole list
     asyncio.run(scraping_router.verify.verify_channel_pick(
@@ -784,7 +791,7 @@ def test_verify_typed_path_that_can_t_be_read_asks_the_channel(tmp_path):
     msg, state = _Msg(), _State()
     asyncio.run(scraping_router.verify._ask_channel(msg, state, _one_account(), None,
                                                     str(tmp_path / "missing.parquet")))
-    assert msg.answers == [("Пришлите канал (@name / t.me / числовой id):", cancel_kb(Verify.channel))]
+    assert msg.answers == [("Пришлите канал (@name, ссылка t.me или числовой id):", cancel_kb(Verify.channel))]
 
     typo = _Msg()
     typo.text = "канал омни"  # never asked on an account: typed again
@@ -814,7 +821,7 @@ def _project_analysis(name="Omni"):
 
 def test_analysis_menu_is_russian():
     msg, state = _Msg(), _State()
-    asyncio.run(scraping_router.analysis.analysis_project(msg, state, ns(name="Omni")))
+    asyncio.run(scraping_router.analysis.analysis_project(msg, state, ns(name="Omni", id=1)))
     text, markup = msg.answers[0]
     labels = [b.text for b in _buttons(markup)]
     assert labels == ["🔗 Ссылки на другие каналы", "🔎 Поиск постов по словам", "👀 Посмотреть файл", "➕ Ещё",
@@ -910,7 +917,7 @@ def test_analysis_filter_asks_for_words(tmp_path, monkeypatch):
 
     pick = _Callback()
     asyncio.run(scraping_router.analysis.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
-    assert pick.message.answers[0][0].startswith("Слова через запятую")
+    assert pick.message.answers[0][0].startswith("🔎 Поиск постов по словам — пришлите слова через запятую")
 
     msg = _Msg()
     msg.text = "крипта, , биткоин"
@@ -969,10 +976,12 @@ def test_an_analysis_button_without_its_project_s_token_is_stale():
     """The tools' menu of the section without a project (gone): its buttons carry no token."""
     from bot.routers._common import STALE_BUTTON
 
+    alerts = []
     tool = _Callback()
+    tool.answer = lambda text=None, **kwargs: alerts.append((text, kwargs.get("show_alert"))) or asyncio.sleep(0)
     asyncio.run(scraping_router.analysis.analysis_tool(tool, ChoiceCB(scope="an_tool", value="links"),
                                                        _project_analysis()[0]))
-    assert tool.message.answers == [(STALE_BUTTON, None)]
+    assert alerts == [(STALE_BUTTON, True)] and tool.message.answers == []  # a pop-up, no message piled up
 
 
 # --- mid-run: a worker out for good hands its people over; a passing limit keeps them ---------
@@ -1009,7 +1018,7 @@ def _mailing_with_limit(sessions, rows, limited, monkeypatch, tmp_path, gone, pr
     async def report(text):
         msgs.append(text)
 
-    asyncio.run(fn.run(rows, None, [0], report))
+    asyncio.run(fn.run(rows, None, report))
     return msgs, asked
 
 
@@ -1229,6 +1238,8 @@ def test_contacts_owner_limited_on_its_own_queue_is_not_tried_again(tmp_path):
 def test_contacts_path_upload_does_not_launch_the_default_base():
     """A file sent instead of a typed path must re-prompt, not run on assets/contacts.parquet."""
     class _Manager:
+        active = False
+
         async def run(self, *args, **kwargs):
             raise AssertionError("must not launch")
 
@@ -1240,57 +1251,6 @@ def test_contacts_path_upload_does_not_launch_the_default_base():
 
 
 # --- CLI: a worker left out of "how many accounts to use?" keeps its contacts ----------
-
-def _picked_first_of(sessions, cls, settings, monkeypatch):
-    from functions.base.base import BaseFunction
-
-    monkeypatch.setattr(BaseFunction, "ask_int", staticmethod(lambda *a, **k: 1))
-    fn = cls(_WorkerStorage(sessions), settings)
-    fn.ask_accounts_count()
-    return fn
-
-
-def test_cli_subset_mailing_leaves_unpicked_workers_contacts(monkeypatch, tmp_path):
-    from functions.pmmailing import PmMailingFunc
-    from modules import contacts_ledger
-
-    monkeypatch.chdir(tmp_path)
-    a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save(conftest.home(), {"1": 2})  # alice is in b's contacts
-    fn = _picked_first_of([a, b], PmMailingFunc,
-                          ns(delay=[0], per_account_daily=100, account_pause=[0]), monkeypatch)
-
-    async def deliver(session, peer):
-        session.sent.append(peer)
-
-    fn._deliver = deliver
-    msgs = []
-
-    async def report(text):
-        msgs.append(text)
-
-    asyncio.run(fn.run([ROWS[0]], None, [0], report))
-    assert a.sent == [] and b.sent == []  # a stranger to her: she waits for b
-
-
-def test_cli_subset_contacts_skip_unpicked_workers_people(monkeypatch, tmp_path):
-    from functions.add_contacts import AddContactsFunc
-    from modules import contacts_ledger
-
-    monkeypatch.chdir(tmp_path)
-    path = tmp_path / "base.parquet"
-    pd.DataFrame({"ID": [1], "Access Hash": [11], "Username": ["alice"]}).to_parquet(path)
-    a, b = _Session(1, "a"), _Session(2, "b")
-    contacts_ledger.save(conftest.home(), {"1": 2})
-    fn = _picked_first_of([a, b], AddContactsFunc,
-                          ns(delay=[0], contacts_per_account_daily=0), monkeypatch)
-
-    async def report(text):
-        pass
-
-    asyncio.run(fn.run(str(path), [0], report))
-    assert a.added == [] and contacts_ledger.load(conftest.home()) == {"1": 2}
-
 
 def test_a_project_s_files_are_not_crowded_out_by_another_name_starting_with_it(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))

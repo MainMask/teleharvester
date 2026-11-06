@@ -95,6 +95,6 @@ class Progress:
         if frac >= 1:  # all counted, but the job is still running: saving files, final checks
             tail = "Завершение…"
         else:
-            tail = f"ETA {format_duration(eta) if eta is not None else 'оценивается'}"
+            tail = f"осталось ~{format_duration(eta)}" if eta is not None else "осталось: оценивается"
         lines.append(f"⏱ {format_duration(elapsed)} · {tail}")
         return "\n".join(lines)

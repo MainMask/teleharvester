@@ -175,8 +175,7 @@ class InvitingFunc(TelethonFunction):
 
         return None
 
-    async def run(self, source_link, destination, delay, report):
-        self.delay_range = delay
+    async def run(self, source_link, destination, report):
         self._limits = DailyCounter(
             "stats/invite_limits.json", self.settings.invite_per_account_daily
         )
@@ -200,8 +199,6 @@ class InvitingFunc(TelethonFunction):
         ])
 
     async def execute(self):
-        self.ask_accounts_count()
-
         if not self.sessions:
             console.print("[bold red]Нет аккаунтов")
             return
@@ -209,6 +206,4 @@ class InvitingFunc(TelethonFunction):
         source_link = console.input("[bold red]ссылка на чат-источник> [/]")
         destination = console.input("[bold red]куда приглашать> [/]")
 
-        delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
-
-        await self.run(source_link, destination, delay, console_report)
+        await self.run(source_link, destination, console_report)

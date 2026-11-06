@@ -52,8 +52,6 @@ class PmBroadcastFunc(TelethonFunction):
         )
 
     async def execute(self):
-        self.ask_accounts_count()
-
         console.print()
         console.print("[bold white][1] По username")
         console.print("[bold white][2] По номеру телефона")

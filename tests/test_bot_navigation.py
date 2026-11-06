@@ -110,7 +110,7 @@ def test_hub_screens_pair_only_short_buttons_and_mark_the_submenus():
 
     rows = [[b.text for b in row] for row in screen_kb(ACCOUNTS).inline_keyboard]
     # the actions, the check on a row of its own, the screens opened from it
-    assert rows == [["📋 Список", "➕ Добавить"], ["🌐 Прокси", "↪️ Перенести"], ["🛡 Проверка статуса (SpamBot)"],
+    assert rows == [["📋 Список", "➕ Добавить"], ["🌐 Прокси", "↪️ Перенести"], ["🛡 Проверка SpamBot"],
                     ["👤 Профиль ›", "🔐 Безопасность ›"], ["⬅️ Назад"]]
     assert all(len(text) <= SHORT for row in rows if len(row) == 2 for text in row)
     submenus = [NavCB.unpack(b.callback_data).screen for b in _buttons(screen_kb(ACCOUNTS))
@@ -123,7 +123,7 @@ def test_hub_screens_pair_only_short_buttons_and_mark_the_submenus():
 def test_the_card_holds_its_screens_two_in_a_row_each_acting_on_its_project():
     rows = [[b.text for b in row] for row in screen_kb(CARD, 7).inline_keyboard]
     assert rows == [["📥 Сбор ›", "📨 База и рассылка ›"], ["🤖 Аккаунты ›", "💬 Активность ›"],
-                    ["⚙️ Управление ›"], ["⬅️ Назад"]]
+                    ["🛠 Управление ›"], ["⬅️ Назад"]]
     *screens, back = _buttons(screen_kb(CARD, 7))
     assert {NavCB.unpack(b.callback_data).project for b in screens} == {7}
     assert NavCB.unpack(back.callback_data) == NavCB(screen=PROJECTS)  # the list: no project's
@@ -193,17 +193,23 @@ def test_the_bot_s_commands_are_set_and_a_failure_does_not_stop_the_start():
 
     class _Bot:
         def __init__(self, fail=False):
-            self.fail, self.commands = fail, None
+            self.fail, self.commands, self.deleted = fail, {}, False
 
-        async def set_my_commands(self, commands):
+        async def delete_my_commands(self):
             if self.fail:
                 raise RuntimeError("Bad Gateway")
-            self.commands = [command.command for command in commands]
+            self.deleted = True
+
+        async def set_my_commands(self, commands, scope=None):
+            if self.fail:
+                raise RuntimeError("Bad Gateway")
+            self.commands[scope.chat_id] = [command.command for command in commands]
 
     bot = _Bot()
-    asyncio.run(set_commands(bot))
-    assert bot.commands == ["start", "status", "cancel"]
-    asyncio.run(set_commands(_Bot(fail=True)))  # only logged
+    asyncio.run(set_commands(bot, {1, 2}))
+    # the admins' chats only: anyone else gets no answer, so no commands either
+    assert bot.deleted and bot.commands == {1: ["start", "status", "cancel"], 2: ["start", "status", "cancel"]}
+    asyncio.run(set_commands(_Bot(fail=True), {1}))  # only logged
 
 
 def test_no_workers_names_where_to_add_them():
@@ -329,7 +335,7 @@ def test_screen_kb_rows_follow_the_subheadings():
 
 def test_risky_functions_are_marked():
     texts = {b.text for b in _buttons(screen_kb(SECURITY))}
-    assert "⚠️ 🧹 Очистить диалоги" in texts and "🔒 Установить 2FA" in texts
+    assert "⚠️ 🧹 Очистить диалоги" in texts and "🔒 Пароль 2FA" in texts
 
 
 def test_every_screen_opens_from_its_parent():
@@ -359,7 +365,7 @@ def test_a_mixed_section_marks_only_its_risky_functions():
 
     text = screen_text(SECURITY)
     assert text.startswith("<b>🔐 Безопасность</b>\n")
-    assert "⚠️ <b>🧹 Очистить диалоги</b>" in text and "\n<b>📴 Сбросить чужие сессии</b>" in text
+    assert "⚠️ <b>🧹 Очистить диалоги</b>" in text and "\n<b>📴 Чужие сессии</b>" in text
 
 
 def test_add_account_offers_phone_for_both_roles_and_tdata():
@@ -452,22 +458,23 @@ def test_the_projects_list_has_no_work_without_a_project():
 def test_back_returns_to_accounts_screen_in_place():
     callback = _Callback()
     pool = ns(count=lambda: 5)
-    asyncio.run(menu.open_by_button(callback, NavCB(screen=ACCOUNTS), _State(), pool=pool, workspace=ns()))
+    asyncio.run(menu.open_by_button(callback, NavCB(screen=ACCOUNTS, project=7), _State(), pool=pool,
+                                    workspace=ns(project_id=7)))
 
     text, markup = callback.message.edits[0]
-    assert "Аккаунты проекта</b> — воркеров: <b>5</b>" in text
-    assert markup == screen_kb(ACCOUNTS)
+    assert f"<b>{ACCOUNTS}</b>\n\nВоркеров: <b>5</b>" in text
+    assert markup == screen_kb(ACCOUNTS, 7)  # its buttons act on its own project, whichever is current later
 
 
 def test_accounts_screen_with_no_workers_explains_how_to_add():
     msg = _Msg(ACCOUNTS)
-    asyncio.run(menu.open_from_menu(msg, _State(), pool=ns(count=lambda: 0), workspace=ns()))
+    asyncio.run(menu.open_from_menu(msg, _State(), pool=ns(count=lambda: 0), workspace=ns(project_id=7)))
 
     text, markup = msg.answers[0]
     from modules.registry import menu_path
 
-    assert "воркеров: <b>0</b>" in text and menu_path("add") in text  # the button there is, not a gone one
-    assert markup == screen_kb(ACCOUNTS)  # import stays reachable with zero workers
+    assert "Воркеров: <b>0</b>" in text and menu_path("add") in text  # the button there is, not a gone one
+    assert markup == screen_kb(ACCOUNTS, 7)  # import stays reachable with zero workers
 
 
 def test_every_function_is_explained_in_its_section():
@@ -484,11 +491,11 @@ def test_every_function_is_explained_in_its_section():
 
 def test_accounts_screen_explains_its_buttons():
     msg = _Msg(ACCOUNTS)
-    asyncio.run(accounts.workers.accounts_screen(msg, _State(), False, ns(count=lambda: 3)))
+    asyncio.run(accounts.workers.accounts_screen(msg, _State(), False, ns(count=lambda: 3), ns(project_id=7)))
     text = msg.answers[0][0]
     for button in SCREENS[ACCOUNTS].buttons:
         assert f"<b>{button.title}</b> — {button.hint}" in text
-    assert "<b>🛡 Проверка статуса (SpamBot)</b> — спрашивает @SpamBot" in text
+    assert "<b>🛡 Проверка SpamBot</b> — спрашивает @SpamBot" in text
     for child in ("👤 Профиль", SECURITY):
         assert f"<b>{child}</b> — {SCREENS[child].hint}" in text
     assert "Задержка" not in text  # a setting: ⚙️ Настройки

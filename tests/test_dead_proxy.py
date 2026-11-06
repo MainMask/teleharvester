@@ -115,7 +115,7 @@ def test_mailing_rotates_past_the_dead_worker(tmp_path, monkeypatch):
     monkeypatch.setattr(fn, "check_workers", no_check)
     msgs, report = _messages()
 
-    asyncio.run(fn.run(["alice", "bob"], RichContent(text="hi"), [0], report))
+    asyncio.run(fn.run(["alice", "bob"], RichContent(text="hi"), report))
 
     assert [peer for _, peer in ok.requests] == ["alice", "bob"]
 
@@ -149,6 +149,6 @@ def test_mailing_rotates_past_a_refusing_proxy(tmp_path, monkeypatch):
     monkeypatch.setattr(fn, "check_workers", no_check)
     msgs, report = _messages()
 
-    asyncio.run(fn.run(["alice", "bob"], RichContent(text="hi"), [0], report))
+    asyncio.run(fn.run(["alice", "bob"], RichContent(text="hi"), report))
 
     assert [peer for _, peer in ok.requests] == ["alice", "bob"]

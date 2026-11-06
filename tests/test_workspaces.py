@@ -183,17 +183,17 @@ def test_workers_are_ticked_and_moved_to_another_project_with_their_restrictions
     asyncio.run(accounts.move.move_start(callback, state, source.pool))
     text, markup = callback.message.edits[0]  # in 🤖 Аккаунты' place
     assert text.endswith("Отмечено: 0 из 3")
-    assert _ticks(markup) == ["⬜ W (@w111)", "⬜ W (@w112)", "⬜ W (@w113) ⏳ занят", "☑️ Все", "⬜ Никого", "▶️ Далее",
-                              "✖️ Отмена"]
+    assert _ticks(markup) == ["⬜ W (@w111)", "⬜ W (@w112)", "⬜ W (@w113) ⏳ занят задачей", "☑️ Все", "⬜ Никого",
+                              "▶️ Далее", "✖️ Отмена"]
 
     _, answers = _tap(accounts.move.move_pick, "mv_out", "go", state, source)
-    assert answers == ["Отметьте хотя бы один аккаунт"]  # nothing ticked yet
+    assert answers == ["Отметьте хотя бы одного воркера"]  # nothing ticked yet
     callback, _ = _tap(accounts.move.move_pick, "mv_out", "all", state, source)
     text, markup = callback.message.edits[0]
     assert text.endswith("Отмечено: 3 из 3") and _ticks(markup)[0] == "✅ W (@w111)"
     callback, _ = _tap(accounts.move.move_pick, "mv_out", "go", state, source)
     text, markup = callback.message.edits[0]
-    assert text == "Куда перенести отмеченных — 3?" and _ticks(markup) == ["📁 Blue", "📦 В свободные", "✖️ Отмена"]
+    assert text == "Куда перенести отмеченных (3)?" and _ticks(markup) == ["📁 Blue", "📦 В свободные", "✖️ Отмена"]
 
     callback, _ = _tap(accounts.move.move_to, "mv_to", str(blue.id), state, source.pool, source, workspaces)
     assert callback.message.edits[0][0] == ("✅ Перенесено в проект «Blue»: 2 из 3.\n\nНе перенесены:\n"
@@ -202,7 +202,7 @@ def test_workers_are_ticked_and_moved_to_another_project_with_their_restrictions
     assert (source.pool.count(), target.pool.count()) == (1, 2) and restricted_workers.load() == [new]
     assert state.state is None  # the flow is over: its buttons are stale now
     answers = []  # the last router's (stale.py)
-    asyncio.run(stale.stale_button(ns(answer=lambda text: answers.append(text) or asyncio.sleep(0))))
+    asyncio.run(stale.stale_button(ns(answer=lambda text, **kw: answers.append(text) or asyncio.sleep(0))))
     assert answers == ["Кнопка устарела — откройте раздел заново."]
 
 
@@ -215,7 +215,7 @@ def test_free_accounts_are_ticked_into_the_project():
     state, callback = _State(), _SCallback()
     asyncio.run(accounts.move.free_start(callback, state))
     text, markup = callback.message.edits[0]  # in ➕ Добавить's place
-    assert "Свободные аккаунты</b>" in text and text.endswith("Отмечено: 0 из 3")
+    assert "<b>📦 Воркеры — из свободных</b>" in text and text.endswith("Отмечено: 0 из 3")
     assert _ticks(markup)[:3] == ["⬜ @free331 · +331", "⬜ @free332 · +332", "⬜ @free333 · +333"]
 
     for index in ("0", "2"):
@@ -234,7 +234,8 @@ def test_a_project_with_a_job_or_with_workers_is_not_deleted():
     workspaces.get(green.id).scrapes.acquire("Скрап", timeout=0)
     callback = _Callback()
     asyncio.run(router.project_delete(callback, ChoiceCB(scope="prj_del", value="yt"), state, workspaces))
-    assert callback.alerts == ["⛔ Идёт «Скрап» — удалите проект после окончания."] and not callback.message.answers
+    assert callback.alerts == ["⛔ Занято: идёт «Скрап». Дождитесь окончания или остановите в 📊 Задачи."]
+    assert not callback.message.answers
 
     workspaces.get(green.id).scrapes.release()
     callback = _SCallback()

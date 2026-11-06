@@ -82,16 +82,16 @@ def test_every_analysis_tool_is_described():
 
 def test_menu_path_finds_functions_and_screen_buttons():
     # all the work is a project's: in its card's screens; the card is opened by its name
-    assert menu_path("status") == "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка статуса (SpamBot)"
-    assert menu_path("2fa") == "📁 Проекты → проект → 🤖 Аккаунты → 🔐 Безопасность → 🔒 Установить 2FA"
+    assert menu_path("status") == "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка SpamBot"
+    assert menu_path("2fa") == "📁 Проекты → проект → 🤖 Аккаунты → 🔐 Безопасность → 🔒 Пароль 2FA"
     assert menu_path("invite") == "📁 Проекты → проект → 💬 Активность → 🤝 Инвайтинг"
     assert trail(AUTOREPLY) == ["⚙️ Настройки", "📬 Автоответ"]  # a screen of its own
     assert menu_path("members") == "📁 Проекты → проект → 📥 Сбор → 👥 Участники групп"
     assert menu_path("pmmailing") == "📁 Проекты → проект → 📨 База и рассылка → 📨 ЛС по базе"
     # 🧹: the base's, on the card, and the dialogs', on a worker's screen — two keys, two places
-    assert menu_path("clearbase") == "📁 Проекты → проект → ⚙️ Управление → 🧹 Очистить базу"
+    assert menu_path("clearbase") == "📁 Проекты → проект → 🛠 Управление → 🧹 Очистить базу"
     assert menu_path("clear") == "📁 Проекты → проект → 🤖 Аккаунты → 🔐 Безопасность → 🧹 Очистить диалоги"
-    assert menu_path("channels") == "📁 Проекты → проект → ⚙️ Управление → ✏️ Каналы"
+    assert menu_path("channels") == "📁 Проекты → проект → 🛠 Управление → 📢 Каналы"
     assert "projects" not in BOT_FUNCTIONS_BY_KEY  # 📁 Проекты: a main-menu button; the CLI's item (CLI_EXTRAS)
     assert menu_path("add") == "📁 Проекты → проект → 🤖 Аккаунты → ➕ Добавить"
     actions = {b.action for screen in SCREENS.values() for b in screen.buttons}
@@ -239,7 +239,7 @@ def test_every_screen_of_the_main_menu_starts_with_an_emoji(monkeypatch, tmp_pat
     texts += opened(PROJECTS) + opened(ACCOUNTS) + opened(SETTINGS)  # another when not
     callback = _Screen()
     # a screen of tools too
-    asyncio.run(scraping.analysis.analysis_project(callback, _Clean(), types.SimpleNamespace(name="P")))
+    asyncio.run(scraping.analysis.analysis_project(callback, _Clean(), types.SimpleNamespace(name="P", id=1)))
     texts += callback.answers
 
     assert len(texts) == 6
@@ -252,7 +252,7 @@ def test_a_long_choice_is_paged_under_telegram_s_100_buttons():
 
     options = [(f"🤖 w{i}", str(i)) for i in range(130)]
     rows = paged_kb("x", options, 0, ".t").inline_keyboard
-    assert len(rows) == PAGE_SIZE + 1 and [b.text for b in rows[-1]] == ["◀️", "📄 стр 1/7", "▶️"]
+    assert len(rows) == PAGE_SIZE + 1 and [b.text for b in rows[-1]] == ["◀️", "📄 стр. 1/7", "▶️"]
     assert [ChoiceCB.unpack(b.callback_data).value for b in rows[-1]] == ["pg.6.t", "pg.0.t", "pg.1.t"]  # round
     last = paged_kb("x", options, 6).inline_keyboard
     assert [b.text for row in last[:-1] for b in row] == [f"🤖 w{i}" for i in range(120, 130)]

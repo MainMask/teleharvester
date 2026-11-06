@@ -128,7 +128,7 @@ class TestRuns:
         fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=1))
         fn.sessions = [_Session()]
         msgs, report = collect()
-        asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), [0], report))
+        asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), report))
         assert any("отправлено" in m for m in msgs)
 
     def test_broadcast_comments_says_why_it_stopped(self):
@@ -143,7 +143,7 @@ class TestRuns:
         fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=0))
         fn.sessions = [_Failing()]
         msgs, report = collect()
-        asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), [0], report))
+        asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), report))
         assert msgs[-1] == "[A] 5 ошибок подряд, остановка."
 
 
@@ -907,7 +907,7 @@ class TestSoftStop:
             await _finish(_Inst(), flow, _ReportBot(), 1, m, ns(in_job=[]))
 
         asyncio.run(scenario())
-        assert any("Жалоба отправлена" in t for t in summaries)
+        assert any("✅ Готово: 🚩 Жалоба на пост" in t for t in summaries)
         assert not any("Остановлено" in t for t in summaries)
 
 
@@ -982,8 +982,9 @@ class TestStaleFlowGuards:
             bot = _Bot()
             message = ns(chat=ns(id=1), answer=lambda t, **k: _append(answered, t))
 
-            async def answer(self, *a, **k):
-                return None
+            async def answer(self, text=None, **k):  # a stale tap: said in a pop-up over its message
+                if text:
+                    answered.append(text)
 
         async def scenario():
             m = JobManager()
@@ -1014,8 +1015,9 @@ class TestStaleFlowGuards:
             bot = _Bot()
             message = ns(chat=ns(id=1), answer=lambda t, **k: _append(answered, t))
 
-            async def answer(self, *a, **k):
-                return None
+            async def answer(self, text=None, **k):  # a stale tap: said in a pop-up over its message
+                if text:
+                    answered.append(text)
 
         async def scenario():
             m = JobManager()
@@ -1131,7 +1133,7 @@ class TestBadDateHandled:
         m = _Msg()
         asyncio.run(scraping.scrape.scrape_run(m, _State()))  # the date is checked before any slot
 
-        assert any("Неверные параметры" in r and "not-a-date" in r for r in m.replies)
+        assert any("not-a-date" in r and r.endswith("Пришлите дату ещё раз:") for r in m.replies)
 
     class _FlowState:
         """A chat's FSM: its step and data, as aiogram keeps them."""
@@ -1248,7 +1250,7 @@ class TestMembersStopLabel:
         m = _Msg()
         asyncio.run(scraping.members._members_go(m, _State(), "n", pool, None, scrapes))
 
-        assert "Остановлено" in m.replies[-1]
+        assert "остановлен" in m.replies[-1]
 
 
 # --- verify: a user-input error (str SystemExit) surfaces its message, not "прервана" ---
@@ -1331,6 +1333,8 @@ class TestTwoFaDeletesPassword:
             self.replies.append(text)
 
     class _Manager:
+        active = False
+
         def __init__(self):
             self.runs = []
 
@@ -1475,6 +1479,7 @@ class TestChangePhotoFromChat:
                 _State.cleared = True
 
         class _Manager:
+            active = False
             path_during_job = None
 
             async def run(self, bot, chat_id, pool, instance, bot_function, factory, *a, **kw):
@@ -1524,4 +1529,4 @@ class TestChangePhotoFromChat:
 
         assert state.cleared is False
         assert manager.path_during_job is None
-        assert any("Ожидается картинка" in r for r in msg.replies)
+        assert any("Нужна картинка" in r for r in msg.replies)

@@ -57,8 +57,6 @@ class ClearDialogsFunc(TelethonFunction):
         await self.gather_in_order(self.clear, report)
 
     async def execute(self):
-        self.ask_accounts_count()
-
         confirm = Confirm.ask("[bold red]точно очистить все диалоги?[/]")
 
         if confirm:

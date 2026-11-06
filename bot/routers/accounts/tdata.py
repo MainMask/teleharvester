@@ -12,12 +12,13 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import back_answer, delete_quietly
+from bot.routers._common import back_answer, busy_step, busy_tap, delete_quietly
+from bot.routers.login import TDATA
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager, busy
 from bot.states import ImportTdata
 from modules import projects, tdata_import
-from modules.registry import ACCOUNTS, MAIN_MENU
+from modules.registry import ACCOUNTS
 
 router = Router()
 
@@ -32,47 +33,50 @@ async def tdata_start(callback: CallbackQuery, state: FSMContext, manager: JobMa
         await back_answer(callback.message, busy(manager.label), ACCOUNTS, manager.project_id)
         return
 
+    await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(ImportTdata.archive)
     await callback.message.answer(  # a prompt for a file: a new message, ➕ Добавить's menu stays
-        "📥 Воркер из tdata — пришлите <b>ZIP-архив с одной папкой tdata</b> (Telegram Desktop).",
+        f"<b>{TDATA}</b>\n\nПришлите архив с одной папкой tdata (Telegram Desktop):",
         parse_mode="HTML", reply_markup=cancel_kb(ImportTdata.archive),
     )
 
 
-@router.message(ImportTdata.archive, ~F.text.in_(MAIN_MENU))
+@router.message(ImportTdata.archive)
 async def tdata_archive(message: Message, state: FSMContext):
     document = message.document
 
     if document is None:
-        await message.answer("Ожидается ZIP-файл. Пришлите архив с папкой tdata.")
+        await message.answer("Нужен ZIP-файл с папкой tdata. Пришлите ещё раз:")
         return
 
     if (document.file_size or 0) > MAX_TDATA_ZIP_SIZE:
-        await message.answer("Архив слишком большой. tdata весит немного — пришлите ZIP поменьше.")
+        await message.answer("Архив слишком большой — tdata весит немного. Пришлите ZIP поменьше:")
         return
 
     buffer = await message.bot.download(document)
     data = buffer.read()
 
     if not zipfile.is_zipfile(io.BytesIO(data)):
-        await message.answer("Это не ZIP-архив. Пришлите папку tdata, упакованную в .zip.")
+        await message.answer("Это не ZIP-архив. Пришлите папку tdata, упакованную в .zip:")
         return
 
     await state.update_data(zip=data)
     await state.set_state(ImportTdata.password)
-    await message.answer("🔐 Пришлите пароль 2FA аккаунта (сообщение удалю) — или нажмите «⏭ Без пароля»:",
+    await message.answer("🔐 Пришлите пароль 2FA аккаунта (сообщение удалю) или нажмите «⏭ Без пароля»:",
                          reply_markup=cancel_kb(ImportTdata.password,
                                                 choice_kb("tdata_nopass", [("⏭ Без пароля", "go")])))
 
 
 @router.callback_query(ImportTdata.password, ChoiceCB.filter(F.scope == "tdata_nopass"))
 async def tdata_no_password(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, manager: JobManager):
+    if await busy_tap(callback, manager):
+        return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)  # pressed once: one import
     await _import(callback.message, state, pool, manager, None)
 
 
-@router.message(ImportTdata.password, ~F.text.in_(MAIN_MENU))
+@router.message(ImportTdata.password)
 async def tdata_password(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager):
     raw = message.text  # as typed: spaces may be part of it, as at the sign-in by phone
     if not raw:  # a sticker/photo must not import with "no password"
@@ -88,11 +92,11 @@ async def _import(message: Message, state: FSMContext, pool: WorkerPool, manager
     zip_bytes = data.get("zip")
     if not zip_bytes:
         await state.clear()
-        await message.answer("Архив потерялся, начните заново.", reply_markup=back_kb(ACCOUNTS, manager.project_id))
+        await message.answer("⚠️ Архив потерялся, начните заново.", reply_markup=back_kb(ACCOUNTS, manager.project_id))
         return
 
-    if not manager.acquire("📥 Импорт tdata", cancelable=False, timeout=0):
-        await back_answer(message, busy(manager.label), ACCOUNTS, manager.project_id)
+    if not manager.acquire("📥 Импорт tdata", cancelable=False, timeout=0):  # the archive stays: the step too
+        await busy_step(message, manager, ACCOUNTS, "пришлите пароль ещё раз")
         return
 
     await state.clear()
@@ -103,10 +107,11 @@ async def _import(message: Message, state: FSMContext, pool: WorkerPool, manager
         try:
             tdata_dir = tdata_import.unpack(zip_bytes, tmp_dir)
         except ValueError as err:
-            await message.answer(f"{err}.", reply_markup=back_kb(ACCOUNTS, manager.project_id))
+            await message.answer(f"⚠️ {err}.", reply_markup=back_kb(ACCOUNTS, manager.project_id))
             return
         if tdata_dir is None:
-            await message.answer("В архиве не найдена папка tdata.", reply_markup=back_kb(ACCOUNTS, manager.project_id))
+            await message.answer("⚠️ В архиве не найдена папка tdata.",
+                                 reply_markup=back_kb(ACCOUNTS, manager.project_id))
             return
 
         used = [js.account.proxy for js in pool.storage.jsessions_paths.values()]
@@ -139,7 +144,7 @@ async def _import(message: Message, state: FSMContext, pool: WorkerPool, manager
         saved = session.account
         proxy_note = saved.proxy.label() if saved.proxy else "без прокси"
         await message.answer(
-            f"✅ Аккаунт импортирован.\n"
+            f"✅ Воркер импортирован.\n"
             f"📱 Номер: +{phone}\n"
             f"🔐 2FA: {'да' if saved.password else 'нет'}\n"
             f"🌐 Прокси: {proxy_note}\n"

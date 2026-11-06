@@ -1,6 +1,6 @@
 from functions.base import TelethonFunction
 from functions.base.base import console_report
-from functions.broadcast import Broadcast
+from functions.broadcast import Broadcast, ask_run_options, save_run_options
 
 
 class BroadcastChatFunc(TelethonFunction):
@@ -25,6 +25,8 @@ class BroadcastChatFunc(TelethonFunction):
     async def execute(self):
         broadcast = Broadcast(self.storage, self.settings)
 
-        broadcast.ask_accounts_count()
         broadcast.ask()
+        options = ask_run_options(self.settings, trigger=True)
+        if not save_run_options(self.settings, options):
+            return
         await broadcast.start_campaign(console_report)

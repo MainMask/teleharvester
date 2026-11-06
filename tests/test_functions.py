@@ -34,20 +34,6 @@ class TestAskInt:
             assert BaseFunction.ask_int("n", default=1, min_value=1) == 1
 
 
-class TestAskAccountsCount:
-    def test_empty_storage_does_not_prompt(self):
-        fn = _fn([])
-        with patch.object(BaseFunction, "ask_int") as ask:
-            fn.ask_accounts_count()
-        ask.assert_not_called()
-        assert fn.sessions == []
-
-    def test_slices_to_choice(self):
-        fn = _fn(["a", "b", "c"])
-        with patch.object(BaseFunction, "ask_int", return_value=2):
-            fn.ask_accounts_count()
-        assert fn.sessions == ["a", "b"]
-
 class TestDelay:
     def _run_delay(self, fn):
         slept = []
@@ -59,14 +45,8 @@ class TestDelay:
             asyncio.run(fn.delay())
         return slept
 
-    def test_uses_override_over_settings(self):
-        fn = _fn(["a"], delay=[2, 5])
-        fn.delay_range = [10]
-        assert self._run_delay(fn) == [10]
-
-    def test_falls_back_to_settings_when_no_override(self):
+    def test_uses_the_settings_delay(self):
         fn = _fn(["a"], delay=[3])
-        assert fn.delay_range is None  # class default, not leaked per instance
         assert self._run_delay(fn) == [3]
 
 
@@ -116,7 +96,6 @@ class TestChangeUsernameCliFile:
         monkeypatch.setattr(module.console, "input", lambda prompt="": "y")
 
         fn = ChangeUsernameFunc(types.SimpleNamespace(sessions=[]), types.SimpleNamespace(delay=[1]))
-        fn.ask_accounts_count = lambda: None
         got = []
 
         async def fake_run(report, usernames=None, base=None):

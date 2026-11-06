@@ -11,14 +11,14 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PmBroadcast
 from modules import login as sign_in
-from modules.registry import ACTIVITY
+from modules.registry import ACTIVITY, title
 
 router = Router()
 
 
 @router.callback_query(FunctionCB.filter(F.key == "pm"))
 async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await start_form(callback, state, PmBroadcast.peer, "✉️ ЛС человеку — кому пишут все воркеры? Пришлите "
+    await start_form(callback, state, PmBroadcast.peer, f"{title('pm')} — кому пишут все воркеры? Пришлите "
                      "@username, ссылку t.me или номер телефона:", pool)
 
 
@@ -61,5 +61,5 @@ async def got_message(
     await manager.run(
         message.bot, message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(data["peer"], content, data.get("by_phone", False), r),
-        "Рассылка в ЛС…", cleanup=content.cleanup,
+        "ЛС человеку…", cleanup=content.cleanup,
     )

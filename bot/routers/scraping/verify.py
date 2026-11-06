@@ -15,7 +15,7 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import Verify
 from modules import projects, scraped_files
-from modules.registry import BOT_FUNCTIONS_BY_KEY
+from modules.registry import title
 from modules.scraper_creds import build_credentials
 from scraper.scrape import (
     bad_channels, bad_channels_text, chat_block, parse_date,
@@ -38,13 +38,13 @@ async def _ask_posts_file(message: Message, state: FSMContext, deps: dict):
     await state.update_data(files=[path for path, _ in files])  # buttons carry an index into this
     if files:
         await message.answer(
-            "✅ Верификация — выберите файл с постами или пришлите путь к файлу или папке на сервере:",
+            f"{title('verify')} — выберите файл с постами или пришлите путь к файлу или папке на сервере:",
             reply_markup=cancel_kb(Verify.input, choice_kb(
                 "verify_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(files)])),
         )
     else:
         await message.answer(
-            "✅ Верификация — у проекта нет файлов с постами. Пришлите путь к файлу или папке на сервере:",
+            f"{title('verify')} — у проекта нет файлов с постами. Пришлите путь к файлу или папке на сервере:",
             reply_markup=cancel_kb(Verify.input),
         )
 
@@ -62,7 +62,8 @@ async def _ask_channel(message: Message, state: FSMContext, pool: WorkerPool, pe
     await state.set_state(Verify.channel)
 
     if not channels:
-        await message.answer("Пришлите канал (@name / t.me / числовой id):", reply_markup=cancel_kb(Verify.channel))
+        await message.answer("Пришлите канал (@name, ссылка t.me или числовой id):",
+                             reply_markup=cancel_kb(Verify.channel))
         return
 
     data = await state.get_data()
@@ -75,10 +76,10 @@ async def _ask_channel(message: Message, state: FSMContext, pool: WorkerPool, pe
     if window:
         span = f"{_ddmmyyyy(window[0])}–{_ddmmyyyy(window[1])}"
         text = (f"Каналы из файла — кнопка сразу запустит проверку за период скрапа ({span}).\n"
-                "Другой канал или другие даты — введите канал текстом:")
+                "Другой канал или другие даты — пришлите канал текстом:")
         labels = [f"{'⚠️' if b else '▶️'} {name} · {span}" for name, b in zip(names, bad)]
     else:
-        text = "Канал из файла — или введите другой (@name / t.me / числовой id):"
+        text = "Выберите канал из файла или пришлите другой (@name, ссылка t.me или числовой id):"
         labels = [f"{'⚠️' if b else '📢'} {name}" for name, b in zip(names, bad)]
     if any(bad):
         # why, numbered in the buttons' order; on their own: a hundred of them would not fit with the prompt
@@ -131,6 +132,7 @@ async def verify_channel_pick(callback: CallbackQuery, callback_data: ChoiceCB, 
     window = data.get("window")
     if window:
         await state.clear()
+        await callback.message.edit_reply_markup(reply_markup=None)  # the channel's ▶️ pressed once: one verify
         await _run_verify(callback.message, scrapes, pool, common.run_account(pool, personal, data.get("account", "")),
                           data["input"], channel, *window)
         return
@@ -187,7 +189,7 @@ async def verify_run(message: Message, state: FSMContext, pool: WorkerPool, pers
 async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, account,
                       input_: str, channel: str, date_min: str, date_max: str):
     if account is None:
-        await common.to_collect(message, "Аккаунт не найден, начните заново.", scrapes)
+        await common.to_collect(message, "⚠️ Аккаунт не найден, начните заново.", scrapes)
         return
 
     try:
@@ -201,14 +203,14 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
             comment_sample=0,
         )
     except (Exception, SystemExit) as err:  # parse_date raises SystemExit on a bad date
-        await common.to_collect(message, f"Неверные параметры: {err}", scrapes)
+        await common.to_collect(message, f"⚠️ Неверные параметры: {err}", scrapes)
         return
 
     if params.date_min > params.date_max:
-        await common.to_collect(message, "Дата «с» позже даты «по».", scrapes)
+        await common.to_collect(message, "⚠️ Дата «с» позже даты «по».", scrapes)
         return
 
-    progress = await common.take_slot(scrapes, pool, account, BOT_FUNCTIONS_BY_KEY["verify"].title,
+    progress = await common.take_slot(scrapes, pool, account, title("verify"),
                                       lambda text: common.to_collect(message, text, scrapes))
     if progress is None:
         return
@@ -218,7 +220,8 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
     interrupted = False
     bad_input = None
     try:
-        status = await message.answer("Верификация запущена…", reply_markup=scrape_kb(scrapes.key))
+        status = await message.answer(common.started(title("verify"), account.label),
+                                      reply_markup=scrape_kb(scrapes.key))
 
         # Drop a stale <input>_missed from an earlier run first, so the file existing after
         # the run cleanly means THIS run wrote it (mtime can't tell two runs in one second apart).
@@ -242,7 +245,7 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
         await common.free_slot(scrapes, pool, status)
 
     if bad_input:
-        await common.to_collect(message, f"Неверные параметры: {bad_input}", scrapes)
+        await common.to_collect(message, f"⚠️ Неверные параметры: {bad_input}", scrapes)
         return
 
     # The stale file was removed above, so its presence now means this run wrote it.
@@ -255,7 +258,7 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
         await common.to_collect(message, "⏹ Верификация остановлена.", scrapes)
     elif interrupted:
         if not common.shutting_down:  # else the bot is going down: nothing to tell
-            await common.to_collect(message, "Верификация прервана, повторите.", scrapes)
+            await common.to_collect(message, "⚠️ Верификация прервана, повторите.", scrapes)
     else:
         await common.to_collect(message, "✅ Верификация завершена: пропущенных постов не найдено.", scrapes)
 

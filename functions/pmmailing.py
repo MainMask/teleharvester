@@ -355,7 +355,7 @@ class PmMailingFunc(TelethonFunction):
 
         return [r for r in recipients if not sent(r)]
 
-    async def run(self, recipients, content, delay, report):
+    async def run(self, recipients, content, report):
         self._report = report
         self._content = content
         self._me_cache = {}
@@ -370,7 +370,6 @@ class PmMailingFunc(TelethonFunction):
         self._premium_pass = False
         self._out = set()  # id(session) of the workers that ran out this run
         self._shared_sessions = []
-        self.delay_range = delay
         self.progress_prepare()
 
         self.load_stats()  # the gone ones its callers dropped (drop_gone, before their limit)
@@ -448,8 +447,6 @@ class PmMailingFunc(TelethonFunction):
         console.print(table)
 
     async def execute(self, bases):  # bases: the project's own (functions/projects.py)
-        self.ask_accounts_count()
-
         path = self.ask_file(
             "[bold red]файл с получателями[/]",
             bases,
@@ -467,7 +464,7 @@ class PmMailingFunc(TelethonFunction):
             return
 
         if not recipients:
-            console.print("[bold red]Список получателей пуст!")
+            console.print("[bold red]Список получателей пуст.")
             return
 
         self.load_stats()
@@ -476,7 +473,7 @@ class PmMailingFunc(TelethonFunction):
         if before > len(recipients):
             console.print(f"[bold white]{GONE_SKIPPED}: {before - len(recipients)}[/]")
             if not recipients:
-                console.print("[bold red]Отправлять некому!")
+                console.print("[bold red]Некому писать: все уже получали рассылку или недоступны.")
                 return
 
         if Confirm.ask("[bold red]пропускать тех, кому уже писали?", default=True):
@@ -485,7 +482,7 @@ class PmMailingFunc(TelethonFunction):
             console.print(f"[bold white]пропущено уже получивших: {before - len(recipients)}[/]")
 
             if not recipients:
-                console.print("[bold red]Отправлять некому!")
+                console.print("[bold red]Некому писать: все уже получали рассылку или недоступны.")
                 return
 
         while True:
@@ -510,9 +507,7 @@ class PmMailingFunc(TelethonFunction):
 
         text = console.input("[bold red]текст> [/]")
 
-        delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
-
         # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
-        await self.run(recipients, RichContent(text=text), delay, console_report)
+        await self.run(recipients, RichContent(text=text), console_report)
 
         self.print_stats()

@@ -256,34 +256,6 @@ class SpamBlockFunc(TelethonFunction):
                 result.append((path, user_id, worker_name(self.storage, path), context.counts[user_id]))
         return result
 
-    async def move_restricted(self, blocks: Dict[str, List[TelegramClient]]) -> List[str]:
-        """Move restricted sessions into restricted/<date>/ of their folder (local filesystem op).
-        One whose people wait for it (see holds_people) stays: out of its folder it would be
-        gone, and its people handed to strangers. Returns the names of the ones kept."""
-        context = _context(self.storage.home)
-        kept = []
-        for date, sessions in blocks.items():
-            for session in sessions:
-                session_path = self.storage.get_session_path(session)
-                if session_path is None:  # already moved/forgotten: nothing to relocate
-                    continue
-                if self.holds_people(session_path, context.counts, context.released):
-                    kept.append(worker_name(self.storage, session_path))
-                    continue
-
-                path = os.path.join(os.path.dirname(session_path), "restricted", date.replace("/", "-"))  # 12/11/2026
-                os.makedirs(path, exist_ok=True)
-                session_name = os.path.basename(session_path)
-
-                await release_client(session)  # CLI clients stay connected: a forgotten one runs on
-                os.rename(
-                    session_path,
-                    os.path.join(path, session_name)
-                )
-                self.storage.forget_session(session_path)  # no stale path for a later move
-
-        return kept
-
     async def drop_dead(self, blocks: Dict[str, List[TelegramClient]]) -> List[TelegramClient]:
         """Take the dead sessions out of `blocks` and the pool (to sessions/inactive): their
         people become everyone's at once. Returns them."""
@@ -295,31 +267,19 @@ class SpamBlockFunc(TelethonFunction):
                 self.storage.move_to_inactive(path)
         return dead
 
-    async def run(self, report, move_restricted: bool = False,
-                  replies: bool = False) -> Dict[str, List[TelegramClient]]:
+    async def run(self, report, replies: bool = False) -> Dict[str, List[TelegramClient]]:
         blocks = await self.scan(report, replies)
         await self.drop_dead(blocks)
-
-        if move_restricted:
-            await self.move_restricted(blocks)
-
         return blocks
 
     async def execute(self):
-        self.ask_accounts_count()
-
-        blocks = await self.run(console_report, replies=True)
+        await self.run(console_report, replies=True)
 
         for path, _, name, people in self.waiting():
             if Confirm.ask(f"[bold magenta]Передать контакты {name} ({people}) другим воркерам? "
                            "Это не отменить.[/]", default=False):
                 restricted_workers.release(path)
 
-        if Confirm.ask("[bold magenta]Перенести ограниченные сессии в отдельные папки?[/]"):
-            if kept := await self.move_restricted(blocks):
-                await console_report(f"Оставлены в проекте — их контакты ждут: {', '.join(kept)}")
-
-        # after the move to folders: it finds the workers by the clients this rebuilds
         try:
             pending = rehome(self.storage, dry_run=True)
         except ValueError as err:

@@ -5,6 +5,8 @@ import time
 
 from aiogram.exceptions import TelegramRetryAfter
 
+from scraper.datafiles import format_duration
+
 ID = re.compile(r"🆔 (-?\d+)")  # an id in a function's report line ("🆔 123"), plain text in the terminal
 
 
@@ -125,7 +127,7 @@ class TelegramReporter:
         if self.progress is not None and self.progress.failed:
             lines.append(f"⚠️ Ошибок: {self.progress.failed}")
         elapsed = int(time.monotonic() - self._started) if self._started else 0
-        lines.append(f"⏱ Время: {elapsed // 60:02d}:{elapsed % 60:02d}")
+        lines.append(f"⏱ Время: {format_duration(elapsed)}")
         return "\n".join(lines)
 
     async def finish(self, summary: str):

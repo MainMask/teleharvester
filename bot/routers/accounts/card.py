@@ -74,7 +74,7 @@ def _card(pool: WorkerPool, personal, account, key: str):
         lines.append("⏳ занят скрапом")
     actions = [("🔑 Код входа", f"codes.{key}")]
     if account.personal:
-        actions.append(("🗑 Убрать", f"rm.{key}"))
+        actions.append(("🗑 Удалить", f"rm.{key}"))
     actions.append(("⬅️ К списку", f"list.{key}"))
     return "\n".join(lines), choice_kb("acc_act", actions, widths=(len(actions) - 1, 1))
 
@@ -156,13 +156,13 @@ async def _confirm_removal(message: Message, state: FSMContext, account, key: st
     # the button carries the card's key; prm_confirm, this account: it removes this account only
     await state.update_data(prm_confirm=account.path)
     await message.edit_text(  # in the card's place: ↩️ brings it back
-        f"Убрать личный аккаунт {html.escape(account.label)}?\n\n"
+        f"🗑 Удалить личный аккаунт {html.escape(account.label)}?\n\n"
         f"Бот завершит авторизацию из этого файла и удалит его: <code>{html.escape(account.path)}</code>. "
         "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
         "тот Desktop тоже выйдет из аккаунта.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            *choice_kb("prm_ok", [("🗑 Да, убрать", key)]).inline_keyboard,
+            *choice_kb("prm_ok", [("🗑 Да, удалить", key)]).inline_keyboard,
             *choice_kb("acc_act", [("↩️ Отмена", f"card.{key}")]).inline_keyboard]),
     )
 
@@ -197,8 +197,8 @@ async def personal_remove(callback: CallbackQuery, callback_data: ChoiceCB, stat
     logged_out = await sign_in.remove_personal(personal, account)
     label = html.escape(account.label)
     await callback.message.edit_text(
-        f"✅ Личный аккаунт {label} убран: сессия бота завершена, файл удалён." if logged_out else
+        f"✅ Личный аккаунт {label} удалён: сессия бота завершена, файл стёрт." if logged_out else
         f"⚠️ Файл личного аккаунта {label} удалён, но завершить сессию бота не удалось — "
-        "завершите её вручную: Telegram → Настройки → Устройства.",
+        "завершите её вручную: Telegram → Настройки → Устройства.", parse_mode="HTML",
         reply_markup=back_kb(ACCOUNTS, data.get("acc_project", 0), fresh=False),
     )

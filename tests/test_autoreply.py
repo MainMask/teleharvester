@@ -631,7 +631,7 @@ def test_the_settings_have_the_autoreply_button_and_it_leads_back_there(tmp_path
 
     asyncio.run(menu.open_by_button(callback, NavCB(screen=SETTINGS), _State(), settings=settings))  # in place
     text, markup = callback.message.edits[1]
-    assert text.startswith("⚙️ <b>Настройки</b>") and "автоответ <b>выключен</b>" in text
+    assert text.startswith("<b>⚙️ Настройки</b>") and "автоответ <b>выключен</b>" in text
     assert markup == screen_kb(SETTINGS)
 
 
@@ -725,7 +725,7 @@ def test_toggle_off_and_on(tmp_path, monkeypatch):
     callback = _Callback()
 
     asyncio.run(screen.autoreply_toggle(callback, settings, _workspaces()))
-    assert not settings.autoreply_enabled and "⏸ выключен" in callback.message.edits[-1][0]
+    assert not settings.autoreply_enabled and "⭕ выключен" in callback.message.edits[-1][0]
     assert toml.load(tmp_path / "config.toml")["autoreply"]["enabled"] is False
 
     asyncio.run(screen.autoreply_toggle(callback, settings, _workspaces()))
@@ -757,7 +757,7 @@ def test_new_text_is_saved(tmp_path, monkeypatch):
     assert settings.autoreply_text == "Пишите @MainMask" and state.state is None
     assert toml.load(tmp_path / "config.toml")["autoreply"]["text"] == "Пишите @MainMask"
     # the screen again under the confirmation, with the new text
-    assert msg.answers[0].startswith("✅ Текст автоответа сохранён") and "📬 <b>Автоответ</b>" in msg.answers[0]
+    assert msg.answers[0].startswith("✅ Текст автоответа сохранён") and "<b>📬 Автоответ</b>" in msg.answers[0]
     assert "<blockquote>Пишите @MainMask</blockquote>" in msg.answers[0]
 
 

@@ -102,7 +102,7 @@ def test_lists_each_account(tmp_path):
     asyncio.run(accounts.workers.accounts(msg, _State(), pool, manager, None))
 
     joined = "\n".join(msg.replies)
-    assert "всего: <b>2</b>" in joined
+    assert "воркеров: <b>2</b>" in joined
     assert "<b>1. Meggan Page</b>\n👤 @meg · 🆔 <code>111</code>" in joined
     assert "<b>2. Ivan</b>\n👤 — · 🆔 <code>222</code>" in joined
     assert "🆔 <code>111</code>\n❔ не проверялся\n\n<b>2." in joined  # blank line between cards
@@ -150,8 +150,8 @@ def test_busy_shows_only_count(tmp_path):
     asyncio.run(accounts.workers.accounts(msg, _State(), pool, manager, None))
 
     joined = "\n".join(msg.replies)
-    assert "всего: <b>1</b>" in joined
-    assert "Идёт задача" in joined
+    assert "воркеров: <b>1</b>" in joined
+    assert "Занято: идёт" in joined
     assert "🆔" not in joined  # no per-account details while busy
 
 
@@ -208,7 +208,7 @@ def test_empty_pool(tmp_path):
 
     asyncio.run(accounts.workers.accounts(msg, _State(), pool, manager, None))
 
-    assert any("Воркеров: <b>0</b>" in r for r in msg.replies)
+    assert any("воркеров: <b>0</b>" in r for r in msg.replies)
 
 
 def test_names_are_html_escaped(tmp_path):
@@ -301,7 +301,7 @@ def test_restricted_go_to_the_bottom(tmp_path):
     asyncio.run(accounts.workers.accounts(msg, _State(), pool, _Manager(free=True), None))
 
     joined = "\n".join(msg.replies)
-    assert "всего: <b>3</b> · ограничены: <b>2</b>" in joined
+    assert "воркеров: <b>3</b> · ограничены: <b>2</b>" in joined
     order = ["<b>1. c</b>", "<b>2. b</b>", "<b>3. a</b>"]
     positions = [joined.index(marker) for marker in order]
     assert positions == sorted(positions)
@@ -402,7 +402,7 @@ def _key(state, index):
 
 
 def _remove(pool, personal, state=None):
-    """📋 Список → the account's card → 🗑 Убрать → 🗑 Да; the replies after the list."""
+    """📋 Список → the account's card → 🗑 Удалить → 🗑 Да; the replies after the list."""
     state, msg = state or _State(), _CbMsg()
     asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
     _press("acc_act", f"rm.{_key(state, 0)}", state, pool, personal, msg)
@@ -425,7 +425,7 @@ def test_an_old_removal_confirmation_never_removes_another_account(tmp_path, mon
     asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
     old = _key(state, 1)
     _press("acc_act", f"rm.{old}", state, pool, personal, msg)
-    # «Убрать b?» is shown; a personal account is added and the list is opened again: it is rebuilt
+    # «Удалить b?» is shown; a personal account is added and the list is opened again: it is rebuilt
     personal.full_sessions = {"personal_sessions/0.jsession": _Me(), **personal.full_sessions}
     asyncio.run(accounts.card.list_personal(msg, state, pool, personal))
 
@@ -446,7 +446,7 @@ def test_personal_accounts_are_listed_without_connecting(tmp_path, monkeypatch):
     asyncio.run(accounts.workers.accounts(msg, _State(), _Pool([], _Storage()), _Manager(free=True), personal))
 
     texts = [text for text, _ in msg.replies]
-    assert any("Воркеров: <b>0</b>" in t for t in texts)  # shown with no worker too
+    assert any("воркеров: <b>0</b>" in t for t in texts)  # shown with no worker too
     assert "👤 <b>Личные</b>" in texts[-1] and "me.jsession" in texts[-1] and not me.connected
     # its card, and ⬅️ back to the screen
     assert [b.text for row in msg.replies[-1][1].inline_keyboard for b in row] == ["👤 me.jsession", "⬅️ 🤖 Аккаунты"]
@@ -527,7 +527,7 @@ def test_the_cards_are_offered_even_while_the_list_waits_for_a_task(tmp_path, mo
     pool, personal, _ = _workers_and_me(tmp_path)
     msg = _CbMsg()
     asyncio.run(accounts.workers.accounts(msg, _State(), pool, _Manager(free=False), personal))
-    assert "Идёт задача" in msg.replies[0][0]
+    assert "Занято: идёт" in msg.replies[0][0]
     assert "\n🌍 +7 Россия — 1\n" in msg.replies[0][0]  # its stored number: none is polled now
     # as listed: the workers, then the personal ones
     assert [b.text for row in msg.replies[-1][1].inline_keyboard for b in row] == ["🤖 Ann (@ann)", "👤 me.jsession",
@@ -559,7 +559,7 @@ def test_a_personal_card_offers_its_removal(tmp_path, monkeypatch):
     _press("acc", _key(state, 1), state, pool, personal, msg)
     text, markup = msg.replies[-1]
     assert text.startswith("<b>👤 Личный (только для скрапа): me.jsession</b>") and not me.connected
-    assert [b.text for row in markup.inline_keyboard for b in row] == ["🔑 Код входа", "🗑 Убрать", "⬅️ К списку"]
+    assert [b.text for row in markup.inline_keyboard for b in row] == ["🔑 Код входа", "🗑 Удалить", "⬅️ К списку"]
 
     _press("acc_act", f"list.{_key(state, 1)}", state, pool, personal, msg)  # ⬅️: the list again, in place
     assert msg.replies[-1][0].endswith("🗂 Карточка аккаунта — код входа, удаление личного:")
@@ -652,13 +652,13 @@ def test_the_cards_of_many_accounts_are_paged(tmp_path, monkeypatch):
     state.data["account_paths"] = ["sessions/other.jsession"]  # a scrape's «На каком аккаунте?» meanwhile
     asyncio.run(accounts.card.list_personal(msg, state, pool, None))
     texts = [b.text for row in msg.replies[-1][1].inline_keyboard for b in row]
-    assert len(texts) == 24 and texts[0] == "🤖 w000.jsession" and texts[-3:] == ["📄 стр 1/7", "▶️", "⬅️ 🤖 Аккаунты"]
+    assert len(texts) == 24 and texts[0] == "🤖 w000.jsession" and texts[-3:] == ["📄 стр. 1/7", "▶️", "⬅️ 🤖 Аккаунты"]
     assert state.data["account_paths"] == ["sessions/other.jsession"]  # the list keeps out of its way
 
     token = state.data["acc_token"]
     _press("acc", f"pg.1.{token}", state, pool, None, msg)  # ➡️: in place
     texts = [b.text for row in msg.edits[-1][1].inline_keyboard for b in row]
-    assert texts[0] == "🤖 w020.jsession" and texts[-3] == "📄 стр 2/7"
+    assert texts[0] == "🤖 w020.jsession" and texts[-3] == "📄 стр. 2/7"
     _press("acc", _key(state, 25), state, pool, None, msg)  # a card from the second page, in the list's place
     assert msg.edits[-1][0].startswith("<b>🤖 Воркер: w025.jsession</b>")
 

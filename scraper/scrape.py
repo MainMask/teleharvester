@@ -443,6 +443,16 @@ def channel_slug(channel: str) -> str:
     return s.lstrip("@")
 
 
+# how a chat is given, in the prompts that ask for chats (a project's channels, the groups of 👥 Участники групп),
+# the bot's and the terminal's
+CHAT_FORMAT = "@name, ссылка t.me, инвайт t.me/+… или числовой id"
+
+
+def started(title: str, account: str) -> str:
+    """A scraper job's first word (a scrape, a verify, a members' export), the bot's and the terminal's."""
+    return f"{title} — запущено на аккаунте {account}. Это может занять много времени."
+
+
 def parse_channels(raw: str) -> list[str]:
     """Split a comma/whitespace-separated channel list, dropping blanks."""
     return [c.strip() for c in re.split(r"[,\s]+", raw) if c.strip()]
@@ -745,12 +755,6 @@ async def _reconnect(client) -> None:
             await client.connect()  # Telethon won't recover a hard _disconnect on its own
     except Exception as ce:
         print(f"  ! reconnect failed: {ce}")
-
-
-def check_date_range(date_min: datetime, date_max: datetime, raw_min: str, raw_max: str) -> None:
-    """SystemExit on a reversed range: it would scrape / verify nothing, silently."""
-    if date_min > date_max:
-        raise SystemExit(f"Дата начала {raw_min} позже даты конца {raw_max}.")
 
 
 def parse_date(value: str, *, end_of_day: bool = False) -> datetime:

@@ -118,14 +118,15 @@ def test_verify_func_builds_params_from_prompts(monkeypatch):
 
     _answers(
         monkeypatch, scraper,
-        texts=["posts.parquet", "@a", "01.01.2024", "31.01.2024", "missed.parquet", "5"],
+        texts=["posts.parquet", "@a", "01.01.2024", "31.01.2024"],
     )
 
     scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute(posts=[], project="P")
 
     p = captured["params"]
     assert p.input == "posts.parquet" and p.channel == "@a"
-    assert p.output == "missed.parquet" and p.comment_sample == 5
+    # as the bot's: the missed posts next to the file, no comment threads re-checked
+    assert p.output == scraped_files.missed_path("posts.parquet", "@a") and p.comment_sample == 0
     assert p.date_min.strftime("%d.%m.%Y") == "01.01.2024"
 
 
@@ -191,13 +192,14 @@ def _omni_posts():
     return scraped_files.project_files("Omni", kinds=("posts",))
 
 
-def test_verify_func_without_a_stored_window_does_not_crash_on_enter(tmp_path, monkeypatch):
+def test_verify_func_without_a_stored_window_asks_again_on_enter(tmp_path, monkeypatch):
     _scraped(tmp_path, monkeypatch)  # an older file: no scrape window to default the dates to
-    printed = []
+    printed, ran = [], []
     monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
-    monkeypatch.setattr(scraper, "verify_run", lambda creds, params: pytest.fail("ran without dates"))
+    monkeypatch.setattr(scraper, "verify_run", lambda creds, params: ran.append(params))
     monkeypatch.setattr(scraper.console, "print", lambda *a, **k: printed.append(str(a[0]) if a else ""))
-    answers = iter(["1", "", "", "", ""])  # the file, the channel's default, Enter at both dates, no output file
+    # the file, the channel's default, Enter at each date — asked again — then the dates
+    answers = iter(["1", "", "", "01.01.2024", "", "31.01.2024"])
 
     def ask(label, *a, default=None, **k):  # as rich: Enter gives the default, None for the dates
         return next(answers) or default
@@ -206,7 +208,7 @@ def test_verify_func_without_a_stored_window_does_not_crash_on_enter(tmp_path, m
     monkeypatch.setattr(scraper.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 0))
     # no AttributeError out of the menu
     scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute(posts=_omni_posts(), project="Omni")
-    assert any("Неверная дата" in p for p in printed)
+    assert sum("Неверная дата" in p for p in printed) == 2 and len(ran) == 1
 
 
 def test_ask_file_number_path_or_default(monkeypatch):
@@ -228,7 +230,7 @@ def test_verify_func_prefills_channel_and_window(tmp_path, monkeypatch):
 
     def ask(label, *a, default=None, **k):
         defaults.append(default)
-        return {0: "1", 4: ""}.get(len(defaults) - 1, default)  # pick #1, accept every default
+        return {0: "1"}.get(len(defaults) - 1, default)  # pick #1, accept every default
 
     monkeypatch.setattr(scraper.Prompt, "ask", ask)
     monkeypatch.setattr(scraper.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 0))

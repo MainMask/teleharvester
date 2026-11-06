@@ -4,6 +4,7 @@ from modules.console import console
 
 from functions.base import TelethonFunction
 from functions.base.base import AccountLimited, console_report
+from functions.broadcast import ask_run_options, save_run_options
 from modules import rich_message
 from modules.rich_message import RichContent
 
@@ -63,9 +64,7 @@ class CommentsBroadcastFunc(TelethonFunction):
             if self.settings.messages_count:  # stopped early: its unsent rest leaves the total
                 self.progress_drop(self.settings.messages_count - count)
 
-    async def run(self, link, content, delay, report):
-        self.delay_range = delay
-
+    async def run(self, link, content, report):
         channel, post_id = self.parse_message_link(link)
         per_worker = self.settings.messages_count  # 0: unlimited, a counter only
         self.progress_total(len(self.sessions) * per_worker if per_worker else None)
@@ -76,13 +75,12 @@ class CommentsBroadcastFunc(TelethonFunction):
         ])
 
     async def execute(self):
-        self.ask_accounts_count()
-
         link = self.ask_message_link("[bold red]ссылка на пост> [/]")
-
-        delay = self.ask_seconds("[bold red]задержка[/]", self.settings.delay)
+        options = ask_run_options(self.settings)
 
         text = console.input("[bold red]сообщение: [/]")
+        if not save_run_options(self.settings, options):
+            return
 
         # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
-        await self.run(link, RichContent(text=text), delay, console_report)
+        await self.run(link, RichContent(text=text), console_report)

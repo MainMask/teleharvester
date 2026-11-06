@@ -10,17 +10,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from bot.keyboards.common import cancel_kb, choice_kb, paged_kb
-from bot.keyboards.menu import screen_kb
-from bot.routers._common import menu_answer
+from bot.keyboards.menu import back_kb, screen_kb
+from bot.routers._common import CHAT_FORMAT, menu_answer
 from bot.services import screens
 from bot.services.workspaces import PROJECT_GONE, Workspaces
 from bot.states import Projects
 from modules import projects, scraped_files
-from modules.registry import ADD_CHANNELS, CARD, COLLECT, MANAGE
+from modules.registry import ADD_CHANNELS, CARD, COLLECT, MANAGE, PROJECTS
 
-STALE_LIST = "Кнопка устарела — откройте 📁 Проекты заново."
-CHANNELS_ASK = ("Каналы/группы через запятую (@name / t.me ссылка / инвайт t.me/+… / числовой id).\n"
-                "Их названия проверяются при скрапе — на выбранном для него аккаунте.")
+STALE_LIST = f"Кнопка устарела — откройте {PROJECTS} заново."
+CHANNELS_ASK = (f"Пришлите каналы или группы через запятую ({CHAT_FORMAT}).\n"
+                "Их названия проверятся при скрапе, на выбранном для него аккаунте.")
+NEW_PROJECT = "➕ Новый проект"
+FROM_SCRAPE = "📥 Из готового скрапа"  # a project made of a finished scrape's files
 # a project without channels: by its button under the channels' prompt, never typed
 NO_CHANNELS = {"new": (Projects.channels, "📭 Без каналов"), "edit": (Projects.edit, "📭 Убрать все каналы")}
 
@@ -59,7 +61,7 @@ async def current(message: Message, state: FSMContext, workspaces: Workspaces) -
         return None
     project = next((p for p in items if p.id == workspace.project_id), None)
     if project is None:
-        await message.answer(PROJECT_GONE)
+        await message.answer(PROJECT_GONE, reply_markup=back_kb(PROJECTS))
     return project
 
 
@@ -77,11 +79,11 @@ async def show_list(message: Message, state: FSMContext, note: str = "", edit: b
     else:
         text = ("📁 <b>Проекты</b> — пока ни одного. У проекта свои аккаунты и прокси и своя аудитория: каналы "
                 "для скрапа, участники групп или список. Готовые файлы скрапа станут проектом через "
-                "«📥 Из готового скрапа».")
+                f"«{FROM_SCRAPE}».")
     listed = paged_kb("prj", [(projects.label(p), str(i)) for i, p in enumerate(items)], page)
-    actions = [("➕ Новый проект", "new")]
+    actions = [(NEW_PROJECT, "new")]
     if scraped_files.scrape_names(limit=1):  # which of them can be a project: asked on the button
-        actions.append(("📥 Из готового скрапа", "import"))
+        actions.append((FROM_SCRAPE, "import"))
     markup = InlineKeyboardMarkup(inline_keyboard=[*listed.inline_keyboard,
                                                    *choice_kb("prj", actions).inline_keyboard])
     await screens.send(message, edit)(f"{html.escape(note)}\n\n{text}" if note else text, parse_mode="HTML",
@@ -114,6 +116,16 @@ def _files_view(project: projects.Project, title: str) -> tuple[str, dict]:
         return "", dict(hidden=() if clear else ("clearbase",),
                         titles=None if project.channels else {"channels": ADD_CHANNELS})
     return "", {}
+
+
+async def show_done(message: Message, state: FSMContext, project: projects.Project, title: str, note: str,
+                    edit: bool = False):
+    """A flow on the project's files is over: the screen it was started from, `note` above it; the projects'
+    list shown before keeps working (show_card's)."""
+    names = (await state.get_data()).get("project_names")
+    await state.clear()
+    await state.update_data(project_names=names or [])
+    await show_screen(message, project, title, edit, note)
 
 
 async def show_screen(message: Message, project: projects.Project, title: str, edit: bool = True,

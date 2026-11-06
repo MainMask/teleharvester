@@ -8,22 +8,20 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import MenuAction, MenuCB
 from bot.keyboards.menu import back_kb
-from bot.routers._common import send_chunked
+from bot.routers._common import NO_WORKERS, send_chunked
 from bot.routers.accounts import card
 from bot.services import screens
 from bot.services.delegation import WorkerPool
+from bot.services import jobs
 from bot.services.jobs import JobManager
+from bot.services.workspaces import Workspace
 from modules import phone_countries, restricted_workers
-from modules.registry import ACCOUNTS, menu_path
+from modules.registry import ACCOUNTS, title
 from modules.storages.sessions_storage import profile_order
 
 router = Router()
 
 GET_ME_TIMEOUT = 20  # seconds per worker when polling profiles for the accounts list
-
-NO_WORKERS = (f"Добавьте аккаунт ({menu_path('add')}) — по номеру, из tdata или из свободных, — "
-              "чтобы запускать задачи проекта.")
-
 
 def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str = "") -> str:
     """One account's card for the list; falls back to stored data when get_me() failed
@@ -48,11 +46,18 @@ def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str 
 
 
 @screens.view(ACCOUNTS)
-async def accounts_screen(message: Message, state: FSMContext, edit: bool, pool: WorkerPool, **_):
-    header = f"🤖 <b>Аккаунты проекта</b> — воркеров: <b>{pool.count()}</b>"
+async def accounts_screen(message: Message, state: FSMContext, edit: bool, pool: WorkerPool, workspace: Workspace,
+                          **_):
+    project = workspace.project_id
+    header = f"{screens.title_line(ACCOUNTS, screens.project_name(project))}\n\nВоркеров: <b>{pool.count()}</b>"
     if pool.count() == 0:
-        header += f"\n\n{NO_WORKERS}"
-    await screens.show(message, ACCOUNTS, edit, header)
+        header += f"\n\n{html.escape(NO_WORKERS)}"
+    await screens.show(message, ACCOUNTS, edit, header, project)
+
+
+def _list_header(count: int) -> str:
+    """📋 Список' first line (HTML): how many workers the project has."""
+    return f"<b>{html.escape(title('list'))}</b> — воркеров: <b>{count}</b>"
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.LIST))
@@ -78,19 +83,16 @@ async def _list_workers(message: Message, pool: WorkerPool, manager: JobManager)
     count = pool.count()
 
     if count == 0:
-        await message.answer(
-            "🤖 <b>Аккаунты</b>\n\n"
-            f"🤖 Воркеров: <b>0</b>\n\n{NO_WORKERS}",
-            parse_mode="HTML", reply_markup=back_kb(ACCOUNTS, manager.project_id),
-        )
+        await message.answer(f"{_list_header(0)}\n\n{html.escape(NO_WORKERS)}", parse_mode="HTML",
+                             reply_markup=back_kb(ACCOUNTS, manager.project_id))
         return []
 
-    if not manager.acquire("Просмотр аккаунтов", cancelable=False, timeout=0):
+    if not manager.acquire(title("list"), cancelable=False, timeout=0):
         workers = pool.workers  # their stored numbers only: none is polled now
         await message.answer(
-            f"🤖 <b>Аккаунты</b> — всего: <b>{count}</b>{_countries(pool.storage, workers, [None] * len(workers))}"
-            f"\n\n⛔ Идёт задача «{manager.label}». Детали аккаунтов — после окончания.",
-            parse_mode="HTML",
+            f"{_list_header(count)}{_countries(pool.storage, workers, [None] * len(workers))}\n\n"
+            f"{html.escape(jobs.busy(manager.label))}\nДетали воркеров — после её окончания.",
+            parse_mode="HTML", reply_markup=back_kb(ACCOUNTS, manager.project_id),
         )
         return []
 
@@ -121,7 +123,7 @@ async def _list_workers(message: Message, pool: WorkerPool, manager: JobManager)
     lines = [_worker_line(pool.storage, client, me, i + 1, busy(client), "\n" + html.escape(checks[id(client)][1]))
              for i, (client, me) in enumerate(ordered)]
 
-    header = f"🤖 <b>Аккаунты</b> — всего: <b>{count}</b>"
+    header = _list_header(count)
     if restricted := sum(1 for group, _ in checks.values() if group):
         header += f" · ограничены: <b>{restricted}</b>"
     header += _countries(pool.storage, workers, profiles)

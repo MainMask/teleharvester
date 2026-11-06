@@ -22,7 +22,7 @@ and contacts ledger, and its card holds everything done with them. The main menu
 
 | Section | Functions |
 |---|---|
-| **📁 Проекты** | The projects. A project's card sums it up and opens its screens: on its files — **📥 Сбор** (scrape, top-up, list upload, group members, verification, analysis), **📨 База и рассылка** (add to contacts, DM mailing), **⚙️ Управление** (channels, rename, clear, delete) — and on its workers, below; see [Projects](#projects). |
+| **📁 Проекты** | The projects. A project's card sums it up and opens its screens: on its files — **📥 Сбор** (scrape, top-up, list upload, group members, verification, analysis), **📨 База и рассылка** (add to contacts, DM mailing), **🛠 Управление** (channels, rename, clear, delete) — and on its workers, below; see [Projects](#projects). |
 | **⚙️ Настройки** | Action delay, profile pause, auto-reply, the per-account daily caps (**📏 Дневные лимиты**: DMs, invites, contacts) — for all projects, written back to `config.toml`. The chat campaign's trigger and messages per worker are asked by **🔔 Чат — по слову** itself and saved there. |
 | **📊 Задачи** | Every project's running jobs with progress and stop (bot only; same as `/status`). |
 
@@ -57,7 +57,7 @@ Key `config.toml` settings:
 | Key | Default | Meaning |
 |---|---|---|
 | `[broadcast] delay` | — | Pause between a worker's actions, `[min, max]` s. |
-| `[broadcast] trigger`, `messages_count` | — | Trigger phrase and per-chat message cap for chat/comment campaigns (`0` = until stopped); the bot asks for them at each run and saves them here. |
+| `[broadcast] trigger`, `messages_count` | — | Trigger phrase and per-chat message cap for chat/comment campaigns (`0` = until stopped); the bot and the terminal ask for them at each run and save them here. |
 | `[limits] per_account_daily` | `30` | DM mailing messages per account per day (`0` = unlimited). |
 | `[limits] account_pause` | `[30, 60]` | Pause when the mailing switches accounts. |
 | `[limits] profile_pause` | `[60, 180]` | Pause between accounts for profile changes. |
@@ -118,7 +118,8 @@ python -m bot    # Telegram control bot (needs BOT_TOKEN and [bot] admins)
 
 - **Terminal menu.** Pick an item by number; a project's card lists its screens in the bot's order: the
   buttons of each one on its files a line, its screens on its workers (🤖 Аккаунты, 💬 Активность) on a
-  line of their own; their accounts connect for the work they are in. On startup it checks git for updates
+  line of their own; their accounts connect for the work they are in. A function asks what the bot asks and
+  runs on every worker of the project with the ⚙️ delay. On startup it checks git for updates
   (30 s timeout).
 - **Control bot.** The bot only orchestrates; all MTProto actions are performed by the workers.
   Access is limited to `[bot] admins`. Commands: `/start`, `/status`, `/cancel`.
@@ -135,7 +136,9 @@ python -m bot    # Telegram control bot (needs BOT_TOKEN and [bot] admins)
   their own; projects run side by side, and an account is never used by two jobs at once. Long jobs show
   **📊 Прогресс** and **⏹ Стоп**; each job is named as its button (in **📊 Задачи** too) and ends with a
   summary (workers, successes, errors, elapsed time) and **⬅️** back to the screen it was started from, in
-  its own project. A message sent while the project's slot is busy is not lost: the step stays.
+  its own project. A message sent, or a form's last button tapped, while the project's slot is busy is not
+  lost: the step stays, to be sent or tapped again once that job is over. A change to a project (its
+  channels, name, list, base) ends on the screen it was started from, the result above it.
 - Only one teleharvester process runs per folder (lock in `tmp/`); stop the service before using
   the terminal menu.
 
@@ -184,12 +187,12 @@ files count; **📥 Сбор** lists its channels and files.
 |---|---|
 | **📥 Сбор → ▶️ Скрап проекта** | Scrapes all project channels; resumes an unfinished scrape. |
 | **📥 Сбор → 🔄 Дособрать** | Updates the newest scrape from one week before its end to today and merges the result into the project files; replaced files go to `<name>_previous/`. Must run on the account that made the scrape. |
-| **📥 Сбор → 📥 Загрузить список** | Adds usernames/phones to `<name>_participants_list.txt` (mailing only). |
+| **📥 Сбор → 📄 Загрузить список** | Adds usernames/phones to `<name>_participants_list.txt` (mailing only). |
 | **📥 Сбор → 👥 Участники групп** | Adds a group's full member list to `<name>_participants_members.parquet`; a previous base that can't be read is moved to `<name>_previous/`, not overwritten. |
-| **📥 Сбор → ✅ Верификация** | Checks a scrape against the live channel for missed posts. |
+| **📥 Сбор → 🔍 Верификация** | Checks a scrape against the live channel for missed posts. |
 | **📥 Сбор → 📈 Анализ** | t.me links, keyword search, file view, combine, comments table, monthly activity, sample. Combine merges the project's scrapes into `<name>_posts_combined.parquet`, offered on the card like its other posts files (🔄 still continues the newest scrape). |
 | **📨 База и рассылка → 📇 В контакты** / **📨 ЛС по базе** | Add the base to the project's workers' contacts, then mail it. With «skip those already messaged» (asked before each mailing), each person is mailed once within the project. |
-| **⚙️ Управление** | Edit channels, rename (files are renamed too), clear the members base or list (moved to `<name>_previous/`), delete (files are kept; a project with workers is not deleted — move them first). |
+| **🛠 Управление** | Edit channels, rename (files are renamed too), clear the members base or list (moved to `<name>_previous/`), delete (files are kept; a project with workers is not deleted — move them first). |
 | **🤖 Аккаунты** / **💬 Активность** | The project's accounts and the work of its workers on one target (see [Features](#features)). |
 
 ## Scraping & analysis

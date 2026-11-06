@@ -50,8 +50,6 @@ class ReportUserFunc(TelethonFunction):
         )
 
     async def execute(self):
-        self.ask_accounts_count()
-
         link = Prompt.ask("[bold red]username или ссылка>[/]")
 
         print()
@@ -73,6 +71,7 @@ class ReportUserFunc(TelethonFunction):
 
         reason_type = self.reasons[int(choice) - 1][1]
 
-        comment = console.input("[bold red]комментарий для модераторов Telegram (необязательно)> [/]")
+        comment = console.input("[bold red]комментарий для модераторов Telegram (пусто или «-» — без него)> [/]")
+        comment = "" if comment.strip() == "-" else comment  # as the bot's
 
         await self.run(link, reason_type, comment, console_report)

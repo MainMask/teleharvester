@@ -67,10 +67,10 @@ class AddByPhoneFunc(TelethonFunction):
     async def execute(self):
         """As the bot's ➕ Добавить: by phone, a worker of the project or a personal account; the
         tdata_import/ folders (TdataImportFunc); or an account in no project."""
-        say("[1] Воркер — по номеру: в проект, для рассылок и задач\n"
-            "[2] Личный — по номеру: общий для всех проектов, только для скрапа (personal_sessions/)\n"
-            "[3] Воркер — из tdata (папки tdata_import/)\n"
-            f"[4] Воркеры — из свободных ({projects.FREE_DIR}/: ещё ни в одном проекте)")
+        say("[1] 🤖 Воркер — по номеру: в проект, для рассылок и задач\n"
+            "[2] 👤 Личный — по номеру: общий для всех проектов, только для скрапа (personal_sessions/)\n"
+            "[3] 📥 Воркер — из tdata (папки tdata_import/)\n"
+            f"[4] 📦 Воркеры — из свободных ({projects.FREE_DIR}/: ещё ни в одном проекте)")
         choice = console.input("[bold white]>> [/]").strip()
         if choice == "3":
             await TdataImportFunc(self.storage, self.settings).execute()
@@ -155,7 +155,7 @@ class AddByPhoneFunc(TelethonFunction):
                 return None
 
     async def password(self, login):
-        say("🔐 У аккаунта включена двухэтапная проверка.")
+        say("🔐 У аккаунта включён пароль 2FA.")
         while True:
             password = getpass.getpass("Пароль 2FA (пусто — отмена): ")  # as typed: spaces may be part of it
             if not password:
@@ -237,7 +237,7 @@ class TdataImportFunc(TelethonFunction):
             if path.endswith(".jsession") and path not in known and self.storage.add_jsession(path):
                 if self.storage.initialize:  # the menu's workers were connected at start
                     await self.storage.check_session(self.storage.full_sessions[path], path)
-        say(f"✅ Импортировано аккаунтов: {imported}. Воркеров: {len(self.storage)}.")
+        say(f"✅ Импортировано воркеров: {imported}. Воркеров в проекте: {len(self.storage)}.")
 
 
 class LoginCodesFunc(TelethonFunction):

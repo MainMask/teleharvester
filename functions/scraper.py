@@ -6,14 +6,15 @@ from rich.prompt import Confirm, Prompt
 
 from functions.base import TelethonFunction
 from modules import projects, scraped_files
+from modules.registry import title
 from modules.scraper_creds import (
     build_credentials, find_account, personal_storage, pick_session, scrape_accounts,
 )
 
 from scraper.members import MembersParams, run as members_run
 from scraper.scrape import (
-    ScrapeParams, bad_channels, bad_channels_text, chat_label, chat_lines, check_date_range, lookup_chats,
-    parse_channels, parse_date, pending_resume, resume_params, run as scrape_run,
+    CHAT_FORMAT, ScrapeParams, bad_channels, bad_channels_text, chat_label, chat_lines, lookup_chats,
+    parse_channels, parse_date, pending_resume, resume_params, run as scrape_run, started,
 )
 from scraper.verify import VerifyParams, run as verify_run
 
@@ -28,6 +29,20 @@ PERSONAL_NOTE = ("внимание: это личный аккаунт — бо�
 def _note_personal(account):
     if account.personal:
         console.print(PERSONAL_NOTE, style="bold yellow", markup=False)
+
+
+def _ask_date(label: str, default: str | None = None, after=None):
+    """A date, asked again until parse_date takes it — «по» (`after`: the «с» date) to the end of its day and not
+    before «с» —, as the bot asks each date at its own step."""
+    while True:
+        try:
+            value = parse_date(Prompt.ask(label, default=default) or "", end_of_day=after is not None)
+        except SystemExit as err:
+            console.print(f"{err} Введите дату ещё раз.", style="bold red", markup=False)
+            continue
+        if after is None or value >= after:
+            return value
+        console.print("Дата «с» позже даты «по». Введите дату «по» ещё раз.", style="bold red", markup=False)
 
 
 def _lookup(account, chats):
@@ -105,7 +120,8 @@ class ScrapeFunc(TelethonFunction):
         while True:
             if channels is None:
                 channels = parse_channels(
-                    Prompt.ask("[bold red]каналы через запятую (в приватных аккаунт должен состоять)[/]"))
+                    Prompt.ask(f"[bold red]каналы или группы через запятую ({CHAT_FORMAT}; в приватных аккаунт "
+                               "должен состоять)[/]"))
                 if not channels:
                     console.print("[bold red]Каналы не указаны.[/]")
                     return
@@ -114,33 +130,28 @@ class ScrapeFunc(TelethonFunction):
                 break
             channels = None  # typed again (a project's list too: for this run only)
 
-        date_min = Prompt.ask("[bold red]дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)[/]")
-        date_max = Prompt.ask("[bold red]дата по (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)[/]")
+        date_min = _ask_date("[bold red]дата с (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)[/]")
+        date_max = _ask_date("[bold red]дата по (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)[/]", after=date_min)
         keyword = Prompt.ask("[bold red]фильтр по слову (необязательно)[/]", default="")
         max_messages = self.ask_int("[bold red]максимум постов[/]", default=1000000, min_value=1)
         with_comments = Confirm.ask("[bold red]собирать комментарии?[/]", default=True)
         with_reactors = Confirm.ask("[bold red]собирать реакции? (медленно)[/]", default=True)
         with_participants = Confirm.ask("[bold red]собрать базу участников?[/]", default=True)
 
-        try:
-            params = ScrapeParams(
-                channels=channels,
-                date_min=parse_date(date_min),
-                date_max=parse_date(date_max, end_of_day=True),
-                name=name,
-                keyword=keyword,
-                max_messages=max_messages,
-                out_dir=Path(out_dir),
-                with_comments=with_comments,
-                with_reactors=with_reactors,
-                with_participants=with_participants,
-                account=account.path,
-                chat_labels=chat_labels,
-            )
-            check_date_range(params.date_min, params.date_max, date_min, date_max)
-        except SystemExit as err:
-            console.print(f"[bold red]Скрап остановлен:[/] {err}")
-            return
+        params = ScrapeParams(
+            channels=channels,
+            date_min=date_min,
+            date_max=date_max,
+            name=name,
+            keyword=keyword,
+            max_messages=max_messages,
+            out_dir=Path(out_dir),
+            with_comments=with_comments,
+            with_reactors=with_reactors,
+            with_participants=with_participants,
+            account=account.path,
+            chat_labels=chat_labels,
+        )
         self._run(account, params)
 
     def topup(self, name, plan):
@@ -172,12 +183,13 @@ class ScrapeFunc(TelethonFunction):
 
     @staticmethod
     def _run(account, params):
+        console.print(started(title("scrape"), account.label), markup=False, highlight=False)
         try:
             scrape_run(build_credentials(account.client), params)
         except SystemExit as err:
             # an int code (1) means the run already printed why it stopped + how to continue
             if isinstance(err.code, str):
-                console.print(f"[bold red]Скрап остановлен:[/] {err}")
+                console.print(f"[bold red]⚠️ Скрап не выполнен:[/] {err}")
 
 
 class VerifyFunc(TelethonFunction):
@@ -197,31 +209,28 @@ class VerifyFunc(TelethonFunction):
             console.print("каналы в файле:", style="bold white")
             console.print(projects.chat_list(projects.find(project), channels), markup=False, highlight=False)
         while True:
-            channel = Prompt.ask("[bold red]канал (@name / t.me / числовой id)[/]",
+            channel = Prompt.ask("[bold red]канал (@name, ссылка t.me или числовой id)[/]",
                                  default=channels[0] if channels else None) or ""
             if channel and _chats_ok(account, [channel], project)[0]:
                 break
         # no stored window: Enter gives None, and parse_date says the date is missing
-        date_min = Prompt.ask("[bold red]дата с (как в скрапе)[/]", default=window[0] if window else None) or ""
-        date_max = Prompt.ask("[bold red]дата по (как в скрапе)[/]", default=window[1] if window else None) or ""
-        output = Prompt.ask("[bold red]файл результата (необязательно)[/]", default="")
-        comment_sample = self.ask_int("[bold red]сколько веток комментариев перепроверить[/]", default=0, min_value=0)
+        date_min = _ask_date("[bold red]дата с (как в скрапе)[/]", window[0] if window else None)
+        date_max = _ask_date("[bold red]дата по (как в скрапе)[/]", window[1] if window else None, after=date_min)
 
         try:
             params = VerifyParams(
                 input=input_path,
                 channel=channel,
-                date_min=parse_date(date_min),
-                date_max=parse_date(date_max, end_of_day=True),
-                output=output,
-                comment_sample=comment_sample,
+                date_min=date_min,
+                date_max=date_max,
+                output=scraped_files.missed_path(input_path, channel),  # as the bot's: next to the posts
             )
-            check_date_range(params.date_min, params.date_max, date_min, date_max)
+            console.print(started(title("verify"), account.label), markup=False, highlight=False)
             verify_run(build_credentials(account.client), params)
         except SystemExit as err:
             # an int code (1) means verify already printed its RESULT / interruption above
             if isinstance(err.code, str):
-                console.print(f"[bold red]Проверка остановлена:[/] {err}")
+                console.print(f"[bold red]⚠️ Верификация не выполнена:[/] {err}")
 
 
 class MembersFunc(TelethonFunction):
@@ -239,7 +248,7 @@ class MembersFunc(TelethonFunction):
         before = scraped_files.row_count(scraped_files.members_base(project))
 
         while True:
-            chats = parse_channels(Prompt.ask("[bold red]группы через запятую[/]"))
+            chats = parse_channels(Prompt.ask(f"[bold red]группы через запятую ({CHAT_FORMAT})[/]"))
             if not chats:
                 console.print("[bold red]Группы не указаны.[/]")
                 return
@@ -247,11 +256,12 @@ class MembersFunc(TelethonFunction):
                 break
 
         out_dir = scraped_files.BASES_DIR  # the bases folder, where the mailing picks its bases
+        console.print(started(title("members"), account.label), markup=False, highlight=False)
         try:
             path, _ = members_run(build_credentials(account.client),
                                   MembersParams(chats=chats, name=project, out_dir=Path(out_dir)))
         except SystemExit as err:  # e.g. the account's session is no longer authorized
-            console.print(f"[bold red]Сбор участников остановлен:[/] {err}")
+            console.print(f"[bold red]⚠️ Сбор участников не выполнен:[/] {err}")
             return
         if path is None:
             console.print("[bold red]Ни одного участника не собрано.[/]")

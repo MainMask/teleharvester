@@ -45,6 +45,9 @@ class _Msg:
     async def answer(self, text, **kwargs):
         self.replies.append(text)
 
+    async def edit_text(self, text, **kwargs):  # in a screen's place: what is shown now
+        self.replies.append(text)
+
 
 # --- mail_path: recipient source ---------------------------------------
 
@@ -110,7 +113,7 @@ def test_mail_run_uses_inline_recipients(monkeypatch):
         def drop_gone(self, recipients):
             return recipients
 
-        async def run(self, recipients, content, delay, reporter):
+        async def run(self, recipients, content, reporter):
             captured["recipients"] = recipients
 
     class _Manager:
@@ -155,7 +158,7 @@ def test_mail_run_drops_the_gone_before_the_limit(monkeypatch):
         def load_stats(self):
             self.stats = {"@a": {"count": 0, "gone": "2026-01-01 00:00:00"}}
 
-        async def run(self, recipients, content, delay, reporter):
+        async def run(self, recipients, content, reporter):
             captured["recipients"] = recipients
 
     class _Manager:
@@ -178,7 +181,7 @@ def test_mail_run_drops_the_gone_before_the_limit(monkeypatch):
     msg = _Msg()
     state = _State({"recipients": ["@a"], "skip": False, "limit": None})
     asyncio.run(mailing.mail_run(msg, state, None, ns(), {}, _Manager(), ns(delay=[0])))
-    assert captured == {} and any("пуст" in r for r in msg.replies)  # no empty job
+    assert captured == {} and any("Некому писать" in r for r in msg.replies)  # no empty job, and why
 
 
 def test_mail_start_drops_stale_recipients_from_an_abandoned_run():

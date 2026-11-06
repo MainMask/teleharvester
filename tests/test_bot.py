@@ -244,7 +244,7 @@ class TestFunctionCores:
         async def report(text):
             messages.append(text)
 
-        asyncio.run(fn.run("1", "@channel", [0], report))
+        asyncio.run(fn.run("1", "@channel", report))
 
         assert fn.sessions[0].requests, "join request should have been sent on the worker"
         assert any("вступил" in m for m in messages)
@@ -263,7 +263,7 @@ class TestFunctionCores:
             pass
 
         fn.delay = delay
-        asyncio.run(fn.run("1", "@channel", [0], report))
+        asyncio.run(fn.run("1", "@channel", report))
         assert len(delays) == 2
 
     def test_inviting_run_reports_when_no_targets(self):
@@ -277,7 +277,7 @@ class TestFunctionCores:
         async def report(text):
             messages.append(text)
 
-        asyncio.run(fn.run("@src", "@dst", [0], report))
+        asyncio.run(fn.run("@src", "@dst", report))
 
         assert any("исходного чата" in m for m in messages)
 

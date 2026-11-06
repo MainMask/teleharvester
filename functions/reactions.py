@@ -51,13 +51,20 @@ class ReactionsFunc(TelethonFunction):
         )
 
     async def execute(self):
-        self.ask_accounts_count()
-
         link_to_message = self.ask_message_link("[bold red]ссылка на сообщение/пост> [/]")
 
-        reaction = console.input(
-            "[bold red]реакция ({reactions}), пусто — случайная> [/]"
-            .format(reactions=", ".join(self.reactions))
-        )
+        # as the bot's buttons: one of the list (its number, or itself), or a random one each
+        console.print("  ".join(f"[{number}] {emoji}" for number, emoji in enumerate(self.reactions, 1)),
+                      markup=False, highlight=False)
+        listed = {emoji.replace("\ufe0f", ""): emoji for emoji in self.reactions}  # a terminal may drop the selector
+        while True:
+            raw = console.input("[bold red]реакция — номер или сама реакция, пусто — случайная у каждого> [/]").strip()
+            if raw.isdigit() and 1 <= int(raw) <= len(self.reactions):
+                reaction = self.reactions[int(raw) - 1]
+                break
+            if not raw or (key := raw.replace("\ufe0f", "")) in listed:
+                reaction = listed[key] if raw else ""  # "": a random one each (run)
+                break
+            console.print("Такой реакции нет в списке: номер из него или пусто.", style="bold red", markup=False)
 
         await self.run(link_to_message, reaction, console_report)

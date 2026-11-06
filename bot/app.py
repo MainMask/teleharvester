@@ -5,7 +5,7 @@ import shutil
 
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramNetworkError, TelegramServerError
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, BotCommandScopeChat
 
 from modules import instance_lock, projects as project_list
 from modules.config import load_env
@@ -14,6 +14,7 @@ from modules.storages.functions_storage import discover
 from modules.scraper_creds import PERSONAL_DIR, personal_storage
 
 from bot.config import BotConfig
+from bot.keyboards.menu import main_menu
 from bot.middlewares.auth import AuthMiddleware
 from bot.services import autoreply, watchdog
 from bot.services.album import AlbumMiddleware
@@ -101,24 +102,34 @@ async def announce_start(bot, admins, workspaces):
     os.makedirs(os.path.dirname(RUNNING_MARKER), exist_ok=True)
     open(RUNNING_MARKER, "w").close()
 
-    status = ("⚠️ Бот перезапущен после сбоя — подробности: journalctl -u teleharvester-bot"
+    status = ("⚠️ Бот перезапущен после сбоя — подробности: <code>journalctl -u teleharvester-bot</code>"
               if crashed else "🔄 Бот запущен")
     for admin in admins:
-        try:
+        try:  # the keyboard too: it may have been hidden while the bot was down
             await bot.send_message(admin, f"{status} · проектов: {len(workspaces.all())} · "
-                                          f"воркеров: {workspaces.workers()}")
+                                          f"воркеров: {workspaces.workers()}", parse_mode="HTML",
+                                   reply_markup=main_menu())
         except Exception as err:  # e.g. an admin who never opened the bot
             logging.warning("start notice to %s: %s", admin, err)
 
 
-async def set_commands(bot):
-    """Bot startup: /start, /status and /cancel in the chat's «Меню» button. Without them the bot still works."""
+COMMANDS = [BotCommand(command="start", description="Главное меню"),
+            BotCommand(command="status", description="Что сейчас выполняется"),
+            BotCommand(command="cancel", description="Отменить ввод или остановить задачу")]
+
+
+async def set_commands(bot, admins):
+    """Bot startup: /start, /status and /cancel in the admins' «Меню» button only — anyone else gets no answer
+    (AuthMiddleware), so no commands either. Without them the bot still works."""
     try:
-        await bot.set_my_commands([BotCommand(command="start", description="Главное меню"),
-                                   BotCommand(command="status", description="Что сейчас выполняется"),
-                                   BotCommand(command="cancel", description="Отменить ввод или остановить задачу")])
+        await bot.delete_my_commands()  # the ones a start before this set for every chat
     except Exception as err:
         logging.warning("bot commands: %s", err)
+    for admin in admins:
+        try:
+            await bot.set_my_commands(COMMANDS, scope=BotCommandScopeChat(chat_id=admin))
+        except Exception as err:  # e.g. an admin who never opened the bot
+            logging.warning("bot commands for %s: %s", admin, err)
 
 
 async def mark_stopped():

@@ -23,7 +23,7 @@ from modules.registry import COLLECT, menu_path, title
 from modules.scraper_creds import find_account, scrape_accounts
 from scraper.scrape import (
     CHAT_LOOKUP_TIMEOUT, chat_block, chat_label,
-    lookup_on, parse_date,
+    lookup_on, parse_date, started,  # started: its jobs' first word, the terminal's too
 )
 
 router = Router()
@@ -68,11 +68,11 @@ async def send_files(bot, chat_id, paths):
             if os.path.getsize(path) <= scraping.TELEGRAM_UPLOAD_LIMIT:
                 await bot.send_document(chat_id, FSInputFile(path))
             else:
-                await bot.send_message(chat_id, f"Файл слишком большой для Telegram, лежит на диске: {path}")
+                await bot.send_message(chat_id, f"⚠️ Файл слишком большой для Telegram, лежит на диске: {path}")
         except Exception as err:  # a failed upload must not silently drop the remaining files
             try:
                 await bot.send_message(
-                    chat_id, f"Не удалось отправить {os.path.basename(path)}: {err}. Файл на диске: {path}"
+                    chat_id, f"⚠️ Не удалось отправить {os.path.basename(path)}: {err}. Файл на диске: {path}"
                 )
             except Exception:
                 pass
@@ -116,11 +116,14 @@ async def choose_account(message: Message, state: FSMContext, flow: str, **deps)
     accounts = _accounts(deps["pool"], deps["personal"])
     if not accounts:
         await state.clear()
-        await to_collect(message, f"Нет аккаунтов: добавьте воркера или личный аккаунт — {menu_path('add')}.",
+        await to_collect(message, f"У проекта нет аккаунтов: добавьте воркера или личный аккаунт — "
+                                  f"{menu_path('add')}.",
                          deps["scrapes"])
         return
-    if len(accounts) == 1:
-        await _account_chosen(message, state, accounts[0], flow, deps)
+    if len(accounts) == 1:  # in 📥 Сбор's place, as after a pick: its buttons gone, the account said
+        only = accounts[0]
+        await message.edit_text(f"{FLOW_TITLES[flow]} — аккаунт: {'👤' if only.personal else '🤖'} {only.label}")
+        await _account_chosen(message, state, only, flow, deps)
         return
     labels = [f"{'👤' if a.personal else '🤖'} {a.label}" for a in accounts]
     await state.update_data(account_flow=flow, account_paths=[a.path for a in accounts], account_labels=labels)
@@ -216,7 +219,7 @@ async def check_chats(message: Message, state: FSMContext, pool: WorkerPool, per
     await send_chunked(message, "", [chat_block(i, info, html=True) for i, info in enumerate(infos, 1)])
     if all(info.problem is None for info in infos):
         return True
-    await message.answer("Пришлите список заново — или продолжите как есть:",
+    await message.answer("Пришлите список заново или продолжите как есть:",
                          reply_markup=cancel_kb(await state.get_state(),
                                                 choice_kb("chats_ok", [("▶️ Продолжить всё равно", "go")])))
     return False
