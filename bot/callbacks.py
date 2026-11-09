@@ -79,3 +79,19 @@ class AccountBaseCB(CallbackData, prefix="ab"):
 
 class ReleaseCB(CallbackData, prefix="release"):
     user_id: int  # the permanently restricted worker whose contacts go to the other workers
+
+
+class ReplyCB(CallbackData, prefix="rp"):
+    """✍️ Ответить under a forwarded mailing reply (bot/services/autoreply.py): an answer from that worker."""
+    project: int
+    worker: str  # its session file's name in the project's sessions/
+    user: int    # whom to answer
+
+
+class HypothesisCB(CallbackData, prefix="hy"):
+    """🧪 Гипотезы' own buttons (bot/routers/hypotheses.py): a hypothesis's card and what it does, the report."""
+    action: str  # "card", "close" (value: "" to ask the verdict, else modules/outreach.VERDICTS' key), "edit",
+    # "delete" (value: "yes" once asked), "report"
+    id: int = 0
+    value: str = ""
+    project: int = 0

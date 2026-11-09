@@ -25,6 +25,14 @@ def _isolated_restricted_workers(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_replies_ledger(monkeypatch, tmp_path):
+    """No test may write the real stats/auto_replies.json (who answered a mailing): a worker's move rewrites it."""
+    from bot.services import autoreply
+
+    monkeypatch.setattr(autoreply, "REPLIED_PATH", str(tmp_path / "auto_replies.json"))
+
+
+@pytest.fixture(autouse=True)
 def _isolated_personal_accounts(monkeypatch, tmp_path):
     """No test may load the real personal_sessions/ (the user's own accounts)."""
     from modules import scraper_creds

@@ -766,7 +766,7 @@ class TestMailLimit:
         async def answer(t, **k):
             replies.append(t)
 
-        asyncio.run(mailing.mail_limit(ns(text=text, answer=answer), _State()))
+        asyncio.run(mailing.mail_limit(ns(text=text, answer=answer), _State(), ns(storage=ns(home="/nonexistent"))))
         return replies, data, states
 
     def test_typo_reprompts(self):

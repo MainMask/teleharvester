@@ -45,6 +45,11 @@ def _worker_lines(stats: dict, workspaces: Workspaces) -> list[str]:
     return lines
 
 
+def _minutes(interval: list[int]) -> str:
+    """[sec] or [min, max] seconds as minutes: "15 мин", "10–20 мин"."""
+    return "–".join(str(max(1, round(part / 60))) for part in sorted(set(interval))) + " мин"
+
+
 def _view(settings: Settings, pool: WorkerPool, workspaces: Workspaces,
           project: int) -> tuple[str, InlineKeyboardMarkup]:
     own, stats = autoreply.project_settings(pool.storage.home, settings), _stats(pool)
@@ -61,10 +66,11 @@ def _screen(own: dict, settings: Settings, stats: dict, workspaces: Workspaces, 
 
     lines = [
         f"{screens.title_line(AUTOREPLY, screens.project_name(project))} — {status}",
-        f"Проверка воркеров: раз в {max(1, settings.autoreply_interval // 60)} мин.",
+        f"Проверка воркеров: каждого раз в {_minutes(settings.autoreply_interval)}, в случайный момент.",
         "",
-        "Тем, кто ответил на рассылку в ЛС, воркер проекта один раз отвечает этим текстом, "
-        "а их сообщения пересылаются сюда.",
+        "Тем, кто ответил на рассылку в ЛС, воркер проекта один раз отвечает этим текстом. "
+        "Их сообщения пересылаются сюда с кнопкой «✍️ Ответить» и при выключенном автоответе — "
+        "после первой рассылки проекта воркеры проверяются всегда.",
         "",
         "<b>Текст:</b>",
         text or "— не задан",

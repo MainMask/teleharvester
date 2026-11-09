@@ -5,7 +5,7 @@ import conftest
 import json
 import os
 import types as pytypes
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
@@ -30,8 +30,11 @@ def user(user_id=1, **kw):
     return types.User(**fields)
 
 
-def message(text="hi", out=False, msg_id=10):
-    return pytypes.SimpleNamespace(out=out, message=text, id=msg_id)
+WRITTEN = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)  # when a fake message was written
+
+
+def message(text="hi", out=False, msg_id=10, date=WRITTEN):
+    return pytypes.SimpleNamespace(out=out, message=text, id=msg_id, date=date)
 
 
 def dialog(entity, unread=1, out=False, text="hi", msg_id=10, history=None):
@@ -102,12 +105,12 @@ class FakePool:
 def run_poll(pool, replied=None):
     notes = []
 
-    async def notify(text, url):
+    async def notify(text, url, reply=None):
         notes.append((text, url))
         return True
 
     replied = {} if replied is None else replied
-    asyncio.run(autoreply.poll_once(pool, TEXT, replied, notify))
+    asyncio.run(autoreply.poll_once(pool, TEXT, replied, notify, 1, pool.workers))
     return replied, notes
 
 
@@ -399,10 +402,10 @@ def test_undelivered_notice_leaves_the_chat_unread():
     client = FakeClient([dialog(user(5), msg_id=42)])
     replied = {}
 
-    async def bot_api_down(text, url):
+    async def bot_api_down(text, url, reply=None):
         return False
 
-    asyncio.run(autoreply.poll_once(FakePool([client]), TEXT, replied, bot_api_down))
+    asyncio.run(autoreply.poll_once(FakePool([client]), TEXT, replied, bot_api_down, 1, [client]))
 
     assert client.sent == [(5, TEXT)] and list(replied)  # answered once and remembered
     assert client.read == []  # the next round forwards it, without another reply
@@ -465,11 +468,12 @@ def test_bot_stopping_still_cancels_the_round():
             await asyncio.sleep(3600)
             yield
 
-    async def notify(text, url):
+    async def notify(text, url, reply=None):
         return True
 
     async def main():
-        task = asyncio.create_task(autoreply.poll_once(FakePool([Hanging([])]), TEXT, {}, notify))
+        pool = FakePool([Hanging([])])
+        task = asyncio.create_task(autoreply.poll_once(pool, TEXT, {}, notify, 1, pool.workers))
         await asyncio.sleep(0.01)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -478,15 +482,18 @@ def test_bot_stopping_still_cancels_the_round():
     asyncio.run(main())
 
 
-@pytest.mark.parametrize("enabled, text, polled", [
-    (True, TEXT, True),
-    (False, TEXT, False),
-    (True, "", False),
+@pytest.mark.parametrize("enabled, text, mailed, polled", [
+    (True, TEXT, False, [TEXT]),
+    (False, TEXT, False, []),
+    (True, "", False, []),
+    # once the project has mailed, its replies are tracked with the auto-reply off: polled without a text
+    (False, TEXT, True, [None]),
+    (True, "", True, [None]),
 ])
-def test_loop_polls_only_while_on(monkeypatch, enabled, text, polled):
+def test_loop_polls_while_on_or_once_the_project_has_mailed(monkeypatch, tmp_path, enabled, text, mailed, polled):
     rounds = []
 
-    async def fake_poll(pool, reply_text, replied, notify):
+    async def fake_poll(pool, reply_text, replied, notify, project, clients):
         rounds.append(reply_text)
 
     async def fake_sleep(seconds):
@@ -497,18 +504,23 @@ def test_loop_polls_only_while_on(monkeypatch, enabled, text, polled):
     sleeps = []
     monkeypatch.setattr(autoreply, "poll_once", fake_poll)
     monkeypatch.setattr(autoreply.asyncio, "sleep", fake_sleep)
-    settings = pytypes.SimpleNamespace(autoreply_enabled=enabled, autoreply_text=text, autoreply_interval=900)
+    monkeypatch.setattr(autoreply.random, "uniform", lambda low, high: 0)  # the first check: at once
+    settings = pytypes.SimpleNamespace(autoreply_enabled=enabled, autoreply_text=text, autoreply_interval=[600, 1200])
+    if mailed:
+        (tmp_path / autoreply.MAILING_STATS).write_text("{}")
 
+    pool = FakePool([FakeClient([])], home=str(tmp_path))
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(autoreply._loop(FakeBot(), conftest.Workspaces(FakePool([])), settings, {1}))
-    assert sleeps == [900, 900]
-    assert rounds == ([TEXT, TEXT] if polled else [])
+        asyncio.run(autoreply._loop(FakeBot(), conftest.Workspaces(pool), settings, {1}))
+    # the next check 10–20 min away: the loop looks again within a TICK
+    assert sleeps == [autoreply.TICK, autoreply.TICK]
+    assert rounds == polled[:1]
 
 
 def test_the_loop_answers_with_each_project_s_own_text_and_skips_the_ones_off(monkeypatch, tmp_path):
     rounds = []
 
-    async def fake_poll(pool, reply_text, replied, notify):
+    async def fake_poll(pool, reply_text, replied, notify, project, clients):
         rounds.append((pool.storage.home, reply_text))
 
     async def fake_sleep(seconds):
@@ -519,12 +531,16 @@ def test_the_loop_answers_with_each_project_s_own_text_and_skips_the_ones_off(mo
     sleeps = []
     monkeypatch.setattr(autoreply, "poll_once", fake_poll)
     monkeypatch.setattr(autoreply.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(autoreply.random, "uniform", lambda low, high: 0)
     own, off, default = (str(tmp_path / name) for name in ("own", "off", "default"))
     autoreply.save_project_settings(own, True, "свой текст")
     autoreply.save_project_settings(off, False, "выключен")
-    workspaces = pytypes.SimpleNamespace(all=lambda: [pytypes.SimpleNamespace(pool=FakePool([], home=home))
-                                                      for home in (own, off, default)])
-    settings = pytypes.SimpleNamespace(autoreply_enabled=True, autoreply_text=TEXT, autoreply_interval=900)
+    pools = [FakePool([FakeClient([])], home=home) for home in (own, off, default)]
+    for number, pool in enumerate(pools):  # each project's own sessions/
+        pool._paths = {key: f"{number}/{path}" for key, path in pool._paths.items()}
+    workspaces = pytypes.SimpleNamespace(all=lambda: [pytypes.SimpleNamespace(pool=pool, project_id=1)
+                                                      for pool in pools])
+    settings = pytypes.SimpleNamespace(autoreply_enabled=True, autoreply_text=TEXT, autoreply_interval=[600, 1200])
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(autoreply._loop(FakeBot(), workspaces, settings, {1}))
     # a project without its own: config.toml's
@@ -565,7 +581,7 @@ def settings_with(tmp_path, monkeypatch, config=CONFIG):
 
 def test_settings_default_on_but_textless(tmp_path, monkeypatch):
     settings = settings_with(tmp_path, monkeypatch)
-    assert settings.autoreply_enabled and settings.autoreply_text == "" and settings.autoreply_interval == 900
+    assert settings.autoreply_enabled and settings.autoreply_text == "" and settings.autoreply_interval == [600, 1200]
 
 
 def test_a_setting_adds_its_missing_section_and_keeps_the_rest(tmp_path, monkeypatch):
@@ -705,7 +721,7 @@ def test_screen_shows_status_text_and_the_project_s_stats(tmp_path, monkeypatch)
     autoreply.save_replied({"sessions/a.jsession:1": now, "sessions/b.jsession:2": "2020-01-01 00:00:00",
                             "projects/9/sessions/c.jsession:3": now})  # another project's
     text, markup = _screen(settings)
-    assert "<b>📬 Автоответ</b> — ✅ включён" in text and "раз в 15 мин" in text
+    assert "<b>📬 Автоответ</b> — ✅ включён" in text and "каждого раз в 10–20 мин, в случайный момент" in text
     assert "пишите &lt;@MainMask&gt;" in text  # config.toml's: the project has none of its own
     assert "всего 2 · за сутки 1 · за 7 дней 1" in text
     assert "@worker_a — 1" in text and "b.jsession — 1" in text and "c.jsession" not in text
@@ -808,3 +824,138 @@ def test_a_moved_worker_s_replies_move_in_the_running_loop_s_ledger_too(monkeypa
     monkeypatch.setattr(autoreply, "_replied", ledger)
     autoreply.rename_worker("projects/1/sessions/a.jsession", "projects/2/sessions/a.jsession")
     assert ledger == {"projects/2/sessions/a.jsession:5": "2026-01-01 10:00:00"} == autoreply.load_replied()
+
+
+# --- replies tracked with the auto-reply off; ✍️ Ответить ---------------------------
+
+def test_with_the_auto_reply_off_a_reply_is_recorded_logged_and_forwarded_unanswered(tmp_path):
+    from bot.callbacks import ReplyCB
+    from modules import outreach
+
+    client = FakeClient([dialog(user(5), text="интересно, расскажите", msg_id=42)])
+    notes, replied = [], {}
+
+    async def notify(text, url, reply=None):
+        notes.append((text, reply))
+        return True
+
+    asyncio.run(autoreply.poll_once(FakePool([client], home=str(tmp_path)), None, replied, notify, 4, [client]))
+    assert client.sent == [] and "sessions/w0.jsession:5" in replied and client.read == [(5, 42)]
+    (text, reply), = notes
+    assert text.startswith("💬 Ответ на рассылку\n") and "автоответ" not in text
+    assert reply == ReplyCB(project=4, worker="w0.jsession", user=5)
+    logged = [json.loads(line) for line in (tmp_path / outreach.DIALOGS_NAME).read_text().splitlines()]
+    assert [(e["worker"], e["user"], e["text"]) for e in logged] == [("w0.jsession", 5, "интересно, расскажите")]
+
+
+def test_a_later_message_is_forwarded_and_logged_as_the_dialog_s(tmp_path):
+    from modules import outreach
+
+    client = FakeClient([dialog(user(5), text="ещё вопрос")])
+    replied = {"sessions/w0.jsession:5": "2026-01-01 10:00:00"}
+    _, notes = run_poll(FakePool([client], home=str(tmp_path)), replied)
+    assert client.sent == [] and notes[0][0].startswith("💬 Новое сообщение\n")
+    logged, = [json.loads(line) for line in (tmp_path / outreach.DIALOGS_NAME).read_text().splitlines()]
+    assert logged["text"] == "ещё вопрос" and "dir" not in logged
+
+
+def test_the_auto_reply_is_logged_after_what_the_person_wrote(tmp_path):
+    from modules import outreach
+
+    client = FakeClient([dialog(user(5), text="а что за предложение?")])
+    run_poll(FakePool([client], home=str(tmp_path)))
+    logged = [json.loads(line) for line in (tmp_path / outreach.DIALOGS_NAME).read_text().splitlines()]
+    assert [(e["text"], e.get("dir"), e.get("auto")) for e in logged] == [
+        ("а что за предложение?", None, None), (TEXT, "out", True)]
+
+
+def test_a_reply_is_logged_at_the_time_it_was_written_not_the_round_s(tmp_path):
+    # the first message after the worker's last one: older unread ones came before the mailing
+    from modules import outreach
+
+    before, first, later = (datetime(2026, 1, 1, hour, tzinfo=timezone.utc) for hour in (8, 10, 11))
+    history = [message("ещё", msg_id=13, date=later), message("ответ", msg_id=12, date=first),
+               message("рассылка", out=True, msg_id=11, date=first), message("раньше", msg_id=10, date=before)]
+    client = FakeClient([dialog(user(5), unread=4, msg_id=13, history=history)])
+    run_poll(FakePool([client], home=str(tmp_path)))
+    logged = json.loads((tmp_path / outreach.DIALOGS_NAME).read_text().splitlines()[0])
+    assert logged["text"] == "раньше\nответ\nещё"
+    assert logged["at"] == first.astimezone().strftime(outreach.TIME_FORMAT)
+
+
+def test_notify_puts_the_answer_button_under_the_profile_one():
+    from bot.callbacks import ReplyCB
+
+    bot = FakeBot()
+    asyncio.run(autoreply.make_notify(bot, {1})("hi", "https://t.me/ann", ReplyCB(project=2, worker="w.jsession",
+                                                                                   user=5)))
+    (_, _, markup), = bot.sent
+    answer = markup.inline_keyboard[1][0]
+    assert answer.text == "✍️ Ответить" and ReplyCB.unpack(answer.callback_data).user == 5
+
+
+def test_a_profile_link_privacy_forbids_keeps_the_answer_button():
+    class Bot(FakeBot):
+        async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
+            if reply_markup is not None and any(b.url for row in reply_markup.inline_keyboard for b in row):
+                raise TelegramBadRequest(method=None, message="BUTTON_USER_PRIVACY_RESTRICTED")
+            self.sent.append((chat_id, text, reply_markup))
+
+    from bot.callbacks import ReplyCB
+
+    bot = Bot()
+    asyncio.run(autoreply.make_notify(bot, {1})("hi", "tg://user?id=5", ReplyCB(project=2, worker="w", user=5)))
+    (_, _, markup), = bot.sent
+    assert [b.text for row in markup.inline_keyboard for b in row] == ["✍️ Ответить"]
+
+
+# --- each worker on a random timer of its own ---------------------------------------
+
+def test_each_worker_is_checked_at_random_10_to_20_minutes_apart_never_in_a_pack(monkeypatch):
+    import random
+    random.seed(7)
+    pool = FakePool([FakeClient([]) for _ in range(5)])
+    due, checks = {}, {}
+    for second in range(0, 6 * 3600, 5):  # six hours, the loop looking every 5 s
+        for client in autoreply.due_workers(pool, due, second, [600, 1200]):
+            checks.setdefault(pool.storage.get_session_path(client), []).append(second)
+    assert len(checks) == 5
+    gaps = [b - a for times in checks.values() for a, b in zip(times, times[1:])]
+    assert min(gaps) >= 600 and max(gaps) <= 1205  # within the range, but for the loop's own step
+    assert len(set(gaps)) > len(gaps) // 2  # no fixed period
+    firsts = sorted(times[0] for times in checks.values())
+    assert firsts[-1] - firsts[0] > 300 and len(set(firsts)) == 5  # not one after another at start
+
+
+def test_a_worker_gone_or_its_project_off_gets_a_new_first_check_when_back(monkeypatch):
+    rounds = []
+
+    async def fake_poll(pool, reply_text, replied, notify, project, clients):
+        rounds.append(len(clients))
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            raise asyncio.CancelledError
+
+    sleeps, draws = [], iter([0, 30])
+    monkeypatch.setattr(autoreply, "poll_once", fake_poll)
+    monkeypatch.setattr(autoreply.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(autoreply.random, "uniform", lambda low, high: next(draws))
+    settings = pytypes.SimpleNamespace(autoreply_enabled=True, autoreply_text=TEXT, autoreply_interval=[600, 1200])
+    pool = FakePool([FakeClient([]), FakeClient([])])
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(autoreply._loop(FakeBot(), conftest.Workspaces(pool), settings, {1}))
+    # the first worker at once, the second 30 s later: the loop sleeps until it, not a whole TICK
+    assert rounds == [1] and 28 <= sleeps[0] <= 30
+
+
+def test_a_worker_whose_file_name_is_too_long_for_the_answer_button_is_still_forwarded():
+    # a hand-placed .session may have any name: the button's callback data holds at most 64 bytes
+    from bot.callbacks import ReplyCB
+
+    bot = FakeBot()
+    reply = ReplyCB(project=2, worker="x" * 60 + ".session", user=5)
+    assert asyncio.run(autoreply.make_notify(bot, {1})("hi", "https://t.me/ann", reply)) is True
+    (_, _, markup), = bot.sent
+    assert [b.text for row in markup.inline_keyboard for b in row] == ["👤 Открыть профиль"]

@@ -15,8 +15,8 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PmMailing
 from functions.pmmailing import GONE_SKIPPED, SKIP_ASK, PmMailingFunc
-from modules import project_base
-from modules.registry import BASE, title
+from modules import outreach, project_base
+from modules.registry import BASE, HYPOTHESES, title
 from modules.settings import Settings
 
 router = Router()
@@ -24,6 +24,12 @@ router = Router()
 DEFAULT_TARGETS = "assets/targets.txt"
 MAX_RECIPIENTS_FILE_SIZE = 5 * 1024 * 1024  # a recipients list is text; cap at 5 MB
 LIMIT_ASK = "Сколько получателей? Пришлите число или нажмите «♾ Все»:"
+HYPOTHESIS_ASK = ("🧪 К какой гипотезе относится эта рассылка? Выберите ниже или пришлите новую одним сообщением, "
+                  "например: «Если начать с вопроса о канале, ответят 8% вместо 5%, потому что это не похоже на "
+                  f"спам». Цифры по гипотезам — в «{HYPOTHESES}».")
+NO_HYPOTHESIS_VALUE = "none"  # «Без гипотезы»'s button
+SHOWN_HYPOTHESIS = 50  # of a hypothesis's text, on its button
+HYPOTHESIS_BUTTONS = 20  # the newest open ones: the older ones are closed in 🧪 Гипотезы
 
 
 async def ask_recipients(message: Message, state: FSMContext, project: str, whole: int, bases: list[tuple[str, str]]):
@@ -106,24 +112,75 @@ async def mail_skip(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     await callback.answer()
 
 
+def _hypothesis_kb(pool: WorkerPool):
+    """The project's open hypotheses (modules/outreach.py), newest first, then «Без гипотезы»."""
+    hypotheses = outreach.open_hypotheses(pool.storage.home)[::-1][:HYPOTHESIS_BUTTONS]
+    options = [(f"#{h['id']} {h['text'][:SHOWN_HYPOTHESIS]}", str(h["id"])) for h in hypotheses]
+    options.append((outreach.NO_HYPOTHESIS, NO_HYPOTHESIS_VALUE))
+    return cancel_kb(PmMailing.hypothesis, choice_kb("mail_hyp", options))
+
+
 @router.callback_query(PmMailing.limit, ChoiceCB.filter(F.scope == "mail_all"))
-async def mail_all(callback: CallbackQuery, state: FSMContext):
+async def mail_all(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await callback.answer()
     await state.update_data(limit=None)
-    await state.set_state(PmMailing.message)
-    await callback.message.edit_text(SEND_MESSAGE_PROMPT, reply_markup=cancel_kb(PmMailing.message))
+    await state.set_state(PmMailing.hypothesis)
+    await callback.message.edit_text(HYPOTHESIS_ASK, reply_markup=_hypothesis_kb(pool))
 
 
 @router.message(PmMailing.limit)
-async def mail_limit(message: Message, state: FSMContext):
+async def mail_limit(message: Message, state: FSMContext, pool: WorkerPool):
     raw = (message.text or "").strip()
     # only «♾ Все» (or an explicit "-", as before it) means "everyone": a typo must not turn into a mass mailing
     if raw != "-" and not (raw.isdecimal() and int(raw) > 0):
         await message.answer("Нужно положительное число — или «♾ Все» выше. Пришлите ещё раз:")
         return
     await state.update_data(limit=None if raw == "-" else int(raw))
+    await state.set_state(PmMailing.hypothesis)
+    await message.answer(HYPOTHESIS_ASK, reply_markup=_hypothesis_kb(pool))
+
+
+@router.callback_query(PmMailing.hypothesis, ChoiceCB.filter(F.scope == "mail_hyp"))
+async def mail_hypothesis(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
+    """An open hypothesis, or none: the run's sends are counted under it."""
+    number = None if callback_data.value == NO_HYPOTHESIS_VALUE else int(callback_data.value)
+    await callback.answer()
+    await state.update_data(hypothesis=number, hypothesis_text=None)
     await state.set_state(PmMailing.message)
-    await message.answer(SEND_MESSAGE_PROMPT, reply_markup=cancel_kb(PmMailing.message))
+    await callback.message.edit_text(SEND_MESSAGE_PROMPT, reply_markup=cancel_kb(PmMailing.message))
+
+
+@router.message(PmMailing.hypothesis)
+async def mail_new_hypothesis(message: Message, state: FSMContext):
+    """A new hypothesis typed: made when the run starts (a mailing left before it makes none)."""
+    text = await require_text(message)
+    if text is None:
+        return
+    await state.update_data(hypothesis=None, hypothesis_text=text)
+    await state.set_state(PmMailing.message)
+    await message.answer(f"🧪 Новая гипотеза: «{text}».\n\n{SEND_MESSAGE_PROMPT}",
+                         reply_markup=cancel_kb(PmMailing.message))
+
+
+def _segment(data: dict) -> str:
+    """Whom the run was for, as the report names it."""
+    if data.get("recipients"):
+        return f"список ({len(data['recipients'])})"
+    return "📚 Вся база" if data["path"] == project_base.WHOLE else os.path.basename(data["path"])
+
+
+def _start_run(pool: WorkerPool, data: dict, content, planned: int) -> int:
+    """The run in the project's outreach (its new hypothesis made first): its number. A hypothesis picked but deleted
+    since (🧪 Гипотезы): the run is under none, or its sends would be in no part of the report; closed since: under
+    none too, its verdict was drawn without them."""
+    home = pool.storage.home
+    number = data.get("hypothesis")
+    hypothesis = outreach.find_hypothesis(home, number) if number is not None else None
+    if hypothesis is None or hypothesis.get("closed"):
+        number = None
+    if data.get("hypothesis_text"):
+        number = outreach.add_hypothesis(home, data["hypothesis_text"])
+    return outreach.add_run(home, number, _segment(data), content.text or "", len(content.media or ()), planned)
 
 
 @router.message(PmMailing.message)
@@ -197,8 +254,17 @@ async def mail_run(
             await busy_step(message, manager, BASE)
         return
 
+    async def job(f, report):
+        """The run in the analytics once it starts (one that doesn't — no workers — leaves nothing there): its
+        failure is said, never the mailing's."""
+        try:
+            run_id = await asyncio.to_thread(_start_run, pool, data, content, len(recipients))
+        except Exception as err:
+            run_id = None
+            await report(f"⚠️ Аналитика этой рассылки не записывается: {err}")
+        await f.run(recipients, content, report, run_id)
+
     await manager.run(
-        message.bot, message.chat.id, pool, instance, bot_function,
-        lambda f, r: f.run(recipients, content, r),
+        message.bot, message.chat.id, pool, instance, bot_function, job,
         f"Рассылка в ЛС ({len(recipients)})…", cleanup=content.cleanup,
     )

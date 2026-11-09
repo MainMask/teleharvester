@@ -64,6 +64,7 @@ WARMUP = "🔥 Прогрев"
 WARMUP_STEPS = "🧩 Шаги"
 SETTINGS = "⚙️ Настройки"
 AUTOREPLY = "📬 Автоответ"
+HYPOTHESES = "🧪 Гипотезы"
 TASKS = "📊 Задачи"
 CHECKS_GROUP = "Проверка"  # 📋 Список's checks: its poll (an action) and @SpamBot's (a function), one row
 PAUSES_GROUP = "Паузы"  # the settings' subheadings
@@ -88,6 +89,9 @@ SCREENS = {screen.title: screen for screen in (
     # its view: bot/routers/autoreply.py
     Screen(AUTOREPLY, "ответ тем, кто ответил на рассылку в ЛС, и их сообщения сюда", BASE, own_buttons=True,
            refresh=True),
+    # its view: bot/routers/hypotheses.py
+    Screen(HYPOTHESES, "гипотезы рассылки: отправлено, ответили за 72 ч, итоги; отчёт .md для анализа", BASE,
+           own_buttons=True, refresh=True),
     # its view (the warmup's line): bot/routers/accounts/base.py
     Screen(ACCOUNTS, "прокси, перенос; добавление, список и проверки, прогрев, профиль, безопасность", CARD, buttons=(
         Button("proxy", "🌐 Прокси", "задать список прокси проекта и раздать его аккаунтам"),

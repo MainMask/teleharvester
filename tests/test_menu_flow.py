@@ -174,16 +174,17 @@ def test_cancel_in_a_project_s_form_goes_back_to_its_screen_in_place():
 
 # --- the buttons that stand for a typed «-» ---
 
-def test_all_recipients_by_button_as_by_a_typed_dash():
+def test_all_recipients_by_button_as_by_a_typed_dash(tmp_path):
     from bot.routers import mailing
     from bot.states import PmMailing
 
+    pool = ns(storage=ns(home=str(tmp_path)))
     callback, state = _Callback(), _State({"path": "assets/targets.txt"}, PmMailing.limit)
-    asyncio.run(mailing.mail_all(callback, state))
-    assert state.data["limit"] is None and state.state == PmMailing.message
+    asyncio.run(mailing.mail_all(callback, state, pool))
+    assert state.data["limit"] is None and state.state == PmMailing.hypothesis
 
     typed = _State({"path": "assets/targets.txt"}, PmMailing.limit)
-    asyncio.run(mailing.mail_limit(_Msg("-"), typed))
+    asyncio.run(mailing.mail_limit(_Msg("-"), typed, pool))
     assert typed.data == state.data and typed.state == state.state
 
 

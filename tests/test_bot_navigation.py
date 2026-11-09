@@ -8,7 +8,7 @@ import types
 from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB, NavCB
 from bot.keyboards.menu import back_kb, main_menu, screen_kb
 from bot.routers import accounts, menu
-from modules.registry import (ACCOUNT_LIST, ACCOUNTS, ACTIVITY, ADD, AUTOREPLY, BASE, CARD, COLLECT, MANAGE,
+from modules.registry import (ACCOUNT_LIST, ACCOUNTS, ACTIVITY, ADD, AUTOREPLY, BASE, CARD, COLLECT, HYPOTHESES, MANAGE,
                               PROJECTS, SCREENS, SECURITY, SETTINGS, TASKS, WARMUP, WARMUP_STEPS, by_category,
                               in_project)
 from bot.services.screens import screen_text
@@ -544,7 +544,8 @@ def test_a_live_screen_s_refresh_is_on_its_last_row_by_its_back():
             assert last == ["🔄 Обновить", "⬅️ Назад"] if screen.parent else ["🔄 Обновить"]
             refresh = NavCB.unpack(screen_kb(title, 7).inline_keyboard[-1][0].callback_data)
             assert refresh == NavCB(screen=title, project=7)
-    assert {title for title, screen in SCREENS.items() if screen.refresh} == {TASKS, WARMUP, AUTOREPLY, ACCOUNT_LIST}
+    assert {title for title, screen in SCREENS.items() if screen.refresh} == {TASKS, WARMUP, AUTOREPLY, ACCOUNT_LIST,
+                                                                                HYPOTHESES}
 
 
 def test_a_saved_setting_brings_back_the_settings_screen_with_the_new_value():
@@ -691,7 +692,7 @@ def test_the_screens_with_live_values_or_of_their_own_kind_register_their_views(
 
     # the rest: as the registry has them (a project's: with its name)
     assert set(VIEWS) == {PROJECTS, CARD, COLLECT, BASE, MANAGE, ACCOUNTS, ACCOUNT_LIST, SETTINGS, AUTOREPLY, TASKS,
-                          WARMUP, WARMUP_STEPS}
+                          WARMUP, WARMUP_STEPS, HYPOTHESES}
 
 
 def test_the_tasks_button_shows_what_runs_and_keeps_the_form():

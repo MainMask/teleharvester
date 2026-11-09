@@ -66,7 +66,8 @@ LIMIT_DEFAULTS = dict(
     comments_per_account_daily=0,
 )
 
-MIN_AUTOREPLY_INTERVAL = 60  # seconds: each check connects every worker
+MIN_AUTOREPLY_INTERVAL = 60  # seconds: each check connects the worker
+AUTOREPLY_INTERVAL = [600, 1200]  # each worker's check: a random time within, 10–20 min
 
 
 def _is_int(value) -> bool:
@@ -149,7 +150,9 @@ class Settings:
         autoreply = config.get("autoreply", {})
         self.autoreply_enabled: bool = autoreply.get("enabled", True)
         self.autoreply_text: str = autoreply.get("text", "")
-        self.autoreply_interval: int = autoreply.get("interval", 900)
+        # [sec] or [min, max]: each worker's next check is drawn within it; a bare number (an older config) is fixed
+        interval = autoreply.get("interval", AUTOREPLY_INTERVAL)
+        self.autoreply_interval: List[int] = [interval] if _is_int(interval) else interval
 
         # a hand-edited value would only fail mid-job (an empty pause) or hammer the workers
         # (an auto-reply check with no pause): stop at start instead, like a missing key
@@ -176,8 +179,8 @@ class Settings:
             console.print("[bold red]config.toml [autoreply] enabled должен быть true/false (без кавычек), "
                           "а text — строкой в кавычках.[/]")
             raise SystemExit(1)
-        if not _is_int(self.autoreply_interval) or self.autoreply_interval < MIN_AUTOREPLY_INTERVAL:
-            console.print(f"[bold red]config.toml [autoreply] interval должен быть не меньше "
+        if not _is_pause(self.autoreply_interval) or min(self.autoreply_interval) < MIN_AUTOREPLY_INTERVAL:
+            console.print(f"[bold red]config.toml [autoreply] interval: нужно [сек] или [мин, макс], не меньше "
                           f"{MIN_AUTOREPLY_INTERVAL} секунд, а не {self.autoreply_interval!r}.[/]")
             raise SystemExit(1)
 

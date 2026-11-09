@@ -66,7 +66,7 @@ Key `config.toml` settings:
 | `[limits] profile_pause` | `[60, 180]` | Pause between accounts for profile changes. |
 | `[limits] invite_per_account_daily`, `contacts_per_account_daily` | `0` | Daily invite / contact-add caps. Contacts: the next account continues. Invites: each worker gets its own share of the members, and a worker at its cap skips the rest of its share for that run. |
 | `[limits] comments_per_account_daily` | `0` | Daily post-comment cap, 🗨 and 🆕 counted together (`stats/comments_limits.json`). 🗨: a worker at its cap stops; 🆕: it is skipped under the posts until the next day, the next worker comments. A change in ⚙️ applies to the runs started after it, and to a running 🆕 from its next check. |
-| `[autoreply] enabled`, `text`, `interval` | `true`, `""`, `900` | Bot only: replies once to people who answer a mailing and forwards their messages to the admins. `enabled` and `text` are the default of a project that has not set its own (**🎯 База и рассылка → 📬 Автоответ**, `projects/<id>/autoreply.json`); `interval` (≥ 60 s) is shared. Empty text disables it. |
+| `[autoreply] enabled`, `text`, `interval` | `true`, `""`, `[600, 1200]` | Bot only: replies once to people who answer a mailing (their messages are forwarded to the admins either way, once the project has mailed anyone). `enabled` and `text` are the default of a project that has not set its own (**🎯 База и рассылка → 📬 Автоответ**, `projects/<id>/autoreply.json`); `interval` ([sec] or [min, max], ≥ 60 s) is shared: each worker is checked on a timer of its own, a random time within it each time (a bare number: a fixed period). Empty text disables it. |
 | `[bot] admins` | `[]` | Telegram user IDs allowed to use the bot (`BOT_ADMINS` overrides). |
 
 Every write from the app keeps the previous file as `config.toml.bak`. Legacy configs with
@@ -204,7 +204,8 @@ make, and its files count; **📥 Сбор** lists its channels and the scrape's
 | **🎯 База и рассылка → 📄 Свой список** | Adds usernames/phones to `<name>_participants_list.txt` (mailing only). |
 | **🎯 База и рассылка → 📦 Скачать базу** | **📚 Вся база** as one `.csv` (`user_id, access_hash, owner_id, username, name, phone`). The project's base is its files glued as they are used (`modules/project_base.py`): its scrapes' participants, its groups' members and its list, each person once — by ID across the bases (the row whose access hash a worker of the project owns, else one of no known owner, else the newest file's; a missing username taken from another row), and a list's @username a base already has left out. The files stay its sources: a new scrape is in it at once, no copy lies on disk. 🎯 counts its people. |
 | **🎯 База и рассылка → 🧹 Очистить базу** | Moves the members base or the list to `<name>_previous/`, where it can be taken back from. |
-| **🎯 База и рассылка → 📬 Автоответ** | The project's auto-reply: on/off, its text, how many of its workers' mailing recipients answered (in all, a day, a week, per worker; **🔄 Обновить** for the latest). Each worker answers a person once; what they write is forwarded to the admins. |
+| **🎯 База и рассылка → 📬 Автоответ** | The project's auto-reply: on/off, its text, how many of its workers' mailing recipients answered (in all, a day, a week, per worker; **🔄 Обновить** for the latest). Each worker answers a person once. Once the project has mailed anyone, its workers are checked for replies even with the auto-reply off: what people write is forwarded to the admins with **✍️ Ответить** — an answer typed in the bot, sent by the worker the person answered. |
+| **🎯 База и рассылка → 🧪 Гипотезы** | The mailing's hypotheses (HADI): each mailing is put under one at its **🧪** step (an open one, a new one typed, or none). Per hypothesis: sent, answered within 72 h (any answer counts) among the sends at least 72 h old, the rate with its 95% confidence interval, a note while there are under 300 such sends or answers may still come. Its card (**#N**): **🏁 Закрыть** with its verdict and an insight, **✏️** its text, **🗑** it while no mailing ran under it. **📄 Отчёт .md** — every hypothesis with its runs, texts, numbers per worker and the dialogs (what people wrote, the auto-reply, the answers sent with ✍️), to read or give to an AI. A worker moved to another project: what people answer its earlier sends is not in the report (it is logged in the new project). |
 | **🎯 База и рассылка → 📇 В контакты** / **📨 Рассылка** | Add the base to the project's workers' contacts, then mail it: **📚 Вся база** first (the contacts: its people with an ID), or one of its files. With «skip those already messaged» (asked before each mailing), each person is mailed once within the project. |
 | **🛠 Управление** | **🌍 Регион** — the project's content: the warmup's and 👤 Профиль's lists ([Content](#content)), rename (files are renamed too), delete (files are kept; a project with workers is not deleted — move them first). |
 | **🤖 Аккаунты** / **💬 Активность** | The project's accounts with their warmup, and the work of its workers on one target (see [Features](#features), [Warmup](#warmup)). |
@@ -278,6 +279,7 @@ Scraping more than ~150–200 communities in one block may trigger a 24-hour sof
 | `assets/contacts.parquet` | Base for *Add to contacts* (`user_id`, `access_hash`). |
 | `projects/<id>/sessions/` | The project's workers (`inactive/`, `restricted/` inside). |
 | `projects/<id>/proxies.txt`, `pm_mailing.json`, `contacts.json` | The project's proxy pool, mailing statistics and contacts ledger. |
+| `projects/<id>/outreach.json`, `outreach_sends.jsonl`, `outreach_dialogs.jsonl` | The project's hypotheses and mailing runs, each send (whom, by which worker) and each message of the dialogs after it, both ways (🧪 Гипотезы). |
 | `projects/<id>/proxies_restricted.txt` | Optional: the project's proxies for its permanently restricted workers. |
 | `projects/<id>/warmup.json` | The project's warmup settings. |
 | `stats/warmup.json` | Each account's warmup: day, steps done, status, last error (by user id: kept when moved). |
@@ -286,7 +288,7 @@ Scraping more than ~150–200 communities in one block may trigger a 24-hour sof
 | `stats/account_limits.json`, `invite_limits.json`, `contacts_limits.json` | Daily per-account counters (mailing, invites, contact adds). |
 | `stats/released.json` | Released workers. |
 | `stats/restricted.json`, `spambot_status.json` | Results of the last @SpamBot check. |
-| `stats/auto_replies.json` | People already auto-replied to. |
+| `stats/auto_replies.json` | People who answered a mailing (each auto-replied to once, with the auto-reply on). |
 | `stats/projects.json` | Projects. |
 | `stats/profile_done.json` | Which profile function last changed which worker (the pickers tick the rest). |
 | `stats/bot_scrape.json`, `bot_running` | Each project's bot scrape to continue after a restart; a marker telling a crash from a clean stop. |

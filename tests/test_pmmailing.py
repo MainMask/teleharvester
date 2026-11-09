@@ -513,3 +513,51 @@ class TestCachedMe:
                 assert why in str(err)
             else:
                 raise AssertionError("must raise AccountLimited")
+
+
+class TestOutreachLog:
+    """A run's sends go to the project's outreach log (modules/outreach.py): whom, by which worker."""
+
+    def _fn(self, tmp_path, run_id=3):
+        storage = types.SimpleNamespace(sessions=[], home=str(tmp_path),
+                                        get_session_path=lambda s: "/p/sessions/w1.jsession")
+        fn = PmMailingFunc(storage, types.SimpleNamespace(delay=[0]))
+        fn._run_id, fn.reports = run_id, []
+
+        async def report(text):
+            fn.reports.append(text)
+        fn._report = report
+        return fn
+
+    @staticmethod
+    def _session(peer_id=77):
+        async def get_peer_id(peer):
+            if peer_id is None:
+                raise ValueError("not cached")
+            return peer_id
+        return types.SimpleNamespace(get_peer_id=get_peer_id)
+
+    @staticmethod
+    def _logged(tmp_path):
+        from modules import outreach
+        path = tmp_path / outreach.SENDS_NAME
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_a_base_row_a_username_and_a_phone_are_logged_by_their_ids(self, tmp_path):
+        fn = self._fn(tmp_path)
+        asyncio.run(fn._log_send(self._session(), {"user_id": 5, "access_hash": 1, "username": "ann"}, None))
+        asyncio.run(fn._log_send(self._session(77), "@Bob", "@Bob"))
+        asyncio.run(fn._log_send(self._session(88), "+79990000000", None))
+        logged = [(e["run"], e["worker"], e["user"], e["username"]) for e in self._logged(tmp_path)]
+        assert logged == [(3, "w1.jsession", 5, "ann"), (3, "w1.jsession", 77, "Bob"),
+                          (3, "w1.jsession", 88, None)]
+
+    def test_a_run_outside_the_analytics_logs_nothing(self, tmp_path):
+        fn = self._fn(tmp_path, run_id=None)
+        asyncio.run(fn._log_send(self._session(), "@bob", "@bob"))
+        assert self._logged(tmp_path) == []
+
+    def test_a_failed_log_is_reported_and_the_mailing_goes_on(self, tmp_path):
+        fn = self._fn(tmp_path)
+        asyncio.run(fn._log_send(self._session(None), "@bob", "@bob"))
+        assert self._logged(tmp_path) == [] and "не записана" in fn.reports[0]

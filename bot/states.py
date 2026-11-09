@@ -1,7 +1,7 @@
 from aiogram.fsm.state import State, StatesGroup
 
-from modules.registry import (ACCOUNTS, ADD, ACTIVITY, AUTOREPLY, BASE, BOT_FUNCTIONS_BY_KEY, COLLECT, MANAGE, PROFILE,
-                              PROJECTS, SECURITY, SETTINGS, WARMUP)
+from modules.registry import (ACCOUNTS, ADD, ACTIVITY, AUTOREPLY, BASE, BOT_FUNCTIONS_BY_KEY, COLLECT, HYPOTHESES,
+                              MANAGE, PROFILE, PROJECTS, SECURITY, SETTINGS, WARMUP)
 
 
 class PmBroadcast(StatesGroup):
@@ -55,6 +55,15 @@ class SetAutoreplyText(StatesGroup):
     input = State()
 
 
+class ManualReply(StatesGroup):
+    text = State()  # ✍️ Ответить's text (FSM data: the worker and the person: bot/routers/replies.py)
+
+
+class Hypotheses(StatesGroup):
+    insight = State()  # a hypothesis's insight, as it is closed (FSM data: its id and verdict)
+    text = State()  # its text anew, ✏️ (FSM data: its id)
+
+
 class SetWarmupNumber(StatesGroup):
     value = State()  # data: field — 📅 days or 🧵 threads
 
@@ -91,6 +100,7 @@ class ReportUser(StatesGroup):
 class PmMailing(StatesGroup):
     path = State()
     limit = State()
+    hypothesis = State()  # 🧪: an open one by button, a new one typed (modules/outreach.py)
     message = State()
 
 
@@ -155,7 +165,8 @@ _ORIGINS = {
     ADD: (AddByPhone, ImportFiles),
     SECURITY: (SetPassword,),
     PROFILE: (ProfileText, ChangePhoto),
-    AUTOREPLY: (SetAutoreplyText,),
+    AUTOREPLY: (SetAutoreplyText, ManualReply),
+    HYPOTHESES: (Hypotheses,),
     WARMUP: (SetWarmupNumber,),
     COLLECT: (Scrape, Members, Verify, Analysis),
     BASE: (AddContacts, PmMailing),

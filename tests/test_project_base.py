@@ -175,14 +175,14 @@ def test_a_mailing_of_the_whole_base_runs_on_the_glued_people(tmp_path, monkeypa
         def load_stats(self):
             self.stats = {"3": {"count": 1}}  # carl was written to before
 
-        async def run(self, recipients, content, reporter):
+        async def run(self, recipients, content, reporter, run_id=None):
             captured["recipients"] = recipients
 
     class _Manager:
         active, label, project_id = False, "", 1
 
         async def run(self, bot, chat_id, pool, instance, bot_function, job, header, done=None, **kw):
-            await job(instance, ns())
+            await job(instance, lambda text: asyncio.sleep(0))
             return True
 
     async def content(message, album):

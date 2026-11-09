@@ -23,4 +23,4 @@ comments_per_account_daily = 0  # max post comments per account per day, 🗨 an
 # Example: text = "Спасибо за ответ! Для дальнейшей связи напишите @MainMask"
 enabled = true
 text = ""
-interval = 900   # seconds between checks of the workers' unread chats (at least 60)
+interval = [600, 1200]   # seconds between checks of a worker's unread chats: a random time within [min, max] each time, every worker on its own (at least 60)

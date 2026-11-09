@@ -116,14 +116,14 @@ def test_mail_run_uses_inline_recipients(monkeypatch):
         def drop_gone(self, recipients):
             return recipients
 
-        async def run(self, recipients, content, reporter):
+        async def run(self, recipients, content, reporter, run_id=None):
             captured["recipients"] = recipients
 
     class _Manager:
         active, label, project_id = False, "", 1
 
         async def run(self, bot, chat_id, pool, instance, bot_function, job, header, done=None, **kw):
-            await job(instance, ns())  # execute the job factory
+            await job(instance, lambda text: asyncio.sleep(0))  # execute the job factory; its reports: none
             return True
 
     class _Content:
@@ -161,14 +161,14 @@ def test_mail_run_drops_the_gone_before_the_limit(monkeypatch):
         def load_stats(self):
             self.stats = {"@a": {"count": 0, "gone": "2026-01-01 00:00:00"}}
 
-        async def run(self, recipients, content, reporter):
+        async def run(self, recipients, content, reporter, run_id=None):
             captured["recipients"] = recipients
 
     class _Manager:
         active, label, project_id = False, "", 1
 
         async def run(self, bot, chat_id, pool, instance, bot_function, job, header, done=None, **kw):
-            await job(instance, ns())
+            await job(instance, lambda text: asyncio.sleep(0))
             return True
 
     monkeypatch.setattr(mailing, "resolve", lambda functions, key: (_Inst(), ns(risk="risky")))

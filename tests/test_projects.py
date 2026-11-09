@@ -830,7 +830,7 @@ def test_card_shows_every_function_and_says_what_to_collect_first(tmp_path):
     asyncio.run(_press(base, "base", state))
     text, markup = base.message.edits[0]
     assert _buttons(markup) == ["📄 Свой список", "📦 Скачать базу", "📇 В контакты", "📨 Рассылка",
-                                "📬 Автоответ ›", "⬅️ Назад"]  # no 🧹
+                                "📬 Автоответ ›", "🧪 Гипотезы ›", "⬅️ Назад"]  # no 🧹
     assert text.startswith("📁 <b>Green</b> › <b>🎯 База и рассылка</b>\n\n🎯 Базы пока нет — сначала") and \
         text.endswith(f"<i>{RISK_NOTE}</i>")
 

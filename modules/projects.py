@@ -27,6 +27,7 @@ FREE_DIR = "sessions"  # accounts in no project (the workers from before project
 # the shared mailing stats and contacts ledger from before projects had their own: each project there
 # then got a copy (migrate), so none of them writes again to someone already written to
 # ({its name in a project's folder: the shared file})
+MAILING_STATS = "pm_mailing.json"  # the mailing's ledger, in a project's folder (functions/pmmailing.py)
 LEGACY_STATS = {"pm_mailing.json": os.path.join("stats", "pm_mailing.json"),
                 "contacts.json": os.path.join("stats", "contacts.json")}
 MAX_NAME = 40  # a project's name is a button label and a file name prefix
@@ -563,10 +564,16 @@ def base_line(project: Project, files: list[tuple[str, str]] | None = None) -> s
     files = _base_files(project) if files is None else files
     if not files:
         return f"🎯 Базы пока нет — {FIRST_BASE}."
-    stats = json_file.load(os.path.join(home(project), "pm_mailing.json"), {})
-    mailed = sum(1 for entry in stats.values() if entry.get("count"))
-    return (f"🎯 База: людей {project_base.people(project.name)} (без повторов) · написали {mailed} · "
+    return (f"🎯 База: людей {project_base.people(project.name)} (без повторов) · написали {mailed(home(project))} · "
             f"в контактах {len(contacts_ledger.load(home(project)))}")
+
+
+def mailed(project_home: str, before: str | None = None) -> int:
+    """How many people the project's mailing wrote to (MAILING_STATS); `before`: of them, the ones last written to
+    before that time ("%Y-%m-%d %H:%M:%S", as the ledger keeps it)."""
+    stats = json_file.load(os.path.join(project_home, MAILING_STATS), {})
+    return sum(1 for entry in stats.values()
+               if entry.get("count") and (before is None or entry.get("last_date", "") < before))
 
 
 def base_text(project: Project, html: bool = False) -> str:

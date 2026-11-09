@@ -10,12 +10,12 @@ from telethon.tl.functions.users import GetRequirementsToContactRequest
 
 from functions.base import TelethonFunction
 from functions.base.base import SKIPPED, AccountLimited, pick_seconds
-from modules import contacts_ledger, json_file, parquet_db, rich_message
-from modules.projects import as_username
+from modules import contacts_ledger, json_file, outreach, parquet_db, rich_message
+from modules.projects import MAILING_STATS, as_username
 from modules.account_limits import DailyCounter
 
 
-STATS_NAME = "pm_mailing.json"  # who was written to, in the project's folder: a project keeps its own
+STATS_NAME = MAILING_STATS  # who was written to, in the project's folder: a project keeps its own
 LIMITS_PATH = os.path.join("stats", "account_limits.json")
 
 # The stats ledger grows by one entry per unique recipient ever messaged and is
@@ -48,6 +48,8 @@ def gone(err) -> bool:
 
 class PmMailingFunc(TelethonFunction):
     """Mailing to PM (with stats)"""
+
+    _run_id = None  # the outreach run its sends are logged under (run)
 
     def load_stats(self):
         self.stats = json_file.load(os.path.join(self.storage.home, STATS_NAME), {})
@@ -281,6 +283,7 @@ class PmMailingFunc(TelethonFunction):
             return
 
         self.record_success(recipient)
+        await self._log_send(session, recipient, peer)
         self._limits.bump(account_key)
         self.progress_ok()
         await self._report(
@@ -291,6 +294,22 @@ class PmMailingFunc(TelethonFunction):
                 count=self.stats[key]["count"],
             )
         )
+
+    async def _log_send(self, session, recipient, peer):
+        """The send in the run's outreach log (modules/outreach.py), if the run is one's: whom, by which worker.
+        A failure here is reported, never the mailing's."""
+        if self._run_id is None:
+            return
+        try:
+            if isinstance(recipient, dict):
+                user, username = recipient["user_id"], recipient.get("username")
+            else:  # a list's @name or number: the id the send resolved, from the session's cache
+                user = await session.get_peer_id(peer)
+                username = None if self._is_phone(recipient) else recipient.lstrip("@")
+            worker = os.path.basename(self.storage.get_session_path(session) or "")
+            outreach.log_send(self.storage.home, self._run_id, worker, user, username)
+        except Exception as err:
+            await self._report(f"аналитика: отправка {self.recipient_label(recipient)} не записана: {err}")
 
     @staticmethod
     def parse_list(lines) -> list[str]:
@@ -352,8 +371,10 @@ class PmMailingFunc(TelethonFunction):
 
         return [r for r in recipients if not sent(r)]
 
-    async def run(self, recipients, content, report):
+    async def run(self, recipients, content, report, run_id=None):
+        """`run_id`: the outreach run (modules/outreach.add_run) its sends are logged under; None: not logged."""
         self._report = report
+        self._run_id = run_id
         self._content = content
         self._me_cache = {}
         self._active_accounts = set()
