@@ -1,7 +1,6 @@
 telethon==1.45.0
 aiogram>=3.31,<4
 rich>=15,<16
-gitpython>=3.1,<4
 phonenumbers>=9,<10
 python-socks[asyncio]>=3.1,<4
 pandas>=3,<4
@@ -12,3 +11,4 @@ openpyxl>=3.1,<4
 python-dotenv>=1.2,<2
 toml>=0.10,<1
 opentele-ng>=1.4,<2
+pillow>=12,<13

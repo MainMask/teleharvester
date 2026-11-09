@@ -1,5 +1,5 @@
-"""The personal accounts (personal_sessions/) under 📋 Список, and each account's card: its login codes, a
-personal one's removal."""
+"""Accounts' cards offered under a list — 🤖 Аккаунты' category, its personal accounts —, and each account's card:
+its login codes, a personal one's removal."""
 import asyncio
 import html
 import secrets
@@ -7,50 +7,57 @@ from datetime import datetime, timezone
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.callbacks import ChoiceCB
+from bot.callbacks import ChoiceCB, NavCB
 from bot.keyboards.common import choice_kb, page_of, paged_kb
 from bot.keyboards.menu import back_kb
 from bot.services import login as logins
+from bot.services import screens
 from bot.services.delegation import WorkerPool
 from modules import login as sign_in, scraped_files
-from modules.registry import ACCOUNTS, menu_path
+from modules.registry import ACCOUNT_LIST, menu_path
 from modules.scraper_creds import card_lines, find_account, scrape_accounts
 
 router = Router()
 
-STALE_LIST = f"Список устарел — откройте заново: {menu_path('list')}."
+STALE_LIST = f"Список устарел — откройте заново: {menu_path(ACCOUNT_LIST)}."
 
 
-async def list_personal(message: Message, state: FSMContext, pool: WorkerPool, personal, order=(), project: int = 0):
-    """The personal accounts, as stored: one is never connected just to be listed; under them a
-    button for each account's card, as listed: the workers in `order` (their list's), then the personal ones;
-    ⬅️ to `project`'s 🤖 Аккаунты."""
-    rank = {path: i for i, path in enumerate(order)}
-    listed = sorted(scrape_accounts(pool.storage, personal),
-                    key=lambda account: (account.personal, rank.get(account.path, len(rank))))
-    if not listed:
-        return
+CARDS_HINT = "🪪 Карточка аккаунта — код входа, удаление личного:"
+
+
+def back_to_list(project: int) -> list[list[tuple[str, str]]]:
+    """offer_cards' `tail` of a list with no buttons of its own: ⬅️ Назад to `project`'s 📋 Список, in its place — a
+    menu opened in place goes back as a screen does; a report's ⬅️ names where it goes (keyboards.menu.back_kb)."""
+    return [[("⬅️ Назад", NavCB(screen=ACCOUNT_LIST, project=project).pack())]]
+
+
+async def offer_cards(message: Message, state: FSMContext, listed: list, text: str, tail: list, project: int,
+                      edit: bool = False):
+    """`text` and under it a button for each of the `listed` accounts (scraper_creds.ScrapeAccount), a page of
+    them, its card; under them `tail`, rows of (title, callback data): the list's own buttons. `edit`: in the
+    message's place. A card opens in this message's place, its ⬅️ brings the list back (acc_text)."""
     # the buttons carry an index into acc_paths and this list's token: an older list's (or card's)
     # must not act on the account at its index now
     token = secrets.token_hex(4)
     labels = [f"{'👤' if account.personal else '🤖'} {account.label}" for account in listed]
-    text = "🗂 Карточка аккаунта — код входа, удаление личного:"
-    if own := [account for account in listed if account.personal]:
-        lines = "\n".join(f"{i}. {html.escape(account.label)}" for i, account in enumerate(own, 1))
-        text = f"👤 <b>Личные</b> (только для скрапа): <b>{len(own)}</b>\n\n{lines}\n\n{text}"
-    # a card opens in this message's place, its ⬅️ brings the list back (acc_text)
     await state.update_data(acc_paths=[account.path for account in listed], acc_labels=labels,
-                            acc_token=token, acc_text=text, acc_project=project)
-    await message.answer(text, parse_mode="HTML", reply_markup=_cards_kb(labels, token, 0, project))
+                            acc_token=token, acc_text=text, acc_tail=tail, acc_project=project)
+    await screens.send(message, edit)(text, parse_mode="HTML", reply_markup=_cards_kb(labels, token, 0, tail))
 
 
-def _cards_kb(labels: list[str], token: str, page: int, project: int):
-    """The list's buttons, a page of them (keyboards.paged_kb), each with the list's token; ⬅️ to `project`'s
-    🤖 Аккаунты in its place: the list is 📋 Список' last message."""
+def personal_text(own: list) -> str:
+    """The personal accounts, as stored (one is never connected just to be listed), numbered (HTML)."""
+    lines = "\n".join(f"{i}. {html.escape(account.label)}" for i, account in enumerate(own, 1))
+    return f"👤 <b>Личные</b> (только для скрапа, общие для всех проектов): <b>{len(own)}</b>\n\n{lines}"
+
+
+def _cards_kb(labels: list[str], token: str, page: int, tail: list):
+    """The list's buttons, a page of them (keyboards.paged_kb), each with the list's token; then `tail`."""
     markup = paged_kb("acc", [(label, f"{i}.{token}") for i, label in enumerate(labels)], page, f".{token}")
-    markup.inline_keyboard.append(back_kb(ACCOUNTS, project, fresh=False).inline_keyboard[0])
+    markup.inline_keyboard.extend([InlineKeyboardButton(text=text, callback_data=data) for text, data in row]
+                                  for row in tail)
     return markup
 
 
@@ -75,7 +82,7 @@ def _card(pool: WorkerPool, personal, account, key: str):
     actions = [("🔑 Код входа", f"codes.{key}")]
     if account.personal:
         actions.append(("🗑 Удалить", f"rm.{key}"))
-    actions.append(("⬅️ К списку", f"list.{key}"))
+    actions.append(("⬅️ Назад", f"list.{key}"))  # to the list it was opened from, in its place
     return "\n".join(lines), choice_kb("acc_act", actions, widths=(len(actions) - 1, 1))
 
 
@@ -118,7 +125,7 @@ async def account_card(callback: CallbackQuery, callback_data: ChoiceCB, state: 
             return
         await callback.answer()
         await callback.message.edit_reply_markup(reply_markup=_cards_kb(data["acc_labels"], token, page,
-                                                                        data.get("acc_project", 0)))
+                                                                        data["acc_tail"]))
         return
     account = await _account_at(state, pool, personal, callback_data.value)
     if account is None:
@@ -146,7 +153,7 @@ async def account_action(callback: CallbackQuery, callback_data: ChoiceCB, state
         data = await state.get_data()
         await callback.message.edit_text(data["acc_text"], parse_mode="HTML",
                                          reply_markup=_cards_kb(data["acc_labels"], data["acc_token"], 0,
-                                                                data.get("acc_project", 0)))
+                                                                data["acc_tail"]))
         return
     text, markup = _card(pool, personal, account, key) if action == "card" else await _codes(pool, account, key)
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)  # 🔄 with nothing new: SafeEdit
@@ -155,15 +162,15 @@ async def account_action(callback: CallbackQuery, callback_data: ChoiceCB, state
 async def _confirm_removal(message: Message, state: FSMContext, account, key: str):
     # the button carries the card's key; prm_confirm, this account: it removes this account only
     await state.update_data(prm_confirm=account.path)
-    await message.edit_text(  # in the card's place: ↩️ brings it back
+    await message.edit_text(  # in the card's place: ✖️ brings it back
         f"🗑 Удалить личный аккаунт {html.escape(account.label)}?\n\n"
         f"Бот завершит авторизацию из этого файла и удалит его: <code>{html.escape(account.path)}</code>. "
         "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
         "тот Desktop тоже выйдет из аккаунта.",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            *choice_kb("prm_ok", [("🗑 Да, удалить", key)]).inline_keyboard,
-            *choice_kb("acc_act", [("↩️ Отмена", f"card.{key}")]).inline_keyboard]),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[  # on one row, as every confirmation
+            *choice_kb("prm_ok", [("🗑 Да, удалить", key)]).inline_keyboard[0],
+            *choice_kb("acc_act", [("✖️ Отмена", f"card.{key}")]).inline_keyboard[0]]]),
     )
 
 
@@ -200,5 +207,5 @@ async def personal_remove(callback: CallbackQuery, callback_data: ChoiceCB, stat
         f"✅ Личный аккаунт {label} удалён: сессия бота завершена, файл стёрт." if logged_out else
         f"⚠️ Файл личного аккаунта {label} удалён, но завершить сессию бота не удалось — "
         "завершите её вручную: Telegram → Настройки → Устройства.", parse_mode="HTML",
-        reply_markup=back_kb(ACCOUNTS, data.get("acc_project", 0), fresh=False),
+        reply_markup=back_kb(ACCOUNT_LIST, data.get("acc_project", 0), fresh=False),
     )

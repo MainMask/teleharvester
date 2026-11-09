@@ -38,7 +38,7 @@ def _write_jsession(directory, phone, username):
 def _storage(tmp_path, accounts):
     for phone, username in accounts:
         _write_jsession(tmp_path, phone, username)
-    return SessionsStorage(str(tmp_path), 1, "x", initialize=False, home=conftest.home())
+    return SessionsStorage(str(tmp_path), 1, "x", home=conftest.home())
 
 
 def _usernames(storage):
@@ -62,7 +62,7 @@ def test_remember_username_reorders_and_persists(tmp_path):
     assert _usernames(storage) == ["Curator1", "Curator2"]
     saved = json.loads((tmp_path / "2.jsession").read_text())
     assert saved["account"]["username"] == "Curator1"
-    assert SessionsStorage(str(tmp_path), 1, "x", initialize=False, home=conftest.home()).usernames[
+    assert SessionsStorage(str(tmp_path), 1, "x", home=conftest.home()).usernames[
         str(tmp_path / "2.jsession")] == "Curator1"
 
 

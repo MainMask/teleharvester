@@ -7,16 +7,12 @@ from telethon.errors import (
     InputUserDeactivatedError, PeerIdInvalidError, UsernameInvalidError, UsernameNotOccupiedError,
 )
 from telethon.tl.functions.users import GetRequirementsToContactRequest
-from rich.prompt import Prompt, Confirm
-from modules.console import console
-from rich.table import Table
 
 from functions.base import TelethonFunction
-from functions.base.base import SKIPPED, AccountLimited, console_report, pick_seconds
+from functions.base.base import SKIPPED, AccountLimited, pick_seconds
 from modules import contacts_ledger, json_file, parquet_db, rich_message
 from modules.projects import as_username
 from modules.account_limits import DailyCounter
-from modules.rich_message import RichContent
 
 
 STATS_NAME = "pm_mailing.json"  # who was written to, in the project's folder: a project keeps its own
@@ -37,6 +33,7 @@ REQUIREMENTS_BATCH = 100
 
 GONE = "аккаунт удалён или недоступен, больше не пишу"
 GONE_SKIPPED = "Пропущено недоступных (удалены или нет такого username)"
+SKIP_ASK = "Пропустить тех, кому уже писали раньше?"  # bot/routers/mailing.py
 
 
 def gone(err) -> bool:
@@ -132,7 +129,7 @@ class PmMailingFunc(TelethonFunction):
             [types.InputUser(row["user_id"], row["access_hash"]) for row in batch]
         )
         try:
-            result = await self.safe_call(lambda: session(request))
+            result = await self.call(session, request)
             if len(result) != len(batch):
                 raise ValueError(f"{len(result)} ответов на {len(batch)} получателей")
         except AccountLimited:
@@ -386,7 +383,7 @@ class PmMailingFunc(TelethonFunction):
             *own, (shared_sessions, shared) = queues
             self._shared_ids = {id(row) for row in shared if isinstance(row, dict)}
             for (worker,), queue in own:
-                # on hold (scraping, or left out of a CLI run): its people wait, as for a daily cap
+                # on hold (scraping): its people wait, as for a daily cap
                 if worker in self.on_hold:
                     waiting += len(queue)
                     await report(f"{len(queue)} получателей ждут своего воркера: он не участвует в этом запуске.")
@@ -430,84 +427,3 @@ class PmMailingFunc(TelethonFunction):
             )
         else:
             await report(f"Итого обработано получателей: {processed}")
-
-    def print_stats(self):
-        table = Table()
-
-        table.add_column("Получатель", justify="left", style="white")
-        table.add_column("Кол-во", justify="center", style="white")
-        table.add_column("Последняя отправка", style="white")
-
-        for recipient, entry in self.stats.items():
-            table.add_row(
-                self.safe(recipient), str(entry["count"]),
-                "недоступен с " + entry["gone"] if "gone" in entry else entry.get("last_date", "—")
-            )
-
-        console.print(table)
-
-    async def execute(self, bases):  # bases: the project's own (functions/projects.py)
-        path = self.ask_file(
-            "[bold red]файл с получателями[/]",
-            bases,
-            default=os.path.join("assets", "targets.txt"),
-        )
-
-        if not os.path.exists(path):
-            console.print("[bold red]Файл не найден!")
-            return
-
-        try:
-            recipients = self.load_recipients(path)
-        except Exception as err:
-            console.print(f"[bold red]{err}")
-            return
-
-        if not recipients:
-            console.print("[bold red]Список получателей пуст.")
-            return
-
-        self.load_stats()
-        before = len(recipients)
-        recipients = self.drop_gone(recipients)
-        if before > len(recipients):
-            console.print(f"[bold white]{GONE_SKIPPED}: {before - len(recipients)}[/]")
-            if not recipients:
-                console.print("[bold red]Некому писать: все уже получали рассылку или недоступны.")
-                return
-
-        if Confirm.ask("[bold red]пропускать тех, кому уже писали?", default=True):
-            before = len(recipients)
-            recipients = self.filter_unsent(recipients)
-            console.print(f"[bold white]пропущено уже получивших: {before - len(recipients)}[/]")
-
-            if not recipients:
-                console.print("[bold red]Некому писать: все уже получали рассылку или недоступны.")
-                return
-
-        while True:
-            limit = Prompt.ask(
-                "[bold red]сколько получателей (пусто — все)[/]",
-                default=""
-            )
-
-            if not limit:
-                break
-
-            if limit.isdigit() and int(limit) > 0:
-                recipients = recipients[:int(limit)]
-                break
-
-        console.print("[bold white]первые получатели:[/]")
-        for recipient in recipients[:5]:
-            console.print("  " + self.safe(self.recipient_label(recipient)))
-
-        if not Confirm.ask(f"[bold red]отправить {len(recipients)} получателям?"):
-            return
-
-        text = console.input("[bold red]текст> [/]")
-
-        # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
-        await self.run(recipients, RichContent(text=text), console_report)
-
-        self.print_stats()

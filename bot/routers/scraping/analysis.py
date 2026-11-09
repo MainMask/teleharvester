@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB
 from bot.keyboards.common import cancel_kb, choice_kb
-from bot.keyboards.menu import back_kb
+from bot.keyboards.menu import nav_button
 from bot.routers._common import pick_from, require_text, stale_tap
 from bot.routers.scraping import common
 from bot.services import scraping
@@ -24,26 +24,21 @@ from modules.registry import COLLECT, title
 router = Router()
 
 
-def _tools_kb(tools, more: bool, token: str, project: int):
-    """`token`: the project's menu (analysis_project) — its buttons act on that project only; ⬅️: the
-    main tools from ➕ Ещё, `project`'s 📥 Сбор from them."""
-    suffix = f".{token}"
-    options = [(analysis_tools.TOOLS[tool][0], tool + suffix) for tool in tools]
-    if more:
-        options.append(("➕ Ещё", "more" + suffix))
-    else:
-        options.append(("⬅️ Назад", "main" + suffix))
-    markup = choice_kb("an_tool", options)
-    if more:  # the analysis is 📥 Сбор's: back to it, in place
-        markup.inline_keyboard.append(back_kb(COLLECT, project, fresh=False).inline_keyboard[0])
+def _tools_kb(token: str, project: int):
+    """Every tool, one a row (`token`: the project's menu, analysis_project — its buttons act on that project
+    only), then ⬅️ Назад to `project`'s 📥 Сбор, in place."""
+    markup = choice_kb("an_tool", [(label, f"{tool}.{token}") for tool, (label, *_) in analysis_tools.TOOLS.items()])
+    markup.inline_keyboard.append([nav_button("⬅️ Назад", COLLECT, project)])
     return markup
 
 
-def _analysis_text(project: str, more: bool = False) -> str:
-    """The analysis menu's message (HTML): its path from the project's card, as its screens have it."""
-    text = (f"{title_line(COLLECT, project)} › <b>{html.escape(title('analysis'))}</b>\n\n"
-            "Утилиты для файлов скрапа. Аккаунты не нужны: бот читает файл и присылает результат.")
-    return f"{text}\n\n<b>➕ Ещё инструменты</b>" if more else text
+def _analysis_text(project: str) -> str:
+    """The analysis menu's message (HTML): its path from the project's card, then each tool with what it does, as
+    a screen's."""
+    lines = [f"<b>{html.escape(label)}</b> — {html.escape(hint)}" for label, hint, *_ in analysis_tools.TOOLS.values()]
+    return (f"{title_line(COLLECT, project)} › <b>{html.escape(title('analysis'))}</b>\n\n"
+            "Утилиты для файлов скрапа. Аккаунты не нужны: бот читает файл и присылает результат.\n\n"
+            + "\n".join(lines))
 
 
 async def analysis_project(message: Message, state: FSMContext, project):
@@ -53,8 +48,7 @@ async def analysis_project(message: Message, state: FSMContext, project):
     token = secrets.token_hex(4)
     await state.update_data(only_project=project.name, analysis_project=project.id, analysis_token=token)
     await message.edit_text(_analysis_text(project.name), parse_mode="HTML",  # in 📥 Сбор's place
-                            reply_markup=_tools_kb(analysis_tools.MAIN_TOOLS, more=True, token=token,
-                                                   project=project.id))
+                            reply_markup=_tools_kb(token, project.id))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "an_tool"))
@@ -62,26 +56,13 @@ async def analysis_tool(callback: CallbackQuery, callback_data: ChoiceCB, state:
     tool, _, token = callback_data.value.partition(".")
     data = await state.get_data()
     # a project's menu shown before the last one, or no tool of it
-    if token != data.get("analysis_token") or tool not in (*analysis_tools.TOOLS, "more", "main"):
+    if token != data.get("analysis_token") or tool not in analysis_tools.TOOLS:
         await stale_tap(callback)
         return
     await callback.answer()
-    if tool in ("more", "main"):  # ➕ Ещё and its ⬅️, in place
-        more = tool == "more"
-        await callback.message.edit_text(_analysis_text(data["only_project"], more), parse_mode="HTML",
-                                         reply_markup=_tools_kb(
-                                             analysis_tools.MORE_TOOLS if more else analysis_tools.MAIN_TOOLS,
-                                             more=not more, token=token, project=data["analysis_project"]))
-        return
 
     label, hint, kind, _ = analysis_tools.TOOLS[tool]
-    project = data["only_project"]
-    if kind == "any":
-        files = scraped_files.project_files(project)
-    elif kind == "combine":  # the scrapes' files: the previous combine's is not merged into the next
-        files = scraped_files.scrape_posts(project)
-    else:
-        files = scraped_files.project_files(project, kinds=("posts",))
+    files = analysis_tools.files(tool, data["only_project"])
     options = [(f"📄 {name}", str(i)) for i, (_, name) in enumerate(files)]
     if kind == "combine":
         options = [(f"🗂 Все файлы постов ({len(files)})", "all")] if len(files) > 1 else []
@@ -129,8 +110,7 @@ async def _analysis_file_chosen(message: Message, state: FSMContext, analyses: J
     if tool == "filter":
         await state.update_data(path=path)
         await state.set_state(Analysis.keywords)
-        await message.answer(f"{analysis_tools.TOOLS[tool][0]} — пришлите слова через запятую "
-                             "(например: крипта, биткоин):",
+        await message.answer(f"{analysis_tools.TOOLS[tool][0]} — {analysis_tools.KEYWORDS_ASK}:",
                              reply_markup=cancel_kb(Analysis.keywords))
         return
     await _clear_keeping_menu(state)
@@ -143,7 +123,7 @@ async def analysis_keywords(message: Message, state: FSMContext, analyses: JobMa
     raw = await require_text(message)
     if raw is None:
         return
-    keywords = [k.strip() for k in raw.split(",") if k.strip()]
+    keywords = analysis_tools.keywords(raw)
     if not keywords:
         await message.answer("Нужно хотя бы одно слово. Пришлите ещё раз:")
         return

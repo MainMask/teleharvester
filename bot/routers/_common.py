@@ -1,3 +1,10 @@
+import asyncio
+import datetime
+
+from aiohttp import ClientError
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import InaccessibleMessage
+
 from bot.keyboards.common import PAGE_SIZE, cancel_kb
 from bot.keyboards.menu import back_kb, main_menu
 from bot.services import login as logins
@@ -5,7 +12,8 @@ from bot.services.capture import capture
 from bot.services.jobs import busy
 from modules.registry import BOT_FUNCTIONS_BY_KEY, NO_WORKERS
 from functions.base.base import POST_LINK_HINT, BaseFunction
-from scraper.scrape import CHAT_FORMAT, bad_channels, bad_channels_text, parse_channels
+from scraper.scrape import CHAT_FORMAT, bad_channels, bad_channels_text, parse_channels  # noqa: F401 — CHAT_FORMAT: the
+# routers' prompts take it from here
 
 # a stale tap: a button of an old message (stale_tap); a stale step: text sent to a step whose flow is gone
 STALE_BUTTON = "Кнопка устарела — откройте раздел заново."
@@ -112,6 +120,20 @@ async def send_chunked(message, header: str, lines: list[str], sep: str = "\n\n"
         await message.answer(chunk, parse_mode="HTML", reply_markup=reply_markup if index == len(chunks) else None)
 
 
+def fit_lines(lines: list[str], limit: int = MAX_MESSAGE, more: int = 0) -> str:
+    """`lines` (HTML) joined, whole ones within `limit` characters — a cut one could split a tag or an &entity; —,
+    then "…и ещё N" for the ones left out (`more`: left out before)."""
+    kept, size = [], len("\n…и ещё 99999")
+    for line in lines:
+        size += len(line) + 1
+        if size > limit:
+            break
+        kept.append(line)
+    if left := len(lines) - len(kept) + more:
+        kept.append(f"…и ещё {left}")
+    return "\n".join(kept)
+
+
 async def menu_answer(message, text: str):
     """Send a closing message and return the operator to the main menu."""
     await message.answer(text, reply_markup=main_menu())
@@ -144,13 +166,39 @@ async def leave_form(message, state):
     await state.clear()
 
 
+# the confirmation of an irreversible step: an old message's «Да» must not run it days later
+CONFIRM_TTL = datetime.timedelta(minutes=10)
+
+
+def confirm_expired(message, ttl: datetime.timedelta = CONFIRM_TTL) -> bool:
+    """A confirmation older than `ttl` (inaccessible: too old for the bot to read, its date 0): by its last edit,
+    so one asked in a screen's place (an edit of it) is as old as the question, not as the screen."""
+    return isinstance(message, InaccessibleMessage) or \
+        datetime.datetime.now(datetime.timezone.utc) - (message.edit_date or message.date) > ttl
+
+
+DOWNLOAD_TIMEOUT = 300  # seconds: the Bot API fetches a big file from Telegram first, often past its usual 60
+
+
+async def download(message, document) -> bytes | None:
+    """A file the user sent; None after asking for it again if Telegram didn't give it (a timeout, a file too
+    big for the Bot API): the step stays."""
+    try:
+        file = await message.bot.get_file(document.file_id, request_timeout=DOWNLOAD_TIMEOUT)
+        return (await message.bot.download_file(file.file_path, timeout=DOWNLOAD_TIMEOUT)).read()
+    except (TelegramAPIError, ClientError, asyncio.TimeoutError, OSError) as err:
+        await message.answer(f"⚠️ Не удалось получить файл {document.file_name or ''} от Telegram ({err}). "
+                             "Пришлите его ещё раз:")
+        return None
+
+
 async def read_text_document(message, max_size: int) -> str | None:
-    """Text of a .txt the user sent; report and return None if it's too big."""
+    """Text of a .txt the user sent; report and return None if it's too big or Telegram didn't give it."""
     if (message.document.file_size or 0) > max_size:
         await message.answer("Файл слишком большой. Пришлите .txt поменьше:")
         return None
-    buffer = await message.bot.download(message.document)
-    return buffer.read().decode("utf-8", "replace")
+    data = await download(message, message.document)
+    return None if data is None else data.decode("utf-8", "replace")
 
 
 async def left_flow(callback, state, step) -> bool:

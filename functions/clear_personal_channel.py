@@ -3,7 +3,6 @@ from telethon.tl.functions.account import UpdatePersonalChannelRequest
 from telethon.tl.types import InputChannelEmpty
 
 from functions.base import TelethonFunction
-from functions.base.base import console_report
 
 
 class ClearPersonalChannelFunc(TelethonFunction):
@@ -16,8 +15,3 @@ class ClearPersonalChannelFunc(TelethonFunction):
 
     async def run(self, report):
         await self.run_sequential(self.clear, report)
-
-    async def execute(self):
-        self.ask_workers()
-
-        await self.run(console_report)

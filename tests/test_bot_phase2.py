@@ -26,7 +26,6 @@ def ns(**kw):
 
 
 class _Storage:
-    initialize = False
     sessions = []
 
     @contextlib.asynccontextmanager
@@ -160,7 +159,7 @@ class TestLiveDelay:
             slept.append(seconds)
 
         monkeypatch.setattr(base.base.asyncio, "sleep", sleep)
-        settings = ns(delay=[7])
+        settings = ns(delay=[7], messages_count=0)
         fn = Broadcast(_Storage(), settings)
         fn.configure(0)
         asyncio.run(fn.delay())
@@ -424,11 +423,11 @@ class TestJobManager:
 
 class TestSessionRelease:
     def test_ainitialize_session_clears_entity_cache(self, tmp_path):
-        # The shared release point for rotation/gather functions: on disconnect in bot
-        # mode (initialize=False) the worker's growing _entities set is dropped too.
+        # The shared release point for rotation/gather functions: on disconnect the worker's growing
+        # _entities set is dropped too.
         from modules.storages.sessions_storage import SessionsStorage
 
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False)
+        storage = SessionsStorage(str(tmp_path), 1, "hash")
 
         class S:
             def __init__(self):
@@ -1448,7 +1447,7 @@ class TestChangePhotoFromChat:
     def test_photo_path_is_used_for_every_account(self, tmp_path, monkeypatch):
         from functions.change_profile_photo import ChangeProfilePhotoFunc
 
-        monkeypatch.chdir(tmp_path)  # no assets/photos here: the folder must not be read
+        monkeypatch.chdir(tmp_path)  # no photos folder here: none must be read
         storage = _Storage()
         storage.sessions = [_Session("A"), _Session("B")]
         fn = ChangeProfilePhotoFunc(storage, ns(delay=[1], profile_pause=[0]))
@@ -1480,6 +1479,7 @@ class TestChangePhotoFromChat:
 
         class _Manager:
             active = False
+            project_id = 0
             path_during_job = None
 
             async def run(self, bot, chat_id, pool, instance, bot_function, factory, *a, **kw):
@@ -1518,6 +1518,19 @@ class TestChangePhotoFromChat:
         assert state.cleared is True
         assert manager.path_during_job is not None
         assert not os.path.exists(manager.path_during_job)  # temp file cleaned after the job
+
+    def test_a_download_cut_short_leaves_no_file(self, tmp_path, monkeypatch):
+        msg = self._msg(photo=[ns()])
+
+        async def download(source, destination, timeout=None):
+            with open(destination, "wb") as f:
+                f.write(b"im")  # a part, then the Bot API gives up
+            raise TimeoutError("timed out")
+
+        msg.bot.download = download
+        state, manager = self._upload(tmp_path, monkeypatch, msg)
+        assert manager.path_during_job is None and os.listdir(tmp_path / "photo") == []
+        assert any("Не удалось скачать картинку" in r for r in msg.replies)
 
     def test_image_document_is_accepted(self, tmp_path, monkeypatch):
         _, manager = self._upload(tmp_path, monkeypatch, self._msg(document=ns(mime_type="image/png")))

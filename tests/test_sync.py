@@ -2,7 +2,7 @@
 bot; the accounts list and proxies in the CLI."""
 
 import asyncio
-import dataclasses
+import datetime
 import conftest
 import functools
 import io
@@ -58,11 +58,15 @@ class _Msg:
     def __init__(self, text=None, document=None, content=b""):
         self.text, self.document, self.answers, self.sent = text, document, [], []
         self.chat = ns(id=1)
+        self.date, self.edit_date = datetime.datetime.now(datetime.timezone.utc), None  # as Telegram's
 
-        async def download(document):
+        async def get_file(file_id, request_timeout=None):  # the file Telegram gives (_common.download)
+            return ns(file_path="documents/file")
+
+        async def download_file(file_path, timeout=30):
             return io.BytesIO(content)
 
-        self.bot = ns(download=download)
+        self.bot = ns(get_file=get_file, download_file=download_file)
 
     async def answer(self, text, **kwargs):
         self.answers.append((text, kwargs.get("reply_markup")))
@@ -263,178 +267,32 @@ def test_bot_profile_pause_rejects_bad_input_and_saves_a_range(tmp_path, monkeyp
     assert settings.profile_pause == [90, 240]
     assert toml.load(tmp_path / "config.toml")["limits"]["profile_pause"] == [90, 240]
 
-
-def test_cli_settings_ask_again_and_save_as_the_bot_does(tmp_path, monkeypatch):
-    from functions import settings as cli
-
-    settings = _settings(tmp_path, monkeypatch)
-    printed = []
-    from functions.base import base
-
-    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    # the asking again is BaseFunction.ask_seconds', shared by every CLI delay prompt
-    monkeypatch.setattr(base._report_console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    answers = iter(["1", "abc", "1-2-3", "-5", "5 - 10", "2", "120"])
-    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: next(answers))
-
-    cli.SettingsFunc(types.SimpleNamespace(sessions=[]), settings).execute()  # ⏱ Задержка: three bad inputs asked again
-    assert sum("Нужно число или диапазон" in p for p in printed) == 3
-    cli.SettingsFunc(types.SimpleNamespace(sessions=[]), settings).execute()  # ⏳ Пауза профиля
-
-    config = toml.load(tmp_path / "config.toml")
-    assert settings.delay == config["broadcast"]["delay"] == [5, 10]  # the live object: other functions' default
-    assert settings.profile_pause == config["limits"]["profile_pause"] == [120]
-    assert os.path.exists(tmp_path / "config.toml.bak")
-
-
-def test_cli_settings_leave_the_trigger_and_count_to_the_chat_campaign(tmp_path, monkeypatch):
-    from functions import settings as cli
-
-    settings = _settings(tmp_path, monkeypatch)
-    printed = []
-    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "")
-    cli.SettingsFunc(types.SimpleNamespace(sessions=[]), settings).execute()
-    assert "Триггер" not in printed[0] and "Сообщений на воркера" not in printed[0]  # as the bot's ⚙️
-
-
-def test_cli_chat_campaign_asks_its_trigger_and_count_as_the_bot_does(tmp_path, monkeypatch):
-    from functions import broadcast
-
-    settings = _settings(tmp_path, monkeypatch)
-    answers = iter(["", "", "abc", "5"])  # Enter keeps «go»; an empty count is asked again
-    monkeypatch.setattr(broadcast.Prompt, "ask", lambda *a, **k: next(answers) or k.get("default", ""))
-    monkeypatch.setattr(broadcast.console, "print", lambda *a, **k: None)
-    options = broadcast.ask_run_options(settings, trigger=True)
-    assert toml.load(tmp_path / "config.toml")["broadcast"]["messages_count"] == 0  # nothing written while asking
-    assert broadcast.save_run_options(settings, options)
-    config = toml.load(tmp_path / "config.toml")["broadcast"]
-    assert settings.trigger == config["trigger"] == "go" and settings.messages_count == config["messages_count"] == 5
-
-    answers = iter(["стоп", ""])  # a new trigger; Enter keeps the count of 5
-    assert broadcast.save_run_options(settings, broadcast.ask_run_options(settings, trigger=True))
-    assert (settings.trigger, settings.messages_count) == ("стоп", 5)
-    assert toml.load(tmp_path / "config.toml")["broadcast"]["trigger"] == "стоп"
-
-
-def test_cli_poll_vote_asks_again_for_an_option_beyond_the_poll_s(monkeypatch):
-    from functions import poll_vote
-
-    func = poll_vote.PollVoteFunc(ns(sessions=[]), ns(delay=[0]))
-    monkeypatch.setattr(func, "ask_message_link", lambda prompt: "https://t.me/chan/5")
-
-    async def answers(link):
-        return ["Да", "Нет"]
-
-    async def run(link, option, report):
-        voted.append(option)
-
-    monkeypatch.setattr(func, "_read_answers", answers)
-    monkeypatch.setattr(func, "run", run)
-    printed, voted, typed = [], [], iter(["3", "2"])
-    monkeypatch.setattr(poll_vote, "console", ns(print=lambda text="", *a, **k: printed.append(str(text)),
-                                                 input=lambda *a: next(typed), status=lambda *a: io.StringIO()))
-    asyncio.run(func.execute())
-    assert "[1] Да\n[2] Нет" in printed and "Такого варианта нет: в опросе их 2." in printed
-    assert voted == [1]
-
-
-
-def test_cli_reaction_is_one_of_the_list_as_the_bot_s_buttons(monkeypatch):
-    from functions import reactions
-
-    func = reactions.ReactionsFunc(ns(sessions=[]), ns(delay=[0]))
-    monkeypatch.setattr(func, "ask_message_link", lambda prompt: "https://t.me/chan/5")
-
-    async def run(link, reaction, report):
-        chosen.append(reaction)
-
-    monkeypatch.setattr(func, "run", run)
-    chosen, printed = [], []
-    for typed, expected in ((["🦄", "99", "2"], "❤️"), (["❤"], "❤️"), (["🔥"], "🔥"), ([""], "")):
-        answers = iter(typed)
-        monkeypatch.setattr(reactions, "console", ns(print=lambda text="", *a, **k: printed.append(str(text)),
-                                                     input=lambda *a: next(answers)))
-        asyncio.run(func.execute())
-        assert chosen.pop() == expected
-    assert printed.count("Такой реакции нет в списке: номер из него или пусто.") == 2
-
-
-@pytest.mark.parametrize("typed, sent", [("-", ""), (" - ", ""), ("", ""), ("спам", "спам")])
-def test_cli_user_report_dash_means_no_comment_as_in_the_bot(monkeypatch, typed, sent):
-    from functions import report_user
-
-    func = report_user.ReportUserFunc(ns(sessions=[]), ns(delay=[0]))
-
-    async def run(link, reason_type, comment, report):
-        comments.append(comment)
-
-    monkeypatch.setattr(func, "run", run)
-    comments, answers = [], iter(["1", typed])
-    monkeypatch.setattr(report_user.Prompt, "ask", lambda *a, **k: "@spammer")
-    monkeypatch.setattr(report_user, "console", ns(print=lambda *a, **k: None, input=lambda *a: next(answers)))
-    asyncio.run(func.execute())
-    assert comments == [sent]
-
-
-def test_cli_post_report_dash_means_no_comment_as_in_the_bot(monkeypatch):
-    from functions.report import ReportFunc
-
-    class _S:
-        async def get_me(self):
-            return ns(first_name="A")
-
-    storage = ns(sessions=[_S()], ainitialize_session=lambda session: _Nothing())
-    fn = ReportFunc(storage, ns(delay=[0]))
-    answers = iter(["https://t.me/x", "1"])
-    monkeypatch.setattr("functions.report.Prompt.ask", lambda *a, **k: next(answers))
-    monkeypatch.setattr("functions.report.console.input", lambda *_: "-")
-    comments = []
-
-    async def resolve_and_report(session, link, posts, comment):
-        comments.append(comment)
-        return [0]
-
-    async def replay_rest(*args):
-        pass
-
-    fn.resolve_and_report, fn.replay_rest = resolve_and_report, replay_rest
-    asyncio.run(fn.execute())
-    assert comments == [""]
-
-
-class _Nothing:
-    async def __aenter__(self):
-        return None
-
-    async def __aexit__(self, *exc):
-        return False
-
 # --- 2. names / usernames from a list ------------------------------------------------------
 
 def test_names_from_a_sent_txt(monkeypatch):
     from bot.routers import profile
 
     manager, runs = _launches()
-    msg = _Msg(document=ns(file_size=20), content="Иван Петров\n\nАнна\n".encode())
+    msg = _Msg(document=ns(file_id="f", file_size=20), content="Иван Петров\n\nАнна\n".encode())
     asyncio.run(profile.text_list(msg, _State({"pick_key": "name"}), ns(), {"ChangeNameFunc": object}, manager))
     assert runs == [{"names": ["Иван Петров", "Анна"]}]
 
 
-def test_names_button_from_assets(tmp_path, monkeypatch):
+def test_names_button_from_the_project_s_region_list(tmp_path, monkeypatch):
     from bot.routers import profile
+    from modules import content
 
-    monkeypatch.setitem(profile.TEXT_FIELDS, "name",
-                        dataclasses.replace(profile.TEXT_FIELDS["name"], path=str(tmp_path / "names.txt")))
-    (tmp_path / "names.txt").write_text("A\nB\nC\n")
+    os.makedirs(content.path("ru", ""))
+    with open(content.path("ru", "names.txt"), "w", encoding="utf-8") as fileobj:
+        fileobj.write("A\nB\nC\n")
     state = _State()
     asyncio.run(profile.picker_start(_Callback(), FunctionCB(key="name"), state, _pool()))
     _pick("all", state, _pool())
     callback = _pick("go", state, _pool())
-    assert _buttons(callback.message.answers[0][1]) == [f"📄 Из {tmp_path / 'names.txt'} (3)", "✖️ Отмена"]
+    assert _buttons(callback.message.answers[0][1]) == [f"📄 Из {content.path('ru', 'names.txt')} (3)", "✖️ Отмена"]
 
     manager, runs = _launches()
-    asyncio.run(profile.text_from_file(_Callback(), _State({"pick_key": "name"}), ns(), {"ChangeNameFunc": object},
+    asyncio.run(profile.text_from_file(_Callback(), _State({"pick_key": "name"}), _pool(), {"ChangeNameFunc": object},
                                        manager))
     assert runs == [{"names": ["A", "B", "C"]}]
 
@@ -452,7 +310,7 @@ def test_usernames_from_a_sent_txt():
     from bot.routers import profile
 
     manager, runs = _launches()
-    msg = _Msg(document=ns(file_size=20), content=b"@one\ntwo\n")
+    msg = _Msg(document=ns(file_id="f", file_size=20), content=b"@one\ntwo\n")
     asyncio.run(profile.text_list(msg, _State({"pick_key": "username"}), ns(), {"ChangeUsernameFunc": object}, manager))
     assert runs == [{"usernames": ["one", "two"]}]
 
@@ -461,7 +319,7 @@ def test_empty_list_is_asked_again():
     from bot.routers import profile
 
     manager, runs = _launches()
-    msg = _Msg(document=ns(file_size=2), content=b"\n\n")
+    msg = _Msg(document=ns(file_id="f", file_size=2), content=b"\n\n")
     asyncio.run(profile.text_list(msg, _State({"pick_key": "username"}), ns(), {"ChangeUsernameFunc": object}, manager))
     assert runs == [] and "нет ни одной строки" in msg.answers[0][0]
 
@@ -478,7 +336,7 @@ def _pool(*paths):
     clients = [object() for _ in paths]
     by_client = dict(zip(map(id, clients), paths))
     return WorkerPool(ns(sessions=clients, jsessions_paths={}, home=conftest.home(),
-                         get_session_path=lambda c: by_client[id(c)]))
+                         directory=f"{conftest.home()}/sessions", get_session_path=lambda c: by_client[id(c)]))
 
 
 class _SBot:
@@ -505,6 +363,7 @@ class _SMsg(_Msg):
 
     async def edit_text(self, text, **kwargs):
         self.edits.append((text, kwargs.get("reply_markup")))
+        self.edit_date = datetime.datetime.now(datetime.timezone.utc)
 
 
 class _SCallback:
@@ -559,7 +418,7 @@ def test_scrape_asks_before_starting_then_runs_in_its_own_slot(monkeypatch):
     assert params.keyword == "" and params.with_reactors and params.with_comments and params.resume is False
     assert params.account == _ACC
     assert seen == [(True, False)]  # the scraper's slot is taken, the bot's task slot stays free
-    assert not scrapes.active and any("▶️ Скрап проекта — запущено на аккаунте" in t for t in _sent(go.bot))
+    assert not scrapes.active and any("▶️ Скрап — запущено на аккаунте" in t for t in _sent(go.bot))
 
 
 def test_scrape_options_toggle_in_place_and_reach_the_run(monkeypatch):
@@ -613,7 +472,7 @@ def test_an_interrupted_scrape_keeps_its_marker_and_says_how_to_continue(monkeyp
     bot = _SBot()
     params = router.scrape._scrape_params({**_SCRAPE, "date_max": "31.01.2024"})
     asyncio.run(router.scrape._run_scrape(bot, 1, JobManager(), _pool(), None, params))
-    assert any("нажмите «▶️ Скрап проекта» — бот предложит продолжить" in t for t in _sent(bot))
+    assert any("нажмите «▶️ Скрап» — бот предложит продолжить" in t for t in _sent(bot))
     assert router.scrape._read_marker(conftest.home()) == {"out_dir": "out", "name": "n", "account": _ACC, "chat_id": 1}
 
 
@@ -1023,111 +882,7 @@ def test_a_restart_that_returns_early_still_counts_the_stall(monkeypatch, tmp_pa
     assert calls == [] and router.scrape._read_marker(conftest.home())["stalls"] == 1
 
 
-# --- 4. CLI: accounts list, proxies ---------------------------------------------------------
-
-def test_cli_accounts_list_by_username(monkeypatch):
-    from functions import accounts
-
-    class _Storage:
-        jsessions_paths = {}
-        sessions = ["c2", "c10", "c1", "dead"]
-
-        def get_session_path(self, client):
-            return f"sessions/{client}.session"
-
-        async def fetch_me(self, client, timeout=20):
-            if client == "dead":
-                return None
-            n = client[1:]
-            return ns(first_name="W", last_name=None, username=f"Curator{n}", phone=n, id=int(n))
-
-    printed = []
-    monkeypatch.setattr(accounts.console, "print", lambda table, *a, **k: printed.append(table))
-    monkeypatch.setattr(accounts.console, "input", lambda *a: "")  # Enter: no card
-    asyncio.run(accounts.AccountsFunc(_Storage(), ns(api_id=1, api_hash="h")).execute())
-
-    usernames = list(printed[0].columns[2].cells)
-    assert usernames == ["@Curator1", "@Curator2", "@Curator10", "—"]
-
-
-def test_cli_set_proxies_reconnects_rebuilt_clients(tmp_path, monkeypatch):
-    from functions import set_proxies
-
-    (tmp_path / "proxies.txt").write_text("socks5://u:p@1.2.3.4:1080\n")
-    monkeypatch.setattr(set_proxies.Prompt, "ask", lambda prompt, **k:  # no list for the restricted
-                        k["default"] if "ограниченных" in prompt else str(tmp_path / "proxies.txt"))
-    monkeypatch.setattr(set_proxies.console, "print", lambda *a, **k: None)
-
-    class _Client:
-        disconnected = False
-
-        async def disconnect(self):
-            self.disconnected = True
-
-    old, new, checked = _Client(), _Client(), []
-
-    class _Storage:
-        initialize = True
-        sessions = []
-        jsessions_paths = {}
-        full_sessions = {"a.jsession": old}
-        home = str(tmp_path)  # its pool: the file given
-
-        def apply_proxies(self, proxies, spare=(), restricted=()):
-            assert proxies[0].ip == "1.2.3.4"
-            self.full_sessions = {"a.jsession": new}
-            return {"accounts": 1, "proxies_used": 1, "restricted": 0, "string_sessions_skipped": 0}
-
-        async def check_session(self, client, path):
-            checked.append((client, path))
-
-    asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
-    assert old.disconnected and checked == [(new, "a.jsession")]
-
-
-def test_cli_set_proxies_from_another_file_become_the_pool(tmp_path, monkeypatch):
-    from functions import set_proxies
-
-    pool = tmp_path / "home" / "proxies.txt"  # the project's
-    (tmp_path / "new.txt").write_text("socks5://u:p@1.2.3.4:1080\n\n  socks5://5.6.7.8:1080  \n")
-    monkeypatch.setattr(set_proxies.Prompt, "ask", lambda prompt, **k:  # no list for the restricted
-                        k["default"] if "ограниченных" in prompt else str(tmp_path / "new.txt"))
-    monkeypatch.setattr(set_proxies.console, "print", lambda *a, **k: None)
-
-    class _Storage:
-        sessions = []
-        jsessions_paths = {}
-        full_sessions = {}
-        home = str(tmp_path / "home")
-
-        def apply_proxies(self, proxies, spare=(), restricted=()):
-            return {"accounts": 2, "proxies_used": 2, "restricted": 0, "string_sessions_skipped": 0}
-
-    asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
-    # as the bot saves it: the project's phone logins and tdata imports take this list from now on
-    assert pool.read_text() == "socks5://u:p@1.2.3.4:1080\nsocks5://5.6.7.8:1080\n"
-
-
-def test_cli_bio_one_text_or_a_random_line_of_the_list(tmp_path, monkeypatch):
-    from functions import changebio
-
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "assets").mkdir()
-    (tmp_path / "assets" / "bios.txt").write_text("first\n\n second \n", encoding="utf-8")
-    fn = changebio.ChangeBioFunc(ns(sessions=[]), ns())
-    fn.ask_workers = lambda: None
-    runs = []
-
-    async def run(report, bio=None, bios=None):
-        runs.append((bio, bios))
-
-    fn.run = run
-    monkeypatch.setattr(changebio.console, "print", lambda *a, **k: None)
-    for answers in (["y"], ["n", "about me"]):
-        it = iter(answers)
-        monkeypatch.setattr(changebio.console, "input", lambda *a, **k: next(it))
-        asyncio.run(fn.execute())
-    assert runs == [(None, ["first", "second"]), ("about me", None)]
+# --- 4. the session scripts: tdata import ---------------------------------------------------------
 
 
 def test_cli_tdata_import_adds_the_new_workers_without_a_restart(tmp_path, monkeypatch):
@@ -1145,11 +900,10 @@ def test_cli_tdata_import_adds_the_new_workers_without_a_restart(tmp_path, monke
         return 1
 
     monkeypatch.setattr(cli, "import_all", import_all)
-    added, checked = [], []
+    added = []
 
     class _Storage:
         sessions = []
-        initialize = True
         full_sessions = {os.path.join("sessions", "old.jsession"): "old"}
         directory, home = "sessions", "home"  # the project's
 
@@ -1158,115 +912,24 @@ def test_cli_tdata_import_adds_the_new_workers_without_a_restart(tmp_path, monke
             self.full_sessions[path] = "client"
             return object()
 
-        async def check_session(self, client, path):
-            checked.append((client, path))
-
         def __len__(self):
             return len(self.full_sessions)
 
-    asyncio.run(cli.TdataImportFunc(_Storage(), ns()).execute())
+    async def no_sessions(root, storage):
+        return [], []
+
+    monkeypatch.setattr(cli.session_import, "import_all", no_sessions)
+    asyncio.run(cli.AddByPhoneFunc(_Storage(), ns()).import_files())
     new = os.path.join("sessions", "new.jsession")
-    assert added == [new] and checked == [("client", new)]
-    assert said == ["✅ Импортировано воркеров: 1. Воркеров в проекте: 2."]
+    assert added == [new]
+    assert said == ["✅ new.jsession", "Добавлено воркеров: 1. Воркеров в проекте: 2."]
 
     async def nothing(*args):
         return 0
 
     monkeypatch.setattr(cli, "import_all", nothing)
-    asyncio.run(cli.TdataImportFunc(_Storage(), ns()).execute())
+    asyncio.run(cli.AddByPhoneFunc(_Storage(), ns()).import_files())
     assert said[-1].startswith("Нечего импортировать")
-
-
-def test_cli_photo_one_path_or_random_folder(tmp_path, monkeypatch):
-    from functions import change_profile_photo as cpp
-
-    photo = tmp_path / "me.jpg"
-    photo.write_bytes(b"x")
-    fn = cpp.ChangeProfilePhotoFunc(ns(sessions=[]), ns())
-    runs = []
-
-    async def run(report, photo_path=None):
-        runs.append(photo_path)
-
-    fn.run = run
-    for answers in ([f"'{photo}'"], ["missing.jpg", ""]):  # quoted drag-and-drop; a typo re-asked
-        it = iter(answers)
-        monkeypatch.setattr(cpp.console, "input", lambda *a, **k: next(it))
-        monkeypatch.setattr(cpp.console, "print", lambda *a, **k: None)
-        asyncio.run(fn.execute())
-    assert runs == [str(photo), None]
-
-
-def test_every_function_is_discovered_once():
-    """Discovery takes any *Func class a module has: one imported from another module would be a
-    second instance (and a second menu entry) — modules import the module, not its class."""
-    from collections import Counter
-
-    from modules.storages.functions_storage import FunctionsStorage
-
-    storage = FunctionsStorage("functions", ns(sessions=[], loop=None, initialize=False), ns())
-    counts = Counter(type(instance).__name__ for instance, _ in storage.functions)
-    assert [name for name, count in counts.items() if count > 1] == []
-
-
-def test_cli_menu_is_the_bot_s_menu(monkeypatch):
-    from modules import cli_menu
-    from modules.registry import BOT_FUNCTIONS, CLI_EXTRAS, NOT_MENU_ITEMS
-
-    class Unknown:
-        """Some new thing"""
-
-    functions = [(type(f.classname, (), {})(), "doc") for f in BOT_FUNCTIONS + CLI_EXTRAS]
-    functions.append((Unknown(), Unknown.__doc__))
-    functions.append((type("ScrapeFunc", (), {})(), "Скрап"))  # run from a project's card only
-    functions.append((type("TdataImportFunc", (), {})(), "tdata"))  # from ➕ Добавить only
-    functions.append((type("LoginCodesFunc", (), {})(), "codes"))  # from an account's card only
-    entries = cli_menu.menu_entries(functions)
-    project = cli_menu.menu_entries(functions, project=True)
-
-    # the main menu: the projects — all the work is a project's —, the settings, what the registry doesn't know
-    assert [(e[0], e[2]) for e in entries] == [("📁 Проекты", "📁 Проекты"), ("⚙️ Настройки", "⚙️ Настройки"),
-                                               ("Прочее", "Some new thing")]
-    # a project's sections: its accounts (the screen's actions, then its function, as in the bot), their
-    # profile and service, then one target for all its workers
-    assert [e[2] for e in project if e[0] == "🤖 Аккаунты"] == [
-        "📋 Список", "🌐 Прокси", "➕ Добавить", "↪️ Перенести", "🛡 Проверка SpamBot"]
-    assert [e[0] for e in project][-1] == "💬 Активность" and "🤝 Инвайтинг" in [e[2] for e in project]
-    # nothing lost, nothing repeated; a project card's items and ➕ Добавить's tdata are other items'
-    assert len(entries) + len(project) == len(functions) - len(NOT_MENU_ITEMS)
-    assert not {"Скрап", "tdata", "👥 Участники чата", "📨 ЛС по базе", "📈 Анализ"} & {e[2] for e in project}
-
-    printed = []
-    monkeypatch.setattr(cli_menu.console, "print", lambda text="", *a, **k: printed.append(text))
-    cli_menu.print_menu(project)
-    # an all-risky section: ⚠️ once, on its title, as in the bot; a mixed one: on its risky items
-    assert "\n[bold magenta]💬 Активность[/] ⚠️" in printed and "\n[bold magenta]🔐 Безопасность[/]" in printed
-    assert any("[14] ⚠️ [bold white]🧹 Очистить диалоги[/] — удаляет" in p for p in printed)
-    heading = printed.index("  [italic]Действия в чатах[/]")  # the bot's subheadings
-    assert "[19] [bold white]🚪 Вступить в чат" in printed[heading + 1]
-    assert any("[15] [bold white]✉️ ЛС человеку" in p for p in printed)
-
-
-def test_run_instance_runs_a_new_instance_of_the_chosen_function():
-    # the menu's instance only names the item: each run is a new one, so none inherits another's state
-    from modules.storages.functions_storage import FunctionsStorage
-
-    ran = []
-
-    class _Func:
-        def __init__(self, storage, settings):
-            self.made_with = (storage, settings)
-
-        def execute(self):
-            ran.append(self)
-
-    fs = FunctionsStorage.__new__(FunctionsStorage)
-    fs.storage, fs.settings = "storage", "settings"
-    shown = _Func(None, None)
-    fs.run_instance(shown)
-    fs.run_instance(shown)
-    assert len(ran) == 2 and shown not in ran and ran[0] is not ran[1]
-    assert ran[0].made_with == ("storage", "settings")
 
 
 def test_the_bot_runs_a_new_instance_each_time():
@@ -1826,49 +1489,14 @@ def test_a_mid_flow_button_works_at_its_own_step(module, handler, value, step, e
     assert replies and "устарел" not in replies[0]
 
 
-def test_cli_set_proxies_without_a_list_for_the_restricted_stops_separating_them(tmp_path, monkeypatch):
-    from functions import set_proxies
-
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / "proxies.txt").write_text("socks5://1.2.3.4:1080\n")
-    (home / "proxies_restricted.txt").write_text("socks5://9.9.9.9:1080\n")  # set before
-    answers = iter([str(home / "proxies.txt"), "-"])  # no list for them now
-    monkeypatch.setattr(set_proxies.Prompt, "ask", lambda *a, **k: next(answers))
-    monkeypatch.setattr(set_proxies.console, "print", lambda *a, **k: None)
-    applied = []
-
-    class _Storage:
-        sessions = []
-        full_sessions = {}
-
-        jsessions_paths = {}
-
-        def __init__(self):
-            self.home = str(home)
-
-        def apply_proxies(self, proxies, spare=(), restricted=()):
-            applied.append(list(spare))
-            return {"accounts": 1, "proxies_used": 1, "restricted": 0, "string_sessions_skipped": 0}
-
-    asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
-    # all in the pool now; the next status check mustn't offer the old list again
-    assert applied == [[]] and not (home / "proxies_restricted.txt").exists()
-
-    # a typo is not "no list": nothing applied, the list kept
-    (home / "proxies_restricted.txt").write_text("socks5://9.9.9.9:1080\n")
-    answers = iter([str(home / "proxies.txt"), str(home / "proxies_restriced.txt")])
-    asyncio.run(set_proxies.SetProxiesFunc(_Storage(), ns()).execute())
-    assert applied == [[]] and (home / "proxies_restricted.txt").exists()
-
-
-@pytest.mark.parametrize("peer, by_phone", [("+7 999 123-45-67", True), ("79991234567", True), ("@durov", False),
-                                            ("durov", False), ("https://t.me/durov", False), ("+12", False)])
-def test_pm_to_a_person_sees_a_number_or_a_username(peer, by_phone):
+@pytest.mark.parametrize("peer, by_phone, kept", [
+    ("+7 999 123-45-67", True, "+79991234567"), ("79991234567", True, "+79991234567"), ("@durov", False, "@durov"),
+    ("durov", False, "durov"), ("https://t.me/durov", False, "https://t.me/durov"), ("+12", False, "+12")])
+def test_pm_to_a_person_sees_a_number_or_a_username(peer, by_phone, kept):
     """✉️ ЛС человеку asks no «по username / по номеру»: what was sent says which."""
     from bot.routers import pm_broadcast
     from bot.states import PmBroadcast
 
     state = _State()
     asyncio.run(pm_broadcast.got_peer(_Msg(text=peer), state))
-    assert state.data == {"peer": peer, "by_phone": by_phone} and state.state == PmBroadcast.message
+    assert state.data == {"peer": kept, "by_phone": by_phone} and state.state == PmBroadcast.message

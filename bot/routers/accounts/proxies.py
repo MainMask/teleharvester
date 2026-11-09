@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import back_answer, ensure_workers
+from bot.routers._common import back_answer, download, ensure_workers
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager, busy
 from bot.states import SetProxy
@@ -33,6 +33,21 @@ PROXY_PROMPT = (
     f"Они распределятся по аккаунтам проекта: один прокси на {ACCOUNTS_PER_PROXY} аккаунта. Новые аккаунты "
     "проекта тоже получат прокси из этого списка."
 )
+
+
+def proxy_state(storage) -> str:
+    """🌐 Прокси' first line: the project's lists and how many of its accounts have a proxy."""
+    with_proxy = sum(1 for js in storage.jsessions_paths.values() if js.account.proxy)
+    accounts = f"с прокси {with_proxy} из {len(storage.jsessions_paths)} аккаунтов"
+    try:
+        pool = tdata_import.load_proxies(projects.proxies_path(storage.home))
+        spare = tdata_import.load_proxies(projects.restricted_proxies_path(storage.home))
+    except ValueError:  # edited by hand
+        return f"Сейчас: ⚠️ список прокси испорчен — пришлите новый · {accounts}."
+    lists = f"в списке {len(pool)} прокси" if pool else "списка прокси нет"
+    if spare:
+        lists += f" (+{len(spare)} для ограниченных)"
+    return f"Сейчас: {lists} · {accounts}."
 
 
 async def proxies_busy(message, pool, manager) -> bool:
@@ -70,7 +85,8 @@ async def proxy_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPo
 
     await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(SetProxy.input)
-    await callback.message.answer(PROXY_PROMPT, parse_mode="HTML", reply_markup=cancel_kb(SetProxy.input))
+    await callback.message.answer(f"{PROXY_PROMPT}\n\n{proxy_state(pool.storage)}", parse_mode="HTML",
+                                  reply_markup=cancel_kb(SetProxy.input))
 
 
 async def _proxy_list(message: Message):
@@ -79,8 +95,9 @@ async def _proxy_list(message: Message):
         if (message.document.file_size or 0) > MAX_PROXY_FILE_SIZE:
             await message.answer("Файл слишком большой для списка прокси. Пришлите .txt поменьше:")
             return None
-        buffer = await message.bot.download(message.document)
-        raw = buffer.read().decode("utf-8", "replace")
+        if (data := await download(message, message.document)) is None:
+            return None
+        raw = data.decode("utf-8", "replace")
     else:
         raw = message.text or ""
 

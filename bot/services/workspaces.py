@@ -10,10 +10,10 @@ from aiogram import BaseMiddleware
 from aiogram.dispatcher.flags import get_flag
 from aiogram.types import CallbackQuery
 
-from bot.services import login as logins
+from bot.services import autoreply, login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
-from modules import projects
+from modules import projects, restricted_workers, scraped_files, warmup
 from modules.registry import PROJECTS
 from modules.scraper_creds import find_account, scrape_accounts
 from modules.storages.sessions_storage import release_client
@@ -120,13 +120,22 @@ def take_free(pool: WorkerPool, paths: list[str]) -> tuple[list[str], list[tuple
     return moved, failed
 
 
+async def _let_go(pool: WorkerPool, path: str):
+    """A worker's file moved or deleted: out of the live pool, its client disconnected."""
+    client = pool.storage.full_sessions.get(path)
+    pool.storage.forget_session(path)
+    if client is not None:
+        await release_client(client)
+
+
 async def move_out(pool: WorkerPool, paths: list[str], project: projects.Project | None,
                    target: Workspace | None) -> tuple[list[str], list[tuple[str, str]]]:
     """The project's workers to another `project` (`target`: its workspace, if it was opened since the start;
     else it reads its folder when opened) or, with no project, to the free ones: as take_free."""
     moved, failed = [], []
+    accounts = scrape_accounts(pool.storage)  # once, not for every path
     for path in paths:
-        account = find_account(scrape_accounts(pool.storage), path)
+        account = find_account(accounts, path)
         if account is None:  # moved or gone meanwhile
             failed.append((os.path.basename(path), "его уже нет в проекте"))
             continue
@@ -139,12 +148,38 @@ async def move_out(pool: WorkerPool, paths: list[str], project: projects.Project
         except (ValueError, OSError) as err:
             failed.append((account.label, str(err)))
             continue
-        pool.storage.forget_session(path)
-        await release_client(account.client)
+        await _let_go(pool, path)
+        autoreply.rename_worker(path, new)
         if target is not None:
             target.pool.storage.add_jsession(new)
         moved.append(account.label)
     return moved, failed
+
+
+async def delete_workers(pool: WorkerPool, paths: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """The project's account files deleted (its workers, or dead ones in its sessions/inactive/), with their state:
+    as move_out, the labels of the ones deleted and (label, why) of the rest. Not logged out: a ZIP downloaded
+    before holds the same keys."""
+    deleted, failed = [], []
+    for path in paths:
+        label = projects.account_label(path)
+        if not os.path.exists(path):  # deleted or moved meanwhile
+            failed.append((label, "его уже нет в проекте"))
+            continue
+        if pool.busy(path) or pool.scraped(path) or scraped_files.unfinished_scrape(path):
+            failed.append((label, "занят задачей или незавершённым скрапом — удалите после их окончания"))
+            continue
+        account = warmup.key(pool.storage, path)
+        try:  # no await from the check to here: nothing takes it meanwhile
+            os.remove(path)
+        except OSError as err:
+            failed.append((label, str(err)))
+            continue
+        await _let_go(pool, path)
+        restricted_workers.forget(path)
+        warmup.forget([account])
+        deleted.append(label)
+    return deleted, failed
 
 
 def chat_of(event) -> int:

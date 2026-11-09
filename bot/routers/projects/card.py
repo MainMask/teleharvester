@@ -1,4 +1,4 @@
-"""A project's card's screens on its files (registry.PROJECT_FILES: 📥 Сбор, 📨 База и рассылка, 🛠 Управление):
+"""A project's card's screens on its files (registry.PROJECT_FILES: 📥 Сбор, 🎯 База и рассылка, 🛠 Управление):
 their buttons and functions, on the project's files and workers, its own settings (manage.py)."""
 import asyncio
 from dataclasses import dataclass
@@ -12,8 +12,8 @@ from bot.routers import audience, mailing, scraping
 from bot.routers.projects import manage, views
 from bot.services import screens
 from bot.services.workspaces import Workspace, Workspaces
-from modules import projects, scraped_files
-from modules.registry import BOT_FUNCTIONS, COLLECT, MANAGE, NO_WORKERS, ON_WORKERS, PROJECT_FILES, SCREENS
+from modules import projects, scraped_files, warmup
+from modules.registry import BOT_FUNCTIONS, MANAGE, NO_WORKERS, ON_WORKERS, PROJECT_FILES, SCREENS
 
 router = Router()
 
@@ -46,6 +46,13 @@ async def _topup(tap: Tap):
     await scraping.topup_project(tap.message, tap.state, tap.project, plan, tap.scraper)
 
 
+async def _region(tap: Tap):
+    """🌍: the project's next region (its content's: 👤 Профиль's lists, the warmup), 🛠 Управление anew in place."""
+    home = projects.home(tap.project)
+    warmup.save_settings(home, warmup.cycle(warmup.load_settings(home), "region"))
+    await views.show_screen(tap.message, tap.project, MANAGE)
+
+
 async def _base(tap: Tap, kinds: tuple[str, ...], ask):
     """The mailing or the contacts, on the project's bases only: the base is still picked by button."""
     await ask(tap.message, tap.state, scraped_files.project_files(tap.project.name, kinds=kinds))
@@ -57,17 +64,18 @@ ACTIONS = {
     # 📥 Сбор
     "scrape": lambda tap: scraping.scrape_project(tap.message, tap.state, tap.project, tap.scraper),
     "topup": _topup,
-    "upload": lambda tap: manage.ask_upload(tap.message, tap.state, tap.project),
     "members": lambda tap: scraping.members_project(tap.message, tap.state, tap.project, tap.scraper),
     "verify": lambda tap: scraping.verify_project(tap.message, tap.state, tap.project, tap.scraper),
     "analysis": lambda tap: scraping.analysis_project(tap.message, tap.state, tap.project),
-    # 📨 База и рассылка
+    # 🎯 База и рассылка
+    "upload": lambda tap: manage.ask_upload(tap.message, tap.state, tap.project),
+    "clearbase": lambda tap: manage.offer_clear(tap.message, tap.state, tap.project),
     "addcontacts": lambda tap: _base(tap, ("participants",), audience.ask_base),
     "pmmailing": lambda tap: _base(tap, ("participants", "list"), mailing.ask_recipients),
     # 🛠 Управление
     "channels": lambda tap: manage.ask_channels(tap.message, tap.state, tap.project),
+    "region": _region,
     "rename": lambda tap: manage.ask_rename(tap.message, tap.state, tap.project),
-    "clearbase": lambda tap: manage.offer_clear(tap.message, tap.state, tap.project),
     "delete": lambda tap: manage.confirm_delete(tap.message, tap.state, tap.project),
 }
 CARD_ACTIONS = {MenuAction(button.action) for title in PROJECT_FILES for button in SCREENS[title].buttons}
@@ -103,7 +111,7 @@ async def card_function(callback: CallbackQuery, callback_data: FunctionCB, stat
 
 
 def _files_screen(title: str):
-    """📥 Сбор's and 🛠 Управление's view: what of them the project's files make (views.show_screen)."""
+    """The view of a card's screen on the project's files: what of it the files make (views.show_screen)."""
     async def view(message: Message, state: FSMContext, edit: bool, workspaces: Workspaces, **_):
         project = await views.current(message, state, workspaces)
         if project is not None:
@@ -111,5 +119,5 @@ def _files_screen(title: str):
     return view
 
 
-for _title in (COLLECT, MANAGE):
+for _title in PROJECT_FILES:
     screens.view(_title)(_files_screen(_title))

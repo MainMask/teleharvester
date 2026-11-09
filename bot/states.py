@@ -1,11 +1,11 @@
 from aiogram.fsm.state import State, StatesGroup
 
-from modules.registry import (ACCOUNTS, ACTIVITY, AUTOREPLY, BASE, BOT_FUNCTIONS_BY_KEY, COLLECT, MANAGE, PROFILE,
-                              PROJECTS, SCREENS, SECURITY, SETTINGS)
+from modules.registry import (ACCOUNTS, ADD, ACTIVITY, AUTOREPLY, BASE, BOT_FUNCTIONS_BY_KEY, COLLECT, MANAGE, PROFILE,
+                              PROJECTS, SECURITY, SETTINGS, WARMUP)
 
 
 class PmBroadcast(StatesGroup):
-    peer = State()  # a @username, a link or a number: which, the bot sees (pm_broadcast.is_phone)
+    peer = State()  # a @username, a link or a number: which, the bot sees (functions/pmbroadcast.is_phone)
     message = State()
 
 
@@ -55,15 +55,19 @@ class SetAutoreplyText(StatesGroup):
     input = State()
 
 
+class SetWarmupThreads(StatesGroup):
+    value = State()
+
+
 class AddByPhone(StatesGroup):
     phone = State()
     code = State()
     password = State()
 
 
-class ImportTdata(StatesGroup):
-    archive = State()
-    password = State()
+class ImportFiles(StatesGroup):
+    files = State()  # tdata ZIPs, .session / .json files, ZIPs of them
+    password = State()  # a tdata's 2FA password (FSM data "queue": the tdata ZIPs waiting)
 
 
 class Reactions(StatesGroup):
@@ -143,12 +147,15 @@ class Analysis(StatesGroup):
 # where each form was started from: its ✖️ Отмена and /cancel lead back there (bot/routers/menu.py)
 _ORIGINS = {
     ACTIVITY: (PmBroadcast, Invite, Join, Reactions, PollVote, ReportUser, ChatPost, ReportMessage),
-    ACCOUNTS: (MoveWorkers, SetProxy, AddByPhone, ImportTdata),
+    ACCOUNTS: (MoveWorkers, SetProxy),
+    ADD: (AddByPhone, ImportFiles),
     SECURITY: (SetPassword,),
     PROFILE: (ProfileText, ChangePhoto),
     AUTOREPLY: (SetAutoreplyText,),
+    WARMUP: (SetWarmupThreads,),
     COLLECT: (Scrape, Members, Verify, Analysis),
     BASE: (AddContacts, PmMailing),
+    SETTINGS: (SetSetting,),
 }
 ORIGINS = {group.__name__: screen for screen, groups in _ORIGINS.items() for group in groups}
 
@@ -159,9 +166,8 @@ def origin(step: str | None, data: dict) -> str | None:
     if group == PickWorkers.__name__:  # a profile's or a security's function: its own screen
         function = BOT_FUNCTIONS_BY_KEY.get(data.get("pick_key"))
         return function and function.category
-    if group == SetSetting.__name__:  # the screen of the setting's button: ⚙️ Настройки or 📏 Дневные лимиты
-        return next((title for title, screen in SCREENS.items() for button in screen.buttons
-                     if button.action == data.get("setting")), SETTINGS)
+    if group == MoveWorkers.__name__ and name == "free":  # the free accounts taken in: ➕ Добавить's
+        return ADD
     if group == Projects.__name__:  # a new project's name and channels: the list; the others: their screen
-        return {"name": PROJECTS, "channels": PROJECTS, "upload": COLLECT}.get(name, MANAGE)
+        return {"name": PROJECTS, "channels": PROJECTS, "upload": BASE, "edit": COLLECT}.get(name, MANAGE)
     return ORIGINS.get(group)

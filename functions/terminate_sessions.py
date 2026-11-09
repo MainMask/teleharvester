@@ -1,11 +1,9 @@
 
-from modules.console import console
 
 from telethon.tl.functions.account import GetAuthorizationsRequest, ResetAuthorizationRequest
 from telethon import TelegramClient
 
 from functions.base import TelethonFunction
-from functions.base.base import console_report
 
 
 class TerminateSessionsFunc(TelethonFunction):
@@ -38,9 +36,3 @@ class TerminateSessionsFunc(TelethonFunction):
 
     async def run(self, report):
         await self.gather_in_order(self.terminate_sessions, report)
-
-    async def execute(self):
-        self.ask_workers()
-
-        with console.status("Сброс сессий..."):
-            await self.run(console_report)

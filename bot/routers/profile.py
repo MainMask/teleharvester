@@ -15,15 +15,15 @@ from modules.registry import BOT_FUNCTIONS_BY_KEY, PROFILE, SECURITY
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import ChangePhoto, PickWorkers, ProfileText, SetPassword
-from modules import profile_done, restricted_workers
+from modules import content, profile_done, restricted_workers, warmup
 from modules.scraper_creds import scrape_accounts
+from functions.changebio import ChangeBioFunc
+from functions.changename import ChangeNameFunc
+from functions.changeusername import ChangeUsernameFunc
 
 router = Router()
 
 PHOTO_TMP_DIR = os.path.join("tmp", "photo")  # project-local, like tmp/broadcast
-NAMES_FILE = os.path.join("assets", "names.txt")          # the CLI's lists too
-USERNAMES_FILE = os.path.join("assets", "usernames.txt")
-BIOS_FILE = os.path.join("assets", "bios.txt")
 MAX_LIST_FILE_SIZE = 1024 * 1024
 
 
@@ -31,18 +31,10 @@ def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-def _file_lines(path: str) -> list[str]:
-    try:
-        with open(path, encoding="utf-8") as fileobj:
-            return _lines(fileobj.read())
-    except OSError:
-        return []
-
-
-def _file_kb(scope: str, path: str):
-    """A button for the list in assets/, if there is one."""
-    count = len(_file_lines(path))
-    return choice_kb(scope, [(f"📄 Из {path} ({count})", "file")]) if count else None
+def _file_kb(scope: str, region: str, name: str):
+    """A button for the project's region's list (modules/content.py), if there is one."""
+    count = len(content.pool(region, name))
+    return choice_kb(scope, [(f"📄 Из {content.path(region, name + '.txt')} ({count})", "file")]) if count else None
 
 
 async def _sent_lines(message: Message) -> list[str] | None:
@@ -168,12 +160,12 @@ def _no_input(key: str):
     return run
 
 
-# --- name, username, bio: typed, a sent .txt or the list in assets/ ---
+# --- name, username, bio: typed, a sent .txt or the project's region's list ---
 
 @dataclass(frozen=True)
 class _TextField:
     prompt: str
-    path: str  # its list in assets/, offered by button
+    list: str  # its list of the project's region (modules/content.py), offered by button
     typed: Callable[[str], dict]  # the run's kwargs from the typed text
     listed: Callable[[list[str]], dict]  # ...from a list: each worker gets one of them
 
@@ -184,17 +176,10 @@ def _full_name(name: str) -> dict:
 
 
 TEXT_FIELDS = {
-    "name": _TextField("Пришлите имя для выбранных воркеров (например, «Иван Петров») или .txt со списком "
-                       "имён, по одному на строку: каждый воркер получит случайное.",
-                       NAMES_FILE, _full_name, lambda names: dict(names=names)),
-    "username": _TextField("Пришлите основу для username (если занята — добавится случайное число: base24, "
-                           "base3071, …) или .txt со списком username, по одному на строку: воркеры получат их "
-                           "по порядку.",
-                           USERNAMES_FILE, lambda base: dict(base=base),
+    "name": _TextField(ChangeNameFunc.PROMPT, "names", _full_name, lambda names: dict(names=names)),
+    "username": _TextField(ChangeUsernameFunc.PROMPT, "usernames", lambda base: dict(base=base),
                            lambda usernames: dict(usernames=[u.lstrip("@") for u in usernames])),
-    "bio": _TextField("Пришлите новый текст bio для выбранных воркеров или .txt со списком вариантов, "
-                      "по одному на строку: каждый воркер получит случайный.",
-                      BIOS_FILE, lambda bio: dict(bio=bio), lambda bios: dict(bios=bios)),
+    "bio": _TextField(ChangeBioFunc.PROMPT, "bios", lambda bio: dict(bio=bio), lambda bios: dict(bios=bios)),
 }
 
 
@@ -203,7 +188,9 @@ def _text_prompt(key: str):
     async def prompt(message: Message, state: FSMContext, deps: dict):
         field = TEXT_FIELDS[key]
         await state.set_state(ProfileText.text)
-        await message.answer(field.prompt, reply_markup=cancel_kb(ProfileText.text, _file_kb("text_file", field.path)))
+        region = warmup.region(deps["pool"].storage.home)
+        await message.answer(field.prompt, reply_markup=cancel_kb(ProfileText.text,
+                                                                  _file_kb("text_file", region, field.list)))
     return prompt
 
 
@@ -219,8 +206,10 @@ async def _run_picked(message: Message, state: FSMContext, pool: WorkerPool, fun
 async def text_from_file(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, functions: dict,
                          manager: JobManager):
     field = TEXT_FIELDS[(await state.get_data())["pick_key"]]
-    if not (lines := _file_lines(field.path)):  # emptied or removed since its button was drawn
-        await callback.answer(f"{field.path} пуст или не найден — пришлите текст или .txt.", show_alert=True)
+    region = warmup.region(pool.storage.home)
+    if not (lines := content.pool(region, field.list)):  # emptied or removed since its button was drawn
+        await callback.answer(f"{content.path(region, field.list + '.txt')} пуст или не найден — пришлите текст или "
+                              ".txt.", show_alert=True)
         return
     if await busy_tap(callback, manager):
         return
@@ -259,7 +248,8 @@ async def _photo_prompt(message: Message, state: FSMContext, deps: dict):
     await state.set_state(ChangePhoto.photo)
     await message.answer(
         "Пришлите картинку (фото или файлом) — она станет аватаром выбранных воркеров, прежние аватарки удалятся:",
-        reply_markup=cancel_kb(ChangePhoto.photo, choice_kb("photo_src", [("📄 Из assets/photos", "folder")])),
+        reply_markup=cancel_kb(ChangePhoto.photo, choice_kb("photo_src", [
+            (f"📄 Из {content.path(warmup.region(deps['pool'].storage.home), 'photos')}", "folder")])),
     )
 
 
@@ -276,7 +266,7 @@ async def photo_folder(callback: CallbackQuery, state: FSMContext, pool: WorkerP
     await manager.run(
         callback.bot, callback.message.chat.id, pool, instance, bot_function,
         lambda f, r: f.run(r),
-        "Смена фото (из assets/photos/)…",
+        f"Смена фото (из {content.path(warmup.region(pool.storage.home), 'photos')}/)…",
         only=only,
     )
 
@@ -301,6 +291,10 @@ async def photo_upload(message: Message, state: FSMContext, pool: WorkerPool, fu
     try:
         await message.bot.download(source, destination=path, timeout=300)
     except Exception as err:  # e.g. the Bot API's ~20 MB download cap
+        try:  # a download cut short leaves its part
+            os.remove(path)
+        except OSError:
+            pass
         await back_answer(message, f"⚠️ Не удалось скачать картинку: {err}", PROFILE, manager.project_id)
         return
 
@@ -334,10 +328,10 @@ async def twofa_run(message: Message, state: FSMContext):
         return
     password = message.text
     await delete_quietly(message)
-    if not password.strip():  # as the CLI: an empty one would mean no 2FA
+    if not password.strip():  # an empty one would mean no 2FA
         await message.answer("Пароль не может быть пустым. Пришлите новый пароль 2FA:")
         return
-    # typed unseen and deleted: asked twice, as the CLI does, so a typo isn't set on every worker
+    # typed unseen and deleted: asked twice, so a typo isn't set on every worker
     await state.update_data(new_password=password)
     await state.set_state(SetPassword.confirm)
     await message.answer("Пришлите пароль 2FA ещё раз — для проверки:", reply_markup=cancel_kb(SetPassword.confirm))

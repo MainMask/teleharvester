@@ -1,5 +1,5 @@
 """The analysis tools of a project's scrape files, one table for the bot (its buttons, and the run in a
-child process) and the terminal menu (functions/scraper_analysis.py): their names, what each does, what
+child process): their names, what each does, what
 it takes and what it runs. Every result lands next to its input file, named by
 scraped_files.output_path."""
 import html
@@ -34,7 +34,8 @@ def _links(path: str, data: dict):
     return ("Чаще всего упоминаются:\n" + "\n".join(lines) if lines else "Ссылок на каналы не найдено."), out
 
 
-# tool -> (button, what it does, input: "posts" | "any" | "combine", action(path, data) -> (text, file_or_None))
+# tool -> (button, what it does, input: "posts" | "any" | "combine", action(path, data) -> (text, file_or_None)),
+# in the order of the bot's analysis menu
 TOOLS = {
     "links": (
         "🔗 Ссылки на другие каналы",
@@ -90,8 +91,25 @@ TOOLS = {
                                                   None, "parquet")),
     ),
 }
-MAIN_TOOLS = ("links", "filter", "read")  # the bot's first buttons, then ➕ Ещё
-MORE_TOOLS = ("combine", "comments", "summary", "sample", "participants")
+
+
+def files(tool: str, project: str) -> list[tuple[str, str]]:
+    """[(path, name)] a tool offers of the project's files, by its input: any of them, the posts files, or
+    (combine) the scrapes' posts files — the previous combine's is not merged into the next."""
+    kind = TOOLS[tool][2]
+    if kind == "any":
+        return scraped_files.project_files(project)
+    if kind == "combine":
+        return scraped_files.scrape_posts(project)
+    return scraped_files.project_files(project, kinds=("posts",))
+
+
+KEYWORDS_ASK = "пришлите слова через запятую (например: крипта, биткоин)"  # filter's, after its file
+
+
+def keywords(raw: str) -> list[str]:
+    """filter's words, from a comma list; [] for none."""
+    return [k.strip() for k in raw.split(",") if k.strip()]
 
 
 def run(tool: str, path, data: dict):

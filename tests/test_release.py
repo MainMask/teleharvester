@@ -96,7 +96,7 @@ class _Msg:
         import datetime
 
         self.edits = []
-        self.date = datetime.datetime.now(datetime.timezone.utc)
+        self.date, self.edit_date = datetime.datetime.now(datetime.timezone.utc), None
 
     async def edit_text(self, text, **kwargs):
         self.edits.append((text, kwargs.get("reply_markup")))
@@ -144,7 +144,7 @@ def test_the_button_releases_the_contacts(tmp_path):
     assert restricted_workers.load_released() == ["sessions/a.jsession"]
     (text, markup), = callback.message.edits
     assert text.startswith("✅ Контакты @a переданы")
-    assert [b.text for row in markup.inline_keyboard for b in row] == ["⬅️ 🤖 Аккаунты"]  # never a dead end
+    assert [b.text for row in markup.inline_keyboard for b in row] == ["⬅️ 📋 Список"]  # never a dead end
 
 
 def test_the_button_does_nothing_for_a_worker_no_longer_restricted(tmp_path):

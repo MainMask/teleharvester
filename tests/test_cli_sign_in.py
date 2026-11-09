@@ -1,5 +1,4 @@
-"""The terminal menu's sign-in (functions/sign_in.py) and personal accounts (functions/accounts.py):
-the bot's rules (modules/login.py)."""
+"""The session scripts' sign-in and login codes (functions/sign_in.py): the bot's rules (modules/login.py)."""
 
 import asyncio
 import conftest
@@ -12,9 +11,9 @@ import pytest
 from telethon import errors
 from telethon.tl.types.auth import SentCodeTypeApp
 
-from functions import accounts as accounts_cli
 from functions import sign_in as cli
-from modules import json_file, login as sign_in
+from modules import login as sign_in
+from modules.scraper_creds import scrape_accounts
 from modules.types.proxy import Proxy
 
 
@@ -83,7 +82,7 @@ class _Workers:
     home = property(lambda self: conftest.home())
 
     def __init__(self, phones=()):
-        self.phones, self.added, self.initialize = set(phones), [], False
+        self.phones, self.added = set(phones), []
         self.jsessions_paths, self.json_sessions = {}, []
 
     def is_phone_exists(self, phone):
@@ -113,15 +112,15 @@ def _add(monkeypatch, answers, client, workers=None, proxy=None, passwords=(), p
     return console, workers
 
 
-def test_add_account_offers_the_tdata_import_as_the_bot_does(monkeypatch):
+def test_add_account_offers_the_files_import_as_the_bot_does(monkeypatch):
     ran = []
 
-    async def tdata(self):
+    async def import_files(self):
         ran.append(type(self).__name__)
 
-    monkeypatch.setattr(cli.TdataImportFunc, "execute", tdata)
+    monkeypatch.setattr(cli.AddByPhoneFunc, "import_files", import_files)
     console, workers = _add(monkeypatch, ["3"], _Client([]))
-    assert "[3] 📥 Воркер — из tdata" in console.text and ran == ["TdataImportFunc"] and workers.added == []
+    assert "[3] 📥 Из файлов" in console.text and ran == ["AddByPhoneFunc"] and workers.added == []
 
 
 def test_a_worker_gets_a_pool_proxy_and_keeps_its_password(monkeypatch, tmp_path):
@@ -244,49 +243,7 @@ def _personal(monkeypatch, tmp_path, answers):
     (tmp_path / path).write_text("{}")
     me, console = _Client(), _Console(answers)
     personal = _Personal(path, me)
-    monkeypatch.setattr(accounts_cli, "personal_storage", lambda api_id, api_hash: personal)
-    monkeypatch.setattr(accounts_cli, "console", console)
     return personal, me, path, console
-
-
-def test_the_accounts_list_shows_personal_ones_without_connecting(monkeypatch, tmp_path):
-    personal, me, _, console = _personal(monkeypatch, tmp_path, [""])  # Enter: no card
-    console.status = lambda *a: contextlib.nullcontext()
-    asyncio.run(accounts_cli.AccountsFunc(_Workers(), SETTINGS).execute())
-    assert "Личные (только для скрапа): 1" in console.text and "me.jsession" in console.text
-    assert not me.connected
-
-
-def _list_and_remove(console):
-    """📋 Список → the account's number → its card's [2] 🗑 Удалить → y."""
-    console.status = lambda *a: contextlib.nullcontext()
-    asyncio.run(accounts_cli.AccountsFunc(_Workers(), SETTINGS).execute())
-
-
-def test_removal_logs_out_and_deletes(monkeypatch, tmp_path):
-    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "2", "y"])
-    _list_and_remove(console)
-    assert "👤 Личный (только для скрапа): me.jsession" in console.text and "[2] 🗑 Удалить" in console.text
-    assert me.logged_out and not (tmp_path / path).exists() and personal.sessions == []
-    assert "✅" in console.printed[-1]
-
-
-def test_no_removal_with_an_unfinished_bot_scrape(monkeypatch, tmp_path):
-    from modules import scraped_files
-
-    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "2", "y"])
-    json_file.save(scraped_files.SCRAPE_MARKER, {"1": {"account": path}})
-    _list_and_remove(console)
-    assert "незавершённый скрап" in console.printed[-1] and not me.logged_out and (tmp_path / path).exists()
-
-
-def test_no_removal_with_a_checkpoint_left_by_a_stop(monkeypatch, tmp_path):
-    personal, me, path, console = _personal(monkeypatch, tmp_path, ["1", "2", "y"])
-    resume = tmp_path / "assets" / "databases" / "news_partial" / "checkpoint" / "resume.json"
-    resume.parent.mkdir(parents=True)
-    resume.write_text(json.dumps({"name": "news", "account": path}))
-    _list_and_remove(console)
-    assert "незавершённый скрап" in console.printed[-1] and not me.logged_out and (tmp_path / path).exists()
 
 
 def test_codes_give_up_on_a_connect_that_hangs(monkeypatch):
@@ -308,5 +265,27 @@ def test_codes_give_up_on_a_connect_that_hangs(monkeypatch):
 def test_removal_of_an_account_whose_file_is_already_gone(monkeypatch, tmp_path):
     personal, me, path, console = _personal(monkeypatch, tmp_path, [])
     (tmp_path / path).unlink()  # removed by hand meanwhile
-    account = accounts_cli.scrape_accounts(None, personal)[0]
+    account = scrape_accounts(None, personal)[0]
     assert asyncio.run(sign_in.remove_personal(personal, account)) and personal.sessions == []
+
+
+def test_a_project_number_that_is_none_is_told(monkeypatch):
+    from modules import projects
+
+    monkeypatch.setattr(projects, "load", lambda: [projects.Project("A", [], id=1), projects.Project("B", [], id=2)])
+    console = _Console(["7"])
+    monkeypatch.setattr(cli, "console", console)
+    assert cli.pick_project() is None and "Нет такого проекта." in console.text
+    console = _Console(["2"])
+    monkeypatch.setattr(cli, "console", console)
+    assert cli.pick_project().name == "B"
+
+
+def test_a_worker_s_file_picks_its_project_unasked(monkeypatch):
+    from modules import projects
+
+    found = [projects.Project("A", [], id=1), projects.Project("B", [], id=2)]
+    monkeypatch.setattr(projects, "load", lambda: found)
+    monkeypatch.setattr(cli, "console", _Console([]))  # nothing typed: asking would fail
+    path = f"{projects.sessions_dir(found[1])}/79990000000.jsession"
+    assert cli.pick_project(path).name == "B"

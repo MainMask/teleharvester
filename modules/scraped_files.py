@@ -1,4 +1,4 @@
-"""The scrape's files in assets/databases: what the bot and the CLI offer to pick from,
+"""The scrape's files in assets/databases: what the bot offers to pick from,
 where an analysis of one writes, and which scrapes are left to continue."""
 import glob
 import os
@@ -199,7 +199,7 @@ def scrape_markers() -> dict:
 
 def unfinished_scrape(path: str) -> bool:
     """A scrape on the account (session path) is left to continue, on it only: the bot's marker, or
-    a checkpoint in BASES_DIR (one stopped with ⏹, by an error or in the terminal menu has no marker)."""
+    a checkpoint in BASES_DIR (one stopped with ⏹ or by an error has no marker)."""
     if any(marker.get("account") == path for marker in scrape_markers().values()):
         return True
     for resume in Path(BASES_DIR).glob("*_partial/checkpoint/resume.json"):

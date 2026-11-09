@@ -14,19 +14,11 @@ from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, back_answer, b
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import ChatPost
-from functions.broadcast import MENTION_ADMINS, MENTION_USERS
+from functions.broadcast import INSTANT_MODES, MENTION_ASK, MENTION_WHO, MMODE_OPTIONS, MODE_OPTIONS, STICKERS
 from modules.registry import ACTIVITY, title
 from modules.settings import Settings, count_text
 
 router = Router()
-
-MODE_OPTIONS = [("📝 Текст", "0"), ("🖼 Медиа", "2"), ("💬 Ответом на сообщение", "3"), ("🎭 Стикеры", "4")]
-INSTANT_MODES = [("📝 Текст", "0"), ("🖼 Медиа", "2"), ("🎭 Стикеры", "4")]  # reply needs a trigger
-MMODE_OPTIONS = [(f"👮 {MENTION_ADMINS} случайных админа", "admins"),
-                 (f"👤 {MENTION_USERS} случайных участников", "users")]
-MENTION_ASK = "Добавлять в сообщения скрытые упоминания участников чата? Упомянутым придёт уведомление."
-MENTION_WHO = "Кого упоминать в каждом сообщении?"
-STICKERS = 4  # the mode that asks for a sticker set
 
 # what each flow asks first: its modes (instant, chat), or the post's link (comments)
 _MODES = {
@@ -121,8 +113,8 @@ async def link_input(message: Message, state: FSMContext, settings: Settings):
 
 # ================= The trigger and the messages count =================
 # Chosen per run, with the current config value one tap away; written to config.toml only
-# when the job really starts (_save_options), so a run refused for a busy slot changes nothing
-# and a running job — which reads settings live — is never switched mid-way.
+# when the job really starts (_save_options), so a run refused for a busy slot changes nothing; a
+# running job keeps the ones it started with (functions/broadcast.py), whatever another project's run writes.
 
 async def _ask_trigger(say, state: FSMContext, settings: Settings):
     await state.set_state(ChatPost.trigger)

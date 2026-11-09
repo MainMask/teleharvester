@@ -9,10 +9,10 @@ import toml
 
 import conftest
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB, NavCB
-from bot.keyboards.menu import back_kb, screen_kb
+from bot.keyboards.menu import back_kb
 from modules import projects
-from modules.registry import (ACCOUNTS, ACTIVITY, BASE, BOT_FUNCTIONS_BY_KEY, CARD, COLLECT, LIMITS, MANAGE, PROFILE,
-                              PROJECTS, SECURITY, SETTINGS)
+from modules.registry import (ACCOUNT_LIST, ACCOUNTS, ACTIVITY, BASE, BOT_FUNCTIONS_BY_KEY, CARD, COLLECT, MANAGE,
+                              PROFILE, PROJECTS, SECURITY, SETTINGS)
 from modules.settings import count_text
 
 
@@ -73,7 +73,7 @@ def _nav(markup) -> NavCB:
 def test_a_function_is_run_from_its_screen():
     screen = {key: function.category for key, function in BOT_FUNCTIONS_BY_KEY.items()}
     assert screen["reactions"] == ACTIVITY and screen["2fa"] == SECURITY and screen["name"] == PROFILE
-    assert screen["status"] == ACCOUNTS
+    assert screen["status"] == ACCOUNT_LIST
     assert screen["pmmailing"] == BASE and screen["members"] == COLLECT  # the card's screens on its files
 
 
@@ -137,8 +137,9 @@ def test_a_report_s_back_opens_its_project_s_screen_as_a_new_message(monkeypatch
     ("Reactions:link", {}, ACTIVITY), ("ChatPost:mode", {}, ACTIVITY), ("SetProxy:input", {}, ACCOUNTS),
     ("PickWorkers:marks", {"pick_key": "2fa"}, SECURITY), ("PickWorkers:marks", {"pick_key": "bio"}, PROFILE),
     ("SetSetting:value", {"setting": "delay"}, SETTINGS),
-    ("SetSetting:value", {"setting": "cap_pm"}, LIMITS), ("Scrape:date_min", {}, COLLECT),
-    ("PmMailing:path", {}, BASE), ("Projects:rename", {}, MANAGE), ("Projects:upload", {}, COLLECT),
+    ("SetSetting:value", {"setting": "cap_pm"}, SETTINGS), ("Scrape:date_min", {}, COLLECT),
+    ("Projects:edit", {}, COLLECT),
+    ("PmMailing:path", {}, BASE), ("Projects:rename", {}, MANAGE), ("Projects:upload", {}, BASE),
     ("Projects:name", {}, PROJECTS), ("Unknown:step", {}, None),
 ])
 def test_a_form_goes_back_to_where_it_was_started(step, data, screen):
@@ -223,20 +224,20 @@ def test_a_report_without_a_comment_by_button(monkeypatch):
 
 
 def test_a_tdata_import_without_a_password_by_button(monkeypatch):
-    from bot.routers.accounts import tdata
+    from bot.routers.accounts import upload
 
     passwords = []
 
-    async def run_import(message, state, pool, manager, password):
+    async def answered(message, state, pool, manager, password):
         passwords.append(password)
 
-    monkeypatch.setattr(tdata, "_import", run_import)
-    asyncio.run(tdata.tdata_no_password(_Callback(), _State(), None, types.SimpleNamespace(active=False)))
-    asyncio.run(tdata.tdata_password(_Msg("-"), _State(), None, None))  # typed, as before the button
+    monkeypatch.setattr(upload, "_answered", answered)
+    asyncio.run(upload.tdata_no_password(_Callback(), _State(), None, types.SimpleNamespace(active=False)))
+    asyncio.run(upload.tdata_password(_Msg("-"), _State(), None, None))  # typed, as before the button
     assert passwords == [None, None]
 
 
-# --- ⚙️ Настройки → 📏 Дневные лимиты ---
+# --- ⚙️ Настройки: the delays and the daily caps ---
 
 def _settings(tmp_path, monkeypatch):
     from modules.settings import Settings
@@ -275,8 +276,9 @@ def test_a_setting_is_set_from_its_screen(tmp_path, monkeypatch, action, bad, ty
     assert config["broadcast"]["delay"] == [5, 10] and config["limits"]["account_pause"] == [1, 2]  # the rest kept
     text, markup = done.answers[0]
     assert text.startswith("✅ ") and state.state is None
-    # its own screen again, with the new value
-    assert markup == screen_kb(LIMITS) and f"<b>{count_text(saved)}</b>" in text
+    # the settings again, the new value on its button
+    shown = f"{screen._BUTTONS[action.value].title}: {count_text(saved) if saved else '♾'}"  # no limit: ♾
+    assert shown in [b.text for row in markup.inline_keyboard for b in row] and f"<b>{shown}</b>" in text
 
 
 def test_a_cap_is_made_unlimited_by_its_button(tmp_path, monkeypatch):
@@ -413,17 +415,3 @@ def test_a_poll_that_can_t_be_read_asks_the_option_s_number():
     asyncio.run(activity.poll_link(msg, state, _poll_pool(busy=True), {}))
     text, _ = msg.answers[0]
     assert state.state == PollVote.option and text.startswith("ℹ️ Варианты не прочитаны: все воркеры сейчас заняты")
-
-
-def test_the_terminal_sets_a_daily_cap_as_the_bot_does(tmp_path, monkeypatch):
-    from functions import settings as cli
-
-    settings = _settings(tmp_path, monkeypatch)
-    printed = []
-    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "4")  # 🤝 Инвайты
-    monkeypatch.setattr(cli.SettingsFunc, "ask_int", staticmethod(lambda *a, **k: 25))
-    cli.SettingsFunc(ns(sessions=[]), settings).execute()
-    assert "  [4] 🤝 Инвайты в сутки на аккаунт: без лимита" in printed[0]
-    assert settings.invite_per_account_daily == 25
-    assert toml.load(tmp_path / "config.toml")["limits"]["invite_per_account_daily"] == 25

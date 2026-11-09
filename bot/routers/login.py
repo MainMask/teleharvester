@@ -6,18 +6,17 @@ import asyncio
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from telethon import errors
 from telethon.tl.types.auth import SentCodeTypeApp
 
-from bot.callbacks import ChoiceCB, MenuAction, MenuCB, NavCB
+from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
 from bot.routers._common import delete_quietly, stale_tap
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.workspaces import Workspace
-from modules.registry import ACCOUNTS, menu_path, title
+from modules.registry import ADD, menu_path, title
 from bot.states import AddByPhone
 from modules import login as sign_in
 
@@ -27,52 +26,32 @@ CODE_PROMPT = (
     "Пришлите код <b>через пробелы или дефисы</b>, например <code>1 2 3 4 5</code>: код, "
     "отправленный в Telegram целиком, Telegram аннулирует."
 )
-TDATA = "📥 Воркер — из tdata (ZIP)"  # ➕ Добавить's choice, the title of its prompt (accounts/tdata.py)
-FREE = "📦 Воркеры — из свободных"  # ➕ Добавить's choice, the title of its list (accounts/move.py)
 RESEND_KB = choice_kb("phone_resend", [("📨 Отправить код заново", "resend")])
 
 
 # =============================== add by phone ===============================
 
 async def _end_login(message: Message, state: FSMContext, text: str):
-    """The sign-in is over (added, refused or failed): ⬅️ back to its project's 🤖 Аккаунты."""
+    """The sign-in is over (added, refused or failed): ⬅️ back to its project's ➕ Добавить."""
     project = (await state.get_data()).get("project", 0)
     await logins.close(message.chat.id)
     await state.clear()
-    await message.answer(text, reply_markup=back_kb(ACCOUNTS, project))
+    await message.answer(text, reply_markup=back_kb(ADD, project))
 
 
-def add_kb(project: int = 0):
-    """By phone: a worker or a personal account; from tdata, or one in no project: a worker
-    (bot/routers/accounts/), into `project`; ⬅️ back to its 🤖 Аккаунты."""
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🤖 Воркер — по номеру", callback_data=ChoiceCB(scope="phone_role", value="worker"))
-    builder.button(text="👤 Личный — по номеру", callback_data=ChoiceCB(scope="phone_role", value=sign_in.PERSONAL))
-    builder.button(text=TDATA, callback_data=MenuCB(action=MenuAction.TDATA, project=project))
-    builder.button(text=FREE, callback_data=MenuCB(action=MenuAction.FREE, project=project))
-    builder.button(text="⬅️ Назад", callback_data=NavCB(screen=ACCOUNTS, project=project))
-    builder.adjust(1)
-    return builder.as_markup()
+# a worker joins the pool; a personal account goes to personal_sessions/ (scrapes only)
+ROLES = {MenuAction.BY_PHONE: "worker", MenuAction.PERSONAL: sign_in.PERSONAL}
 
 
-@router.callback_query(MenuCB.filter(F.action == MenuAction.ADD))
-async def phone_start(callback: CallbackQuery, state: FSMContext, workspace: Workspace):
-    """➕ Добавить: in 🤖 Аккаунты' place, as a screen of its own."""
+@router.callback_query(MenuCB.filter(F.action.in_(ROLES)))
+async def phone_role(callback: CallbackQuery, callback_data: MenuCB, state: FSMContext, workspace: Workspace):
+    """➕ Добавить's 🤖 Воркер по номеру or 👤 Личный по номеру."""
     await callback.answer()
     await state.clear()
-    await callback.message.edit_text(f"{title('add')} — кого и как? Личный аккаунт общий для всех проектов и "
-                                     "нужен только для скрапа.", reply_markup=add_kb(workspace.project_id))
-
-
-@router.callback_query(ChoiceCB.filter(F.scope == "phone_role"))
-async def phone_role(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, workspace: Workspace):
-    """A worker joins the pool; a personal account goes to personal_sessions/ (scrapes only)."""
-    await callback.answer()
-    await state.clear()
-    await state.update_data(role=callback_data.value, project=workspace.project_id)  # its ⬅️ at the end
+    await state.update_data(role=ROLES[callback_data.action], project=workspace.project_id)  # its ⬅️ at the end
     await state.set_state(AddByPhone.phone)
-    await callback.message.answer(  # a prompt for text: a new message, ➕ Добавить's menu stays
-        f"{title('add')} — пришлите номер телефона аккаунта в международном формате, например, "
+    await callback.message.answer(  # a prompt for text: a new message, ➕ Добавить's screen stays
+        f"{title(callback_data.action.value)} — пришлите номер телефона аккаунта в международном формате, например, "
         "<code>+79991234567</code>.\n"
         "Аккаунт должен быть уже зарегистрирован в Telegram.",
         parse_mode="HTML", reply_markup=cancel_kb(AddByPhone.phone),
@@ -124,7 +103,7 @@ async def phone_resend(callback: CallbackQuery, state: FSMContext):
     login = logins.get(callback.message.chat.id)
     # a menu button cleared the flow meanwhile: without its role a personal account would be saved as a worker
     if login is None or "role" not in await state.get_data():
-        await _end_login(callback.message, state, f"Вход устарел — начните заново: {menu_path('add')}.")
+        await _end_login(callback.message, state, f"Вход устарел — начните заново: {menu_path(ADD)}.")
         return
     try:  # as the first request: a dead proxy must not hang the button
         await asyncio.wait_for(login.client.send_code_request(login.phone), sign_in.FETCH_TIMEOUT * 2)
@@ -142,7 +121,7 @@ async def phone_resend(callback: CallbackQuery, state: FSMContext):
 async def code_input(message: Message, state: FSMContext, pool: WorkerPool, personal):
     login = logins.get(message.chat.id)
     if login is None:
-        await _end_login(message, state, f"Вход устарел — начните заново: {menu_path('add')}.")
+        await _end_login(message, state, f"Вход устарел — начните заново: {menu_path(ADD)}.")
         return
     code = sign_in.code_digits(message.text)
     await delete_quietly(message)
@@ -182,7 +161,7 @@ async def code_input(message: Message, state: FSMContext, pool: WorkerPool, pers
 async def password_input(message: Message, state: FSMContext, pool: WorkerPool, personal):
     login = logins.get(message.chat.id)
     if login is None:
-        await _end_login(message, state, f"Вход устарел — начните заново: {menu_path('add')}.")
+        await _end_login(message, state, f"Вход устарел — начните заново: {menu_path(ADD)}.")
         return
     password = message.text  # as typed: spaces may be part of it
     await delete_quietly(message)

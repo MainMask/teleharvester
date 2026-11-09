@@ -1,5 +1,5 @@
-"""Projects: named sets of scrape sources, kept in stats/projects.json and shared by the bot
-and the CLI. A project's name is the name its scrapes run under, so its files are the
+"""Projects: named sets of scrape sources, kept in stats/projects.json and used by the bot
+and the session scripts. A project's name is the name its scrapes run under, so its files are the
 <name>_posts / _reactors / _participants ones in the bases folder (scraped_files.project_files)
 and an interrupted scrape of it is continued by that name (scraper.scrape.pending_resume).
 
@@ -14,11 +14,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
-from modules import atomic_file, json_file, restricted_workers, scraped_files
-from modules.registry import ACCOUNTS, ADD_CHANNELS, COLLECT, MANAGE, title
+from modules import atomic_file, contacts_ledger, json_file, restricted_workers, scraped_files
+from modules.registry import ACCOUNTS, ADD, ADD_CHANNELS, COLLECT, title
 from modules.storages.sessions_storage import SessionsStorage
 from scraper.datafiles import read_attrs
 from scraper.scrape import ChatInfo, chat_block, pending_resume
+from modules.types.account import full_name
 
 PATH = os.path.join("stats", "projects.json")
 PROJECTS_DIR = "projects"  # projects/<id>/: a project's own folder (home)
@@ -112,7 +113,7 @@ def set_channels(name: str, channels: list[str]) -> Project:
 
 
 def remember(name: str, infos) -> None:
-    """Keep what a check on an account (scraper.scrape.lookup_chats) found out about the chats of the
+    """Keep what a check on an account (scraper.scrape.lookup_on) found out about the chats of the
     project's work — title, id, @username —, so its card and its flows' messages show them by name
     (chat_list); one not named, or no such project: nothing kept. Written only if it changed."""
     try:
@@ -259,11 +260,13 @@ def add_to_list(name: str, lines: list[str]) -> tuple[int, int, int]:
 
 
 FIRST_COLLECT = f"сначала «{title('scrape')}» или «{title('members')}»"
+FIRST_BASE = f"сначала «{title('scrape')}», «{title('members')}» или «{title('upload')}»"
 NOTHING_TO_TOPUP = "Дособирать не к чему: у проекта нет готового файла постов."
-NO_CHANNELS_TEXT = f"У проекта нет каналов — добавьте их: «{ADD_CHANNELS}»."  # a scrape needs them
+# a scrape needs them: said on 📥 Сбор (the bot's pop-up), where its button is
+NO_CHANNELS_TEXT = f"У проекта нет каналов — добавьте их: «{ADD_CHANNELS}»."
 
 
-# the card's buttons that need the project's data (missing): the bot's and the CLI's card check them first
+# the card's buttons that need the project's data (missing): the bot's card checks them first
 MISSING_CHECKED = ("scrape", "topup", "addcontacts", "pmmailing", "verify", "analysis")
 
 
@@ -281,8 +284,7 @@ def missing(project: Project, what: str) -> str | None:
         return (f"У проекта ещё нет базы участников — {FIRST_COLLECT}. Загруженный список для контактов не "
                 "подходит: в нём нет ID.")
     if what == "pmmailing" and not kinds & {"participants", "list"}:
-        return (f"У проекта ещё нет базы — сначала «{title('scrape')}», «{title('members')}» или "
-                f"«{title('upload')}».")
+        return f"У проекта ещё нет базы — {FIRST_BASE}."
     if what in ("verify", "analysis") and "posts" not in kinds:
         return f"У проекта ещё нет файла постов — сначала «{title('scrape')}»."
     if what == "topup" and topup(project) is None:  # its posts file gone since 📥 Сбор was shown
@@ -359,9 +361,9 @@ def sessions_dir(project: Project) -> str:
     return os.path.join(home(project), "sessions")
 
 
-def storage(project: Project, api_id, api_hash, initialize: bool = False) -> SessionsStorage:
+def storage(project: Project, api_id, api_hash) -> SessionsStorage:
     """The project's workers, its folder as their home (their mailing stats, ledger, proxies)."""
-    return SessionsStorage(sessions_dir(project), api_id, api_hash, initialize, home=home(project))
+    return SessionsStorage(sessions_dir(project), api_id, api_hash, home=home(project))
 
 
 def proxies_path(project_home: str) -> str:
@@ -385,7 +387,7 @@ def account_files(directory: str) -> list[str]:
 
 def migrate():
     """Bring the projects from before they had their own accounts up to date; at every start of the
-    bot and the CLI, a no-op once done. A project without an id gets one, and a copy of the shared
+    bot and the session scripts, a no-op once done. A project without an id gets one, and a copy of the shared
     mailing stats and contacts ledger (LEGACY_STATS) as its own; the shared ones stay as they are. The
     bot's scrape marker of then becomes its project's (scraped_files.scrape_markers). The workers stay
     in FREE_DIR: they are moved into projects by hand. ValueError if the projects' file can't be read
@@ -416,7 +418,7 @@ def _worker_dirs() -> list[str]:
     return [FREE_DIR, *sorted(str(path) for path in Path(PROJECTS_DIR).glob("*/sessions"))]
 
 
-def _account(path: str) -> dict | None:
+def read_account(path: str) -> dict | None:
     """A .jsession's "account" part (read offline), None for a broken file or a .session (no metadata)."""
     if not path.endswith(".jsession"):
         return None
@@ -432,7 +434,7 @@ def find_account(phone: str | None = None, user_id: int | None = None) -> str | 
     phones = {phone.lstrip("+"), "+" + phone.lstrip("+")} if phone else set()
     for directory in _worker_dirs():
         for path in account_files(directory):
-            account = _account(path)
+            account = read_account(path)
             if account is not None and (account.get("phone_number") in phones
                                         or (user_id is not None and account.get("user_id") == user_id)):
                 return path
@@ -455,7 +457,7 @@ def place(path: str) -> str:
 def taken(path: str) -> str:
     """Why an account can't be added here: it is a worker elsewhere, and how to bring it over."""
     if os.path.dirname(os.path.normpath(path)) == os.path.normpath(FREE_DIR):
-        how = f"возьмите его: «{title('add')}» → «📦 Из свободных»"
+        how = f"возьмите его: «{ADD}» → «{title('free')}»"
     else:
         how = f"перенесите его оттуда: «{ACCOUNTS}» → «{title('move')}»"
     return f"уже воркер {place(path)} — {how}"
@@ -463,9 +465,9 @@ def taken(path: str) -> str:
 
 def account_label(path: str) -> str:
     """A worker's file in a list, read offline: @username, else the name, and the phone."""
-    account = _account(path) or {}
+    account = read_account(path) or {}
     name = (f"@{account['username']}" if account.get("username")
-            else " ".join(filter(None, (account.get("first_name"), account.get("last_name")))))
+            else full_name(account.get("first_name"), account.get("last_name")))
     phone = account.get("phone_number")
     phone = f"+{phone.lstrip('+')}" if phone else os.path.basename(path)
     return f"{name} · {phone}" if name else phone
@@ -492,7 +494,7 @@ def chat_list(project: Project | None, raws: list[str], html: bool = False, prob
     """The chats, numbered, one block each as the card lists its channels (scraper.scrape.chat_block): the
     title, @username or link, 🆔 — as the project's checks named them (Project.chats) —, ⚠️ and why from
     `problems` ({raw: why}). At most `limit` of them, whole blocks within `budget` characters (a cut one
-    could cut a tag), then "… и ещё N". `html`: for the bot, else plain text for the terminal."""
+    could cut a tag), then "… и ещё N". `html`: for the bot, else plain text."""
     blocks, size = [], 0
     for number, raw in enumerate(raws[:limit], 1):
         info = project.chat(raw) if project is not None else ChatInfo(raw, None, None)
@@ -507,17 +509,21 @@ def chat_list(project: Project | None, raws: list[str], html: bool = False, prob
 
 
 def label(project: Project) -> str:
-    """The project in a list (bot button / CLI line); ⏸ marks an interrupted scrape."""
+    """The project in a list (a bot button); ⏸ marks an interrupted scrape."""
     channels = f"каналов: {len(project.channels)}" if project.channels else "без каналов"
     return f"📁 {project.name} · {channels}{' ⏸' if unfinished(project.name) else ''}"
 
 
-def _head(project: Project, workers: int, esc) -> list[str]:
-    return [f"📁 {esc(project.name)}",
-            f"🤖 Воркеров: {workers}" if workers else
-            f"🤖 Воркеров нет — добавьте их: «{ACCOUNTS}» → «{title('add')}» (по номеру, из tdata или из свободных).",
+def _head(project: Project, workers: int, esc, warmup: str = "") -> list[str]:
+    """The card's first lines: its name, its workers (`warmup`: their warmup, modules/warmup.summary), its
+    base, its channels."""
+    name = f"<b>{esc(project.name)}</b>" if esc is html_text.escape else project.name  # as screens.title_line
+    return [f"📁 {name}",
+            f"🤖 Воркеров: {workers}" + (f" · {warmup}" if warmup else "") if workers else
+            f"🤖 Воркеров нет — добавьте их: «{ACCOUNTS}» → «{ADD}» (по номеру, из файлов или из свободных).",
+            base_line(project),
             f"📢 Каналы — {len(project.channels)}" if project.channels else
-            f"📢 Каналов нет: база — из участников групп (👥) или списка; для скрапа — «{ADD_CHANNELS}»."]
+            f"📢 Каналов нет — для скрапа добавьте их: «{COLLECT}» → «{ADD_CHANNELS}»."]
 
 
 def _scrape_state(project: Project, html: bool) -> str | None:
@@ -528,7 +534,7 @@ def _scrape_state(project: Project, html: bool) -> str | None:
     plan = topup(project)
     if plan is None:
         return None
-    text = (f"🔄 Дособор: с {plan.date_min:%d.%m.%Y} по {plan.date_max:%d.%m.%Y} — новое вольётся "
+    text = (f"⏩ Дособор: с {plan.date_min:%d.%m.%Y} по {plan.date_max:%d.%m.%Y} — новое вольётся "
             f"в файлы проекта, последние {TOPUP_OVERLAP.days} дней прошлого скрапа перечитаются.")
     if plan.channels != project.channels:  # a top-up continues the previous scrape as it was
         text += (f"\nКаналы дособора — как в прошлом скрапе (новому каналу нужна вся история: «{title('scrape')}»):"
@@ -537,7 +543,35 @@ def _scrape_state(project: Project, html: bool) -> str | None:
 
 
 def _files(project: Project) -> list[tuple[str, str]]:
-    return scraped_files.project_files(project.name, kinds=("posts", "reactors", "participants", "list"))
+    """The scrape's files: the uploaded list is the base's only (base_text)."""
+    return scraped_files.project_files(project.name, kinds=("posts", "reactors", "participants"))
+
+
+def _base_files(project: Project) -> list[tuple[str, str]]:
+    """The files the mailing takes: the participants' bases and the uploaded list."""
+    return scraped_files.project_files(project.name, kinds=("participants", "list"))
+
+
+def base_line(project: Project, files: list[tuple[str, str]] | None = None) -> str:
+    """🎯 База и рассылка in a line: the base's records (its files' rows and the list's lines: a person in two of
+    them counted twice), whom the mailing wrote to, whom the workers added to contacts. Reads the files' footers
+    and the project's ledgers, so off the bot's event loop."""
+    files = _base_files(project) if files is None else files
+    if not files:
+        return f"🎯 Базы пока нет — {FIRST_BASE}."
+    records = sum(len(scraped_files.read_list(path)) if path.endswith(".txt") else scraped_files.row_count(path)
+                  for path, _ in files)
+    stats = json_file.load(os.path.join(home(project), "pm_mailing.json"), {})
+    mailed = sum(1 for entry in stats.values() if entry.get("count"))
+    return (f"🎯 База: записей {records} · написали {mailed} · "
+            f"в контактах {len(contacts_ledger.load(home(project)))}")
+
+
+def base_text(project: Project, html: bool = False) -> str:
+    """🎯 База и рассылка's text: base_line, then the base's files."""
+    files = _base_files(project)
+    esc = html_text.escape if html else str
+    return "\n\n".join([esc(base_line(project, files)), *([_files_block(files, esc)] if files else [])])
 
 
 def _files_block(files: list[tuple[str, str]], esc) -> str:
@@ -566,26 +600,14 @@ def _channel_blocks(project: Project, html: bool, room: int | None) -> list[str]
     return channels
 
 
-def card(project: Project, workers: int, html: bool = False) -> str:
-    """The project's whole card (the CLI's): how many workers it has, its channels, an interrupted scrape or
-    the top-up, its files. `html`: for the bot — escaped, the ids in <code>; without it plain text, for the
-    terminal."""
-    esc = html_text.escape if html else str
-    head = _head(project, workers, esc)
-    blocks = [block for block in (_scrape_state(project, html), _files_block(_files(project), esc)) if block]
-    # the channels last: in the bot they get what the rest leaves, the "… и ещё" line kept room for
-    room = MAX_CARD_TEXT - len("\n\n".join(head + blocks)) - len("\n\n… и ещё 9999") if html else None
-    return "\n\n".join(head + _channel_blocks(project, html, room) + blocks)
-
-
-def summary(project: Project, workers: int, html: bool = False) -> str:
-    """The bot's card: card()'s head, the scrape's state, the files counted — 📥 Сбор lists them and the
-    channels (collect_text)."""
+def summary(project: Project, workers: int, html: bool = False, warmup: str = "") -> str:
+    """The bot's card: its head (`warmup`: the workers' warmup), the scrape's state, the files counted —
+    📥 Сбор lists them and the channels (collect_text)."""
     esc = html_text.escape if html else str
     files = len(_files(project))
     count = f"📂 Файлов скрапа: {files} — список в «{COLLECT}»" if files else "📂 Файлов скрапа пока нет."
-    return "\n\n".join(block for block in (*_head(project, workers, esc), _scrape_state(project, html), count)
-                        if block)
+    blocks = (*_head(project, workers, esc, warmup), _scrape_state(project, html), count)
+    return "\n\n".join(block for block in blocks if block)
 
 
 def collect_text(project: Project, html: bool = False, budget: int = MAX_CARD_TEXT) -> str:
@@ -593,5 +615,5 @@ def collect_text(project: Project, html: bool = False, budget: int = MAX_CARD_TE
     esc = html_text.escape if html else str
     files = _files_block(_files(project), esc)
     room = budget - len(files) - len("\n\n… и ещё 9999") if html else None
-    channels = _channel_blocks(project, html, room) or [f"📢 Каналов нет — добавьте их в «{MANAGE}»."]
+    channels = _channel_blocks(project, html, room) or [f"📢 {NO_CHANNELS_TEXT}"]
     return "\n\n".join([*channels, files])

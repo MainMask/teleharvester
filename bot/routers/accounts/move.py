@@ -6,16 +6,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
-from bot.keyboards.common import cancel_kb, choice_kb, marks_kb
+from bot.keyboards.common import cancel_kb, choice_kb, marks_kb, page_of, paged_kb
 from bot.keyboards.menu import back_kb
 from bot.routers._common import back_answer, ensure_workers, marks_step
-from bot.routers.login import FREE
 from bot.services import screens
 from bot.services.delegation import WorkerPool
 from bot.services.workspaces import Workspace, Workspaces, move_out, take_free
 from bot.states import MoveWorkers
 from modules import projects
-from modules.registry import ACCOUNTS, title
+from modules.registry import ACCOUNTS, ADD, title
 from modules.scraper_creds import scrape_accounts
 
 router = Router()
@@ -24,7 +23,7 @@ router = Router()
 # The lists of the worker picker (profile.py, keyboards.marks_kb): ✅ / ⬜, ☑️ Все, ⬜ Никого, then ▶️.
 
 TICKS = [("☑️ Все", "all"), ("⬜ Никого", "none")]
-FREE_HEAD = f"<b>{FREE}</b>\n\nАккаунты, ещё ни в одном проекте. Отмеченные станут воркерами этого проекта."
+FREE_HEAD = f"<b>{title('free')}</b>\n\nАккаунты, ещё ни в одном проекте. Отмеченные станут воркерами этого проекта."
 OUT_HEAD = (f"{title('move')} — воркеров в другой проект или в свободные. Ограничения от @SpamBot и прокси "
             "аккаунты унесут с собой; люди, добавленные ими в контакты, в этом проекте перейдут к другим воркерам.")
 
@@ -103,7 +102,7 @@ async def free_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     await callback.message.edit_text(
         _moved_text("✅ Добавлено в проект", moved, failed, len(paths), "Не добавлены")
         + f"\n🤖 Воркеров в проекте: {pool.count()}",
-        parse_mode="HTML", reply_markup=back_kb(ACCOUNTS, workspace.project_id, fresh=False))
+        parse_mode="HTML", reply_markup=back_kb(ADD, workspace.project_id, fresh=False))
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.MOVE))
@@ -120,29 +119,46 @@ async def move_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPoo
                      [account.path for account in workers], labels, "▶️ Далее", edit=True)
 
 
+def _targets_kb(others: list, page: int):
+    """Where the ticked workers go: the other projects, a page of them (keyboards.paged_kb: Telegram takes at most
+    100 buttons under a message), then the free ones."""
+    markup = paged_kb("mv_to", [(f"📁 {project.name}", str(project.id)) for project in others], page)
+    markup.inline_keyboard.append(choice_kb("mv_to", [("📦 В свободные", "free")]).inline_keyboard[0])
+    return cancel_kb(MoveWorkers.target, markup)
+
+
+def _others(workspace: Workspace) -> list:
+    """The projects but this one; ValueError for an unreadable projects file (projects.load)."""
+    return [project for project in projects.load() if project.id != workspace.project_id]
+
+
 @router.callback_query(MoveWorkers.out, ChoiceCB.filter(F.scope == "mv_out"))
 async def move_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, workspace: Workspace):
     paths = await _ticked(callback, callback_data, state, OUT_HEAD, "mv_out", "▶️ Далее")
     if paths is None:
         return
     try:
-        others = [project for project in projects.load() if project.id != workspace.project_id]
+        others = _others(workspace)
     except ValueError as err:
         await state.clear()
         await back_answer(callback.message, f"⚠️ {err}", ACCOUNTS, workspace.project_id)
         return
     await state.set_state(MoveWorkers.target)
     await state.update_data(move_chosen=paths)
-    await callback.message.edit_text(
-        f"Куда перенести отмеченных ({len(paths)})?",
-        reply_markup=cancel_kb(MoveWorkers.target, choice_kb(
-            "mv_to", [*((f"📁 {project.name}", str(project.id)) for project in others), ("📦 В свободные", "free")])))
+    await callback.message.edit_text(f"Куда перенести отмеченных ({len(paths)})?", reply_markup=_targets_kb(others, 0))
 
 
 @router.callback_query(MoveWorkers.target, ChoiceCB.filter(F.scope == "mv_to"))
 async def move_to(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool,
                   workspace: Workspace, workspaces: Workspaces):
     await callback.answer()
+    if (page := page_of(callback_data.value)) is not None:  # ◀️ · 📄 · ▶️: another page, the projects read again
+        try:
+            others = _others(workspace)
+        except ValueError:  # an unreadable file: the page shown stays, the move says why
+            return
+        await callback.message.edit_reply_markup(reply_markup=_targets_kb(others, page))
+        return
     paths = (await state.get_data())["move_chosen"]
     await state.clear()
     try:

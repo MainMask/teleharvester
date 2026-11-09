@@ -229,14 +229,56 @@ def test_pm_broadcast_names_a_recipients_settings_refusal(monkeypatch):
     assert "[acc] не отправлено: пишут только контакты и Premium" in reports
 
 
-def test_cli_campaign_with_no_config_messages_stops_before_asking_anything(monkeypatch):
-    """The terminal sends one of [broadcast] messages (config.toml.example has none): said at once, before
-    any question or worker, not as an IndexError from every worker."""
-    import pytest
 
-    from functions import broadcast
 
-    monkeypatch.setattr(broadcast.console, "input", lambda *a, **k: pytest.fail("nothing is asked"))
-    settings = types.SimpleNamespace(delay=[0], messages_count=1, messages=[], trigger="go")
-    with pytest.raises(ValueError, match=r"\[broadcast\] messages"):
-        Broadcast(_storage([_Session()]), settings).ask()
+def test_a_running_campaign_keeps_its_own_count_and_trigger_when_another_project_changes_them():
+    """config.toml's trigger and count are every project's: another project's run writes them while this one
+    runs — this one keeps the ones it was started with."""
+    settings = types.SimpleNamespace(delay=[0], messages_count=2, trigger="go")
+    fn = Broadcast(_storage([_Session()]), settings)
+    fn.configure(choice=0, content=RichContent(text="hi"))
+    sends = []
+
+    async def _send(*args, **kwargs):
+        sends.append(1)
+        settings.messages_count = 50  # another project's campaign starts meanwhile
+
+    async def _no_delay():
+        pass
+
+    fn._send, fn.delay = _send, _no_delay
+
+    async def report(text):
+        pass
+
+    asyncio.run(fn.broadcast(_Session(), "chat", report))
+    assert len(sends) == 2
+
+    handlers, started = [], []
+
+    class _Listener(_Session):
+        disconnected = None
+
+        def add_event_handler(self, handler, event):
+            handlers.append(handler)
+
+        def remove_event_handler(self, handler, event):
+            pass
+
+    async def broadcast(session, peer, report, reply_to=None):
+        started.append(peer)
+
+    async def listen_once():
+        fn.broadcast = broadcast
+        session = _Listener()
+        session.session = types.SimpleNamespace(_entities=set())
+        fn.storage.get_session_path = lambda s: None
+        task = asyncio.ensure_future(fn.handle(session, report))
+        await asyncio.sleep(0)
+        settings.trigger = "start"  # another project's trigger
+        for chat, text in ((1, "start"), (2, "go")):
+            await handlers[0](types.SimpleNamespace(raw_text=text, chat_id=chat, reply_to=None))
+        task.cancel()
+
+    asyncio.run(listen_once())
+    assert started == [2]  # only its own "go"

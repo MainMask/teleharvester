@@ -7,7 +7,8 @@ RISKY = "risky"
 @dataclass(frozen=True)
 class BotFunction:
     key: str        # callback id, used in FunctionCB
-    classname: str  # TelethonFunction subclass name, as discovered from functions/
+    classname: str  # TelethonFunction subclass name, as discovered from functions/; "" for one run by its own
+                    # router (bot/routers/scraping/)
     title: str      # label shown in the menu
     risk: str       # SAFE or RISKY
     category: str   # menu category
@@ -21,6 +22,7 @@ class Button:
     action: str  # a MenuAction value (bot/callbacks.py)
     title: str
     hint: str    # one line next to its title on its screen: what it does
+    group: str = ""  # a subheading within its screen's message, as BotFunction.group
 
 
 @dataclass(frozen=True)
@@ -30,9 +32,11 @@ class Screen:
     parent: str = ""  # the screen its ⬅️ Назад goes to (and its menu path); "" for a main-menu button
     buttons: tuple[Button, ...] = ()  # its actions, before its functions (BOT_FUNCTIONS of its category)
     keeps_form: bool = False  # only shows: opened, a form under way stays at its step (as /status does)
+    own_buttons: bool = False  # its view adds buttons of its own (screen_kb's `own`), none risky: see all_risky
+    refresh: bool = False  # its view shows live state: 🔄 Обновить next to its ⬅️ Назад (screen_kb)
 
 
-# The whole menu lives here: the bot's keyboards, its screens' texts, the CLI menu and the menu
+# The whole menu lives here: the bot's keyboards, its screens' texts and the menu
 # paths in messages (menu_path) are built from it, so a button can't lose its description.
 # One tree of screens: each holds its actions, then its functions (under their subheadings), then
 # the screens whose parent it is. The main menu (reply keyboard): the projects — all the work is a
@@ -41,63 +45,92 @@ class Screen:
 # function has one place in it. How the bot shows a screen: bot/services/screens.py.
 # what the delay and the pause between accounts hold up: the settings' screen and their prompts say the same
 DELAY_HINT = "пауза между действиями воркера: рассылки, вступления, реакции, опросы, жалобы, инвайтинг, контакты"
-PROFILE_PAUSE_HINT = "пауза между аккаунтами при смене имени, username, bio, фото, 2FA, канала и визита"
+PROFILE_PAUSE_HINT = "пауза между воркерами при смене имени, username, bio, фото, 2FA, канала и визита"
 PROJECTS = "📁 Проекты"  # the projects: each one's card runs its scrape, the work on its bases, its accounts
 CARD = "📁 Проект"  # a project's card (bot/routers/projects/), the parent of its screens
 CARD_IN_PATH = "проект"  # how menu_path names the card: it is opened by the project's own name
 COLLECT = "📥 Сбор"
-BASE = "📨 База и рассылка"
+BASE = "🎯 База и рассылка"
 MANAGE = "🛠 Управление"
 ADD_CHANNELS = "➕ Добавить каналы"  # 📢 Каналы' title for a project without channels
 ACTIVITY = "💬 Активность"
 ACCOUNTS = "🤖 Аккаунты"
+ADD = "➕ Добавить"
+POLL = "📡 Опросить"  # 📋 Список' button (bot/routers/accounts/base.py)
+ACCOUNT_LIST = "📋 Список"
 PROFILE = "👤 Профиль"
 SECURITY = "🔐 Безопасность"
+WARMUP = "🔥 Прогрев"
+WARMUP_STEPS = "🧩 Шаги"
 SETTINGS = "⚙️ Настройки"
 AUTOREPLY = "📬 Автоответ"
-LIMITS = "📏 Дневные лимиты"
 TASKS = "📊 Задачи"
-SCREENS = {screen.title: screen for screen in (  # in the CLI menu's order
+CHECKS_GROUP = "Проверка"  # 📋 Список's checks: its poll (an action) and @SpamBot's (a function), one row
+PAUSES_GROUP = "Паузы"  # the settings' subheadings
+CAPS_GROUP = "Дневные лимиты на аккаунт"
+SCREENS = {screen.title: screen for screen in (
     # its list and cards: bot/routers/projects/
     Screen(PROJECTS, "ваши проекты: у каждого свои аккаунты, прокси, база и вся работа с ними"),
-    Screen(CARD, "сбор и база проекта, рассылка, его аккаунты и их активность", PROJECTS),
+    Screen(CARD, "сбор, база и рассылка, аккаунты и их прогрев, активность, управление проектом", PROJECTS),
     # the card's screens, in the order of the work: collect and check the scrape, then the work on the base
-    Screen(COLLECT, "скрап каналов, свой список, участники групп; проверка и анализ файлов", CARD, buttons=(
-        Button("scrape", "▶️ Скрап проекта", "посты каналов проекта за период: комментарии, реакции, участники"),
-        Button("topup", "🔄 Дособрать", "новое с прошлого скрапа, в те же файлы"),
-        Button("upload", "📄 Загрузить список", "@username, ссылки t.me или номера: список для рассылки"),
+    Screen(COLLECT, "каналы, скрап, участники групп; проверка и анализ файлов скрапа", CARD, buttons=(
+        Button("channels", "📢 Каналы", "список каналов и групп проекта для скрапа"),
+        Button("scrape", "▶️ Скрап", "посты каналов проекта за период: комментарии, реакции, участники"),
+        Button("topup", "⏩ Дособрать", "новое с прошлого скрапа, в те же файлы"),
     )),
-    Screen(BASE, "контакты воркеров и личные сообщения людям из базы", CARD),
-    Screen(ACCOUNTS, "воркеры и личные аккаунты, прокси, проверка, профиль, безопасность", CARD, buttons=(
-        Button("list", "📋 Список", "воркеры и личные аккаунты: ограничения, страны; карточка — код входа"),
-        Button("add", "➕ Добавить", "по номеру, из tdata или из свободных аккаунтов"),
+    # the base: what it holds (its view: bot/routers/projects/views.py), its list, its clearing, then the work on it
+    Screen(BASE, "люди для рассылки: свой список, очистка, контакты воркеров, ЛС, автоответ", CARD, buttons=(
+        Button("upload", "📄 Свой список", "@username, ссылки t.me или номера: список для рассылки"),
+        Button("clearbase", "🧹 Очистить базу", "участники групп или загруженный список уходят в <имя>_previous/, "
+               "оттуда их можно вернуть"),
+    )),
+    # its view: bot/routers/autoreply.py
+    Screen(AUTOREPLY, "ответ тем, кто ответил на рассылку в ЛС, и их сообщения сюда", BASE, own_buttons=True,
+           refresh=True),
+    # its view (the warmup's line): bot/routers/accounts/base.py
+    Screen(ACCOUNTS, "прокси, перенос; добавление, список и проверки, прогрев, профиль, безопасность", CARD, buttons=(
         Button("proxy", "🌐 Прокси", "задать список прокси проекта и раздать его аккаунтам"),
         Button("move", "↪️ Перенести", "воркеров в другой проект или в свободные"),
     )),
+    # by phone: bot/routers/login.py; from files: accounts/upload.py; the free ones: accounts/move.py
+    Screen(ADD, "по номеру, из файлов (tdata, .session) или из свободных аккаунтов", ACCOUNTS, buttons=(
+        Button("byphone", "🤖 Воркер по номеру", "вход по номеру и коду; работает в этом проекте"),
+        Button("personal", "👤 Личный по номеру", "вход по номеру и коду; общий для всех проектов, только для скрапа"),
+        Button("files", "📥 Из файлов", "ZIP с tdata или файлы .session (+ .json) — воркерами проекта"),
+        Button("free", "📦 Из свободных", "аккаунты, ещё ни в одном проекте, — воркерами проекта"),
+    )),
+    # the accounts' state: its checks, then (its view's own buttons) the categories, the personal accounts, the ZIP
+    # — bot/routers/accounts/base.py, 📡 with workers only
+    Screen(ACCOUNT_LIST, "опрос и проверка SpamBot; аккаунты по категориям и личные: карточки, ZIP, удаление",
+           ACCOUNTS, buttons=(
+               Button("profiles", POLL, "профиль и страна каждого воркера (запрос к Telegram), его ограничения по "
+                      "последней проверке SpamBot", CHECKS_GROUP),
+           ), own_buttons=True, refresh=True),
+    # their views: bot/routers/warmup.py
+    Screen(WARMUP, "оформление и ежедневная активность аккаунтов перед работой", ACCOUNTS, own_buttons=True,
+           refresh=True),
+    Screen(WARMUP_STEPS, "что делает прогрев: профиль, безопасность, активность; шансы и количества", WARMUP,
+           own_buttons=True),
     Screen(PROFILE, "имя, username, bio, фото, канал в профиле", ACCOUNTS),
     Screen(SECURITY, "2FA, чужие сессии, видимость, очистка диалогов", ACCOUNTS),
     Screen(ACTIVITY, "все воркеры проекта по одной цели: ЛС, комментарии, чаты, вступления, реакции, опросы, "
                      "инвайтинг, жалобы", CARD),
-    Screen(MANAGE, "каналы, имя, очистка базы, удаление проекта", CARD, buttons=(
-        Button("channels", "📢 Каналы", "список каналов и групп проекта для скрапа"),
+    Screen(MANAGE, "регион, имя, удаление проекта", CARD, buttons=(
+        Button("region", "🌍 Регион", "язык и страна имён, username, bio, фото и контента прогрева"),
         Button("rename", "🏷 Переименовать", "новое имя проекта, его файлы переименуются вместе с ним"),
-        Button("clearbase", "🧹 Очистить базу", "участники групп или загруженный список уходят в <имя>_previous/, "
-               "оттуда их можно вернуть"),
-        Button("delete", "🗑 Удалить", "проект удаляется, файлы скрапа остаются; аккаунты сначала перенесите"),
-    )),
-    Screen(SETTINGS, "задержки, дневные лимиты и автоответ — общие для всех проектов", buttons=(  # the CLI too
-        Button("delay", "⏱ Задержка", DELAY_HINT),
-        Button("ppause", "⏳ Пауза профиля", PROFILE_PAUSE_HINT),
-    )),
-    # its view: bot/routers/autoreply.py
-    Screen(AUTOREPLY, "ответ тем, кто ответил на рассылку в ЛС, и их сообщения сюда", SETTINGS),
-    Screen(LIMITS, "сколько каждый аккаунт делает в сутки: ЛС, инвайты, контакты", SETTINGS, buttons=(
-        Button("cap_pm", "📨 ЛС", "личных сообщений рассылки на аккаунт в сутки"),
-        Button("cap_invite", "🤝 Инвайты", "приглашений в чат на аккаунт в сутки"),
-        Button("cap_contacts", "📇 Контакты", "добавлений в контакты на аккаунт в сутки"),
+        Button("delete", "🗑 Удалить", "проект удаляется, файлы скрапа остаются; воркеров сначала перенесите"),
     )),
     # its view: bot/routers/menu.py, as /status
-    Screen(TASKS, "что сейчас выполняется во всех проектах: ход задач и их остановка", keeps_form=True),
+    Screen(TASKS, "что сейчас выполняется во всех проектах: ход задач и их остановка", keeps_form=True,
+           refresh=True),
+    # its view (the values on its buttons): bot/routers/settings.py
+    Screen(SETTINGS, "задержки и дневные лимиты на аккаунт — общие для всех проектов", buttons=(
+        Button("delay", "⏱ Задержка", DELAY_HINT, PAUSES_GROUP),
+        Button("ppause", "⏳ Пауза профиля", PROFILE_PAUSE_HINT, PAUSES_GROUP),
+        Button("cap_pm", "📨 ЛС", "личных сообщений рассылки", CAPS_GROUP),
+        Button("cap_invite", "🤝 Инвайты", "приглашений в чат", CAPS_GROUP),
+        Button("cap_contacts", "📇 Контакты", "добавлений в контакты", CAPS_GROUP),
+    )),
 )}
 MAIN_MENU = tuple(title for title, screen in SCREENS.items() if not screen.parent)  # the reply keyboard
 
@@ -119,7 +152,7 @@ def in_project(title: str) -> bool:
 
 
 # the card's screens on the project's files: their buttons run on the project itself (bot/routers/projects/
-# card.py, the CLI's card in functions/projects.py); the card's others (🤖, 💬) run on its workers
+# card.py); the card's others (🤖, 💬) run on its workers
 PROJECT_FILES = (COLLECT, BASE, MANAGE)
 ON_WORKERS = ("addcontacts", "pmmailing")  # the card's functions run by the workers, not on one account
 
@@ -133,19 +166,19 @@ REPORTS = "Жалобы"
 # additionally require at least one worker (see WorkerPool). Scraping entries run
 # through their own router (not WorkerPool) but still use a worker's session string.
 BOT_FUNCTIONS = [
-    # a project's card (bot/routers/projects/card.py, functions/projects.py) runs these on the project's files:
-    # 📥 Сбор — a group's members as its base, then the check of the scrape's files
-    BotFunction("members", "MembersFunc", "👥 Участники групп", SAFE, COLLECT,
+    # a project's card (bot/routers/projects/card.py) runs these on the project's files:
+    # 📥 Сбор — a group's members as a base, then the check of the scrape's files
+    BotFunction("members", "", "👥 Участники групп", SAFE, COLLECT,
                 "весь список участников групп, включая молчащих; сразу база для рассылки"),
-    BotFunction("verify", "VerifyFunc", "🔍 Верификация", SAFE, COLLECT,
+    BotFunction("verify", "", "🔍 Верификация", SAFE, COLLECT,
                 "сверяет файл скрапа с каналом и находит пропущенные посты"),
-    BotFunction("analysis", "ScraperAnalysisFunc", "📈 Анализ", SAFE, COLLECT,
+    BotFunction("analysis", "", "📈 Анализ", SAFE, COLLECT,
                 "утилиты для файлов скрапа: ссылки на каналы, поиск по словам, просмотр"),
-    # 📨 База и рассылка: the contacts first — a mailing then writes to each person from the worker that
+    # 🎯 База и рассылка: the contacts first — a mailing then writes to each person from the worker that
     # added them
     BotFunction("addcontacts", "AddContactsFunc", "📇 В контакты", RISKY, BASE,
                 "добавляет людей из базы в контакты воркеров; рассылка потом пишет им с того же воркера"),
-    BotFunction("pmmailing", "PmMailingFunc", "📨 ЛС по базе", RISKY, BASE,
+    BotFunction("pmmailing", "PmMailingFunc", "📨 Рассылка", RISKY, BASE,
                 "личные сообщения людям из скрапнутой базы или списка; помнит, кому уже писали, и делит людей "
                 "между воркерами"),
     # 💬 Активность: every worker writes to one target, then the actions in chats, then the reports
@@ -169,10 +202,13 @@ BOT_FUNCTIONS = [
                 "жалоба на посты; путь жалобы выбираете один раз, остальные воркеры повторяют", REPORTS),
     BotFunction("reportuser", "ReportUserFunc", "🚫 Жалоба на пользователя", RISKY, ACTIVITY,
                 "жалоба на аккаунт от всех воркеров", REPORTS),
-    # 🤖 Аккаунты: the check most often needed, on the screen itself, after its actions
-    BotFunction("status", "SpamBlockFunc", "🛡 Проверка SpamBot", SAFE, ACCOUNTS,
+    # 🤖 Аккаунты → 📋 Список: the check of the accounts, after its poll
+    BotFunction("status", "SpamBlockFunc", "🩺 SpamBot", SAFE, ACCOUNT_LIST,
                 "спрашивает @SpamBot об ограничениях; бессрочно ограниченных исключает из рассылки, мёртвые сессии "
-                "убирает"),
+                "убирает", CHECKS_GROUP),
+    # 🔥 Прогрев
+    BotFunction("warmup", "WarmupFunc", "▶️ Прогреть", RISKY, WARMUP,
+                "день прогрева аккаунтам, ещё не прогретым и не прогревавшимся сегодня"),
     # 🤖 Аккаунты → 👤 Профиль
     BotFunction("name", "ChangeNameFunc", "✏️ Имя", SAFE, PROFILE,
                 "одно имя выбранным воркерам или случайное из списка"),
@@ -181,12 +217,12 @@ BOT_FUNCTIONS = [
     BotFunction("bio", "ChangeBioFunc", "📝 Bio", SAFE, PROFILE,
                 "один текст «о себе» выбранным воркерам или случайный из списка"),
     BotFunction("photo", "ChangeProfilePhotoFunc", "🖼 Фото", SAFE, PROFILE,
-                "одно фото выбранным воркерам или случайные из assets/photos"),
+                "одно фото выбранным воркерам или случайные из photos/ региона проекта"),
     BotFunction("clearchannel", "ClearPersonalChannelFunc", "📺 Убрать канал", SAFE, PROFILE,
                 "снимает личный канал, закреплённый в профиле"),
     # 🤖 Аккаунты → 🔐 Безопасность: the account's protection and privacy, then the irreversible wipe
     BotFunction("2fa", "SetPasswordFunc", "🔒 Пароль 2FA", SAFE, SECURITY,
-                "ставит облачный пароль на выбранные аккаунты"),
+                "ставит облачный пароль выбранным воркерам"),
     BotFunction("terminate", "TerminateSessionsFunc", "📴 Чужие сессии", SAFE, SECURITY,
                 "выкидывает из аккаунта все устройства, кроме бота"),
     BotFunction("lastseen", "HideLastSeenFunc", "🙈 Скрыть визит", SAFE, SECURITY,
@@ -201,15 +237,46 @@ BOT_FUNCTIONS_BY_KEY = {function.key: function for function in BOT_FUNCTIONS}
 RISK_NOTE = "⚠️ — действия от имени воркеров: при частом использовании Telegram может ограничить аккаунт."
 
 
-def risk_marker(function: BotFunction, section: list[BotFunction]) -> str:
-    """⚠️ before a risky function's title — only in a section that has safe ones too: in an all-risky
-    section the mark is once, on its title (screens.screen_text), and marking every button would say nothing."""
-    mixed = any(f.risk != RISKY for f in section)
-    return "⚠️ " if mixed and function.risk == RISKY else ""
+def all_risky(title: str) -> bool:
+    """Every button of the screen acts on behalf of the workers: ⚠️ once, on its title. Its actions (Button:
+    a list's upload, a base's clearing…) and its view's own buttons never do, so a screen with any is marked on
+    its risky functions."""
+    screen, functions = SCREENS[title], by_category(title)
+    return bool(functions) and not (screen.buttons or screen.own_buttons) and all(f.risk == RISKY for f in functions)
+
+
+def risk_marker(function: BotFunction) -> str:
+    """ ⚠️ after a risky function's title, as after a screen's — unless its whole screen is risky (all_risky): the
+    mark is then once, on the screen's title, and marking every button would say nothing."""
+    return " ⚠️" if function.risk == RISKY and not all_risky(function.category) else ""
+
+
+@dataclass(frozen=True)
+class Entry:
+    """A screen's button as its message and its keyboard show it (bot/services/screens.py, bot/keyboards/menu.py)."""
+    key: str        # a Button's action, or a BotFunction's key
+    label: str
+    hint: str
+    group: str
+    marker: str     # risk_marker
+    function: bool  # a BotFunction (FunctionCB), else a screen's action (MenuCB)
+
+
+def entries(title: str, hidden=(), titles: dict | None = None) -> list[Entry]:
+    """The screen's actions (`titles` in place of their own), then its functions; without the `hidden` (their action
+    or key)."""
+    titles = titles or {}
+    return [*(Entry(button.action, titles.get(button.action, button.title), button.hint, button.group, "", False)
+              for button in SCREENS[title].buttons if button.action not in hidden),
+            *(Entry(function.key, function.title, function.hint, function.group, risk_marker(function), True)
+              for function in by_category(title) if function.key not in hidden)]
 
 
 def _place(key: str) -> tuple[str, str]:
-    """(its screen, its title) of a function (its registry key) or a screen's action."""
+    """(its screen, its title) of a function (its registry key) or a screen's action; a screen's (its title):
+    (its parent, its title)."""
+    if key in SCREENS:
+        return SCREENS[key].parent, key
     if key in BOT_FUNCTIONS_BY_KEY:
         return BOT_FUNCTIONS_BY_KEY[key].category, BOT_FUNCTIONS_BY_KEY[key].title
     for title, screen in SCREENS.items():
@@ -227,48 +294,13 @@ def title(key: str) -> str:
 
 def menu_path(key: str) -> str:
     """Where a function (its registry key) or a screen's action is in the bot's menu, for messages that send
-    the operator there: "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка SpamBot"."""
+    the operator there: "📁 Проекты → проект → 🤖 Аккаунты → 📋 Список → 🩺 SpamBot"."""
     screen, name = _place(key)
     return " → ".join(CARD_IN_PATH if part == CARD else part for part in [*trail(screen), name])
 
 
-# a function that runs on the workers, tapped in a project without any (the bot's pop-up, the CLI's line)
-NO_WORKERS = f"У проекта нет воркеров. Добавьте: {menu_path('add')}."
-
-
-# The CLI menu: the same screens, titles and hints as the bot. Some of the bot's screens' actions
-# (and 📁 Проекты, a main-menu button there) are CLI functions here.
-CLI_EXTRAS = [
-    BotFunction("projects", "ProjectsFunc", "📁 Проекты", SAFE, PROJECTS,
-                "ваши проекты: у каждого свои аккаунты и прокси; скрап и дособор, рассылка, контакты, верификация, "
-                "анализ, активность воркеров"),
-    BotFunction("accounts", "AccountsFunc", "📋 Список", SAFE, ACCOUNTS,
-                "имя, username, номер, прокси и статус каждого воркера проекта, ограничения от @SpamBot, страны "
-                "номеров; личные аккаунты; карточка каждого — код входа, удаление личного"),
-    BotFunction("proxies", "SetProxiesFunc", "🌐 Прокси", SAFE, ACCOUNTS,
-                "раздать прокси из файла аккаунтам проекта"),
-    BotFunction("phone", "AddByPhoneFunc", "➕ Добавить", SAFE, ACCOUNTS,
-                "по номеру и коду — воркер или личный (только для скрапа); воркеры из папок tdata_import/ "
-                "(Telegram Desktop); или свободные аккаунты, ещё ни в одном проекте — номерами"),
-    BotFunction("move", "MoveWorkersFunc", "↪️ Перенести", SAFE, ACCOUNTS,
-                "воркеры проекта по номерам — в другой проект или в свободные"),
-    BotFunction("settings", "SettingsFunc", "⚙️ Настройки", SAFE, SETTINGS,
-                "задержка, пауза профиля и дневные лимиты для всех проектов (хранятся в config.toml)"),
-]
-
-
-# run from another item only, never a menu item of their own: a project's card (functions/projects.py),
-# ➕ Добавить (functions/sign_in.py), an account's card (functions/accounts.py)
-NOT_MENU_ITEMS = ("ScrapeFunc", *(function.classname for function in BOT_FUNCTIONS
-                                   if function.category in PROJECT_FILES), "TdataImportFunc", "LoginCodesFunc")
-
-
-def cli_menu(project: bool = False) -> list[tuple[str, list[BotFunction]]]:
-    """[(screen, functions)] in the bot's order: a screen's actions (CLI_EXTRAS) before its functions;
-    a project card's items are the card's only. `project`: a project's screens (in_project), for its
-    card; else the main menu's."""
-    every = [f for f in CLI_EXTRAS + BOT_FUNCTIONS if f.classname not in NOT_MENU_ITEMS]
-    return [(title, [f for f in every if f.category == title]) for title in SCREENS if in_project(title) == project]
+# a function that runs on the workers, tapped in a project without any (the bot's pop-up)
+NO_WORKERS = f"У проекта нет воркеров. Добавьте: {menu_path(ADD)}."
 
 
 def by_category(category: str) -> list[BotFunction]:
@@ -277,4 +309,5 @@ def by_category(category: str) -> list[BotFunction]:
 
 def missing_classes(functions: dict) -> list[str]:
     """Registry classnames with no discovered instance (would KeyError at runtime)."""
-    return [function.classname for function in BOT_FUNCTIONS if function.classname not in functions]
+    return [function.classname for function in BOT_FUNCTIONS
+            if function.classname and function.classname not in functions]

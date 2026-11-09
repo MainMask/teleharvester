@@ -4,14 +4,15 @@ avatar replacement, the picks without repeats and the CLI's worker picker."""
 import asyncio
 import contextlib
 import datetime
+import os
 import types
-from unittest.mock import patch
 
+import conftest
 from telethon.tl.functions.photos import DeletePhotosRequest, UploadProfilePhotoRequest
 from telethon.tl.types import Photo
 
 from functions.base.telethon import TelethonFunction
-from modules import json_file, profile_done, restricted_workers
+from modules import content, json_file, profile_done
 
 
 def ns(**kw):
@@ -33,7 +34,7 @@ def _storage(sessions, paths=None, names=None):
     return ns(sessions=list(sessions), ainitialize_session=ainitialize_session,
               jsessions_paths={path: _jsession(path, *names.get(path, ())) for path in paths.values()},
               get_session_path=lambda session: paths.get(id(session)),
-              remember_name=lambda session, first, last: None)
+              remember_name=lambda session, first, last: None, home=conftest.home())
 
 
 async def _quiet(text):
@@ -149,13 +150,27 @@ def test_names_from_a_list_skip_the_ones_workers_have():
     assert (new.requests[0].first_name, new.requests[0].last_name) == ("Анна", "")
 
 
+def test_a_worker_that_can_t_be_polled_takes_no_name_from_the_list():
+    from functions.changename import ChangeNameFunc
+
+    class _Gone(_Session):
+        async def get_me(self):
+            raise ConnectionError("dead proxy")
+
+    gone, ok = _Gone(), _Session()
+    fn = ChangeNameFunc(_storage([gone, ok], {id(gone): "gone", id(ok): "ok"}), ns(profile_pause=[0]))
+    fn.get_random_name = lambda names, taken: (next(n for n in names if n not in taken), None)  # the first free
+    asyncio.run(fn.run(_quiet, names=["Анна", "Ольга"]))
+    assert ok.requests[0].first_name == "Анна"  # not left to the one skipped
+
+
 def test_photos_from_the_folder_skip_the_ones_other_workers_have(tmp_path, monkeypatch):
     from functions.change_profile_photo import ChangeProfilePhotoFunc
 
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "assets" / "photos").mkdir(parents=True)
+    os.makedirs(content.path("ru", "photos"))
     for name in ("a.jpg", "b.jpg", "c.jpg"):
-        (tmp_path / "assets" / "photos" / name).write_bytes(b"x")
+        with open(os.path.join(content.path("ru", "photos"), name), "wb") as fileobj:
+            fileobj.write(b"x")
     json_file.save(profile_done.PATH, {"done": {}, "values": {"ChangeProfilePhotoFunc": {"old": "a.jpg"}}})
 
     set_to = []
@@ -237,41 +252,8 @@ def test_no_old_avatar_nothing_deleted():
 
 def test_parse_picks():
     parse = TelethonFunction.parse_picks
-    assert parse("", 5, [3, 4]) == [3, 4] and parse("new", 5, [3, 4]) == [3, 4]
-    assert parse("all", 3, []) == [0, 1, 2]
-    assert parse("1, 3,4-5", 5, []) == [0, 2, 3, 4]
-    assert parse("6", 5, []) == [] and parse("0", 5, []) == [] and parse("x", 5, []) == []
-    assert parse("3-2", 5, []) == []
-
-
-def test_cli_picks_the_new_workers_by_default():
-    from functions.changebio import ChangeBioFunc
-
-    old, new = object(), object()
-    storage = _storage([old, new], {id(old): "old", id(new): "new"})
-    profile_done.seed(["old"])
-    restricted_workers.save(["old"])
-    fn = ChangeBioFunc(storage, ns())
-
-    with patch("functions.base.telethon.Prompt.ask", side_effect=[""]):
-        fn.ask_workers()
-    assert fn.sessions == [new] and fn.on_hold == []
-
-    profile_done.mark("new", "ChangeBioFunc")
-    with patch("functions.base.telethon.Prompt.ask", side_effect=["", "1"]):  # no new ones: asked again
-        fn.ask_workers()
-    assert fn.sessions == [old]
-
-
-def test_cli_picker_says_why_it_asks_again():
-    from functions.changebio import ChangeBioFunc
-
-    only = object()
-    storage = _storage([only], {id(only): "only"})
-    profile_done.seed(["only"])  # changed already: no new ones for Enter to take
-    printed = []
-    with patch("functions.base.telethon.Prompt.ask", side_effect=["", "all"]), \
-            patch("functions.base.telethon._report_console.print",
-                  side_effect=lambda *a, **k: printed.append(str(a[0]))):
-        ChangeBioFunc(storage, ns()).ask_workers()
-    assert any("Никого не выбрано" in line for line in printed)
+    assert parse("", 5) == [] and parse("  ", 5) == []  # Enter: back
+    assert parse("all", 3) == [0, 1, 2]
+    assert parse("1, 3,4-5", 5) == [0, 2, 3, 4]
+    assert parse("6", 5) == [] and parse("0", 5) == [] and parse("x", 5) == [] and parse("new", 5) == []
+    assert parse("3-2", 5) == []

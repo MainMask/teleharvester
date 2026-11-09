@@ -1,7 +1,5 @@
 import asyncio
 
-from modules.console import console
-from rich.prompt import Confirm
 
 from telethon import events, types
 from telethon.errors import UserAlreadyParticipantError
@@ -10,7 +8,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited, console_report
+from functions.base.base import AccountLimited
 from scraper.scrape import channel_slug
 
 CAPTCHA_WAIT = 30  # seconds a worker waits for a captcha after joining
@@ -27,9 +25,9 @@ class JoinerFunc(TelethonFunction):
         if mode == "1":
             try:
                 if not slug.startswith("+"):  # an invite's slug is "+<hash>"
-                    updates = await self.safe_call(lambda: session(JoinChannelRequest("@" + slug)))
+                    updates = await self.call(session, JoinChannelRequest("@" + slug))
                 else:
-                    updates = await self.safe_call(lambda: session(ImportChatInviteRequest(slug[1:])))
+                    updates = await self.call(session, ImportChatInviteRequest(slug[1:]))
             except UserAlreadyParticipantError:  # only an invite raises it: the worker is in the chat already
                 return True
             except AccountLimited as error:
@@ -45,7 +43,7 @@ class JoinerFunc(TelethonFunction):
 
         elif mode == "2":
             try:
-                full = await self.safe_call(lambda: session(GetFullChannelRequest("@" + slug)))
+                full = await self.call(session, GetFullChannelRequest("@" + slug))
                 linked_id = full.full_chat.linked_chat_id
 
                 if not linked_id:
@@ -58,7 +56,7 @@ class JoinerFunc(TelethonFunction):
                     await report(f"[!] [аккаунт {index + 1}] привязанный чат не найден")
                     return False
 
-                await self.safe_call(lambda: session(JoinChannelRequest(chat)))
+                await self.call(session, JoinChannelRequest(chat))
             except AccountLimited as error:
                 await report(f"[!] [аккаунт {index + 1}] лимит: {error}")
                 return False
@@ -95,7 +93,7 @@ class JoinerFunc(TelethonFunction):
             session.remove_event_handler(handler, events.NewMessage)
 
     async def run(self, mode, link, report, captcha=False):
-        """Join `mode` into `link` on every worker (the bot and the terminal)."""
+        """Join `mode` into `link` on every worker."""
         joined = 0
         self.progress_total(len(self.sessions))
 
@@ -132,19 +130,3 @@ class JoinerFunc(TelethonFunction):
             await msg.click(data=data)  # raw bytes: the data need not be UTF-8
             return True
         return False
-
-    async def execute(self):
-        """As the bot's: where (mode), the captcha, the link; every worker of the project."""
-        console.print(
-            "[1] 🚪 По ссылке — в канал или группу, куда она ведёт (и приглашение t.me/+…)",
-            "[2] 💬 В комментарии — в группу комментариев канала по его публичной ссылке: чтобы писать под "
-            "постами",
-            sep="\n",
-            style="bold white"
-        )
-        while (mode := console.input("[bold red]режим> [/]")) not in ("1", "2"):
-            pass
-        captcha = Confirm.ask(f"[bold red]нажимать капчу после вступления? (каждый воркер ждёт её до "
-                              f"{CAPTCHA_WAIT} с)[/]")
-        link = console.input("[bold red]ссылка> [/]")
-        await self.run(mode, link, console_report, captcha=captcha)

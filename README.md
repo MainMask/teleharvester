@@ -3,7 +3,7 @@
 A tool for operating pools of Telegram accounts (Telethon), one pool per project: DM mailings with
 per-recipient statistics, chat and comment campaigns, joining and inviting, reactions, poll votes,
 moderation reports, profile and session management, and a channel/group scraper with offline analysis.
-It is controlled from a terminal menu or a Telegram control bot.
+It is controlled from a Telegram control bot; a few session scripts add accounts and read login codes from the terminal.
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 
@@ -13,25 +13,28 @@ It is controlled from a terminal menu or a Telegram control bot.
 
 ## Features
 
-The terminal menu and the bot share one menu (Russian labels); functions are discovered from
-[`functions/`](functions/). Media, albums and formatted text are sent through the bot only; the
-terminal sends plain text. ⚠️ marks actions that may get a worker limited by Telegram.
+The bot's menu (Russian labels) is described in [`modules/registry.py`](modules/registry.py); its functions
+are discovered from [`functions/`](functions/). ⚠️ marks actions that may get a worker limited by Telegram, in the
+screen's description of its buttons (the buttons themselves stay short).
 
 All the work is a project's: each project has its own worker accounts, proxies, mailing statistics
-and contacts ledger, and its card holds everything done with them. The main menu has three items:
+and contacts ledger, and its card holds everything done with them. The main menu has three items, in one row:
 
 | Section | Functions |
 |---|---|
-| **📁 Проекты** | The projects. A project's card sums it up and opens its screens: on its files — **📥 Сбор** (scrape, top-up, list upload, group members, verification, analysis), **📨 База и рассылка** (add to contacts, DM mailing), **🛠 Управление** (channels, rename, clear, delete) — and on its workers, below; see [Projects](#projects). |
-| **⚙️ Настройки** | Action delay, profile pause, auto-reply, the per-account daily caps (**📏 Дневные лимиты**: DMs, invites, contacts) — for all projects, written back to `config.toml`. The chat campaign's trigger and messages per worker are asked by **🔔 Чат — по слову** itself and saved there. |
-| **📊 Задачи** | Every project's running jobs with progress and stop (bot only; same as `/status`). |
+| **📁 Проекты** | The projects. A project's card sums it up and opens its screens: on its files — **📥 Сбор** (channels, scrape, top-up, group members, verification, analysis), **🎯 База и рассылка** (the base's state, list upload, clear, add to contacts, DM mailing, auto-reply), **🛠 Управление** (region, rename, delete) — and on its workers, below; see [Projects](#projects). |
+| **📊 Задачи** | Every project's running jobs in one message: progress, **⏹** for each that can be stopped, **🔄 Обновить** (bot only; same as `/status`). |
+| **⚙️ Настройки** | Under **Паузы** the action delay and the profile pause, under **Дневные лимиты на аккаунт** the per-account daily caps (DMs, invites, contacts), each value on its button — for all projects, written back to `config.toml`. The chat campaign's trigger and messages per worker are asked by **🔔 Чат — по слову** itself and saved there. |
 
 A project's screens, on its own workers:
 
 | Screen | Functions |
 |---|---|
-| **🤖 Аккаунты** | Account list and cards (login codes, removal of personal accounts), adding accounts (by phone, from tdata, or free ones), moving workers to another project, the project's proxies, @SpamBot status check. |
-| **👤 Профиль** | Name, username, bio, photo, remove profile channel — applied one account at a time with `profile_pause`. |
+| **🤖 Аккаунты** | The workers' count and warmup, the project's proxies, moving workers to another project; its screens below. |
+| **➕ Добавить** | Adding accounts: **🤖 Воркер по номеру**, **👤 Личный по номеру** (all the projects', scrapes only), **📥 Из файлов** (tdata, `.session`), **📦 Из свободных** (accounts in no project); details under «Adding accounts» below. Each flow ends with ⬅️ back here. |
+| **📋 Список** | The accounts' checks, with workers only: **📡 Опросить** (every worker asked for its profile: name, username, Premium, its last @SpamBot status, the numbers' countries) and **🩺 SpamBot** (the @SpamBot status check). Then the project's accounts by category — 🆕 new, 🌡 warming, ✅ warmed, ❌ failed (with the error), ⛔ permanently restricted, 💀 dead (`sessions/inactive/`): a category's accounts with their cards (login codes; a dead one has none), **📦 Скачать ZIP** of their session files, **🗑 Удалить** (the files and their state; the accounts are not logged out; busy ones are skipped). **👤 Личные** — the personal accounts' cards (login codes, removal); **📦 Все аккаунты** — a ZIP of all the session files. A ZIP asks its format first: **.session + .json** (Telethon's SQLite session and the app, device, account and 2FA password it was used with — a `.session` worker's has the session only — what other software takes, and what **➕ Добавить → 📥 Из файлов** reads back) or **.jsession** (the bot's own, with the proxy: a backup for this bot). Either holds the bot's own keys: an account run here and elsewhere at once may have its session ended by Telegram. Only what there is is offered (a category with accounts, the ZIP with files). |
+| **🔥 Прогрев** | Warming the project's accounts up before work, day by day; see [Warmup](#warmup). |
+| **👤 Профиль** | Name, username, bio, photo, remove profile channel — applied one account at a time with `profile_pause`; the lists offered are the project's region's ([Content](#content)). |
 | **🔐 Безопасность** | Set 2FA password, terminate other sessions, hide last seen, clear dialogs. |
 | **💬 Активность** | Every worker of the project on one target: DM to one recipient, post comments, instant and trigger-based chat broadcasts; join chat, reactions, poll vote, inviting members of one chat to another; report a post or a user. |
 
@@ -50,19 +53,19 @@ pip install -r requirements.txt
 | File | Contents |
 |---|---|
 | `.env` | Secrets: `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN`. See [`.env.example`](.env.example). Environment variables take precedence. Keep it private (`chmod 600`). |
-| `config.toml` | Behaviour. See [`config.toml.example`](config.toml.example). Created on first run, which also asks for the API ID/hash (from <https://my.telegram.org>) if `.env` lacks them. |
+| `config.toml` | Behaviour. See [`config.toml.example`](config.toml.example). Copy it to `config.toml`, or run a session script once: it creates it and asks for the API ID/hash (from <https://my.telegram.org>) if `.env` lacks them. |
 
 Key `config.toml` settings:
 
 | Key | Default | Meaning |
 |---|---|---|
 | `[broadcast] delay` | — | Pause between a worker's actions, `[min, max]` s. |
-| `[broadcast] trigger`, `messages_count` | — | Trigger phrase and per-chat message cap for chat/comment campaigns (`0` = until stopped); the bot and the terminal ask for them at each run and save them here. |
+| `[broadcast] trigger`, `messages_count` | — | Trigger phrase and per-chat message cap for chat/comment campaigns (`0` = until stopped); the bot asks for them at each run and saves them here. |
 | `[limits] per_account_daily` | `30` | DM mailing messages per account per day (`0` = unlimited). |
 | `[limits] account_pause` | `[30, 60]` | Pause when the mailing switches accounts. |
 | `[limits] profile_pause` | `[60, 180]` | Pause between accounts for profile changes. |
 | `[limits] invite_per_account_daily`, `contacts_per_account_daily` | `0` | Daily invite / contact-add caps. Contacts: the next account continues. Invites: each worker gets its own share of the members, and a worker at its cap skips the rest of its share for that run. |
-| `[autoreply] enabled`, `text`, `interval` | `true`, `""`, `900` | Bot only: replies once to people who answer a mailing and forwards their messages to the admins. Interval ≥ 60 s; empty text disables it. |
+| `[autoreply] enabled`, `text`, `interval` | `true`, `""`, `900` | Bot only: replies once to people who answer a mailing and forwards their messages to the admins. `enabled` and `text` are the default of a project that has not set its own (**🎯 База и рассылка → 📬 Автоответ**, `projects/<id>/autoreply.json`); `interval` (≥ 60 s) is shared. Empty text disables it. |
 | `[bot] admins` | `[]` | Telegram user IDs allowed to use the bot (`BOT_ADMINS` overrides). |
 
 Every write from the app keeps the previous file as `config.toml.bak`. Legacy configs with
@@ -77,50 +80,53 @@ Every write from the app keeps the previous file as `config.toml.bak`. Legacy co
   own accounts lands here). None of them works until it is moved into a project: **➕ Добавить → 📦 Из
   свободных**, several at once by ticks (✅/⬜, ☑️ Все). **🤖 Аккаунты → ↪️ Перенести** moves the ticked
   workers into another project, or back to the free ones; their @SpamBot restrictions and proxies go with
-  them, and one busy with a job stays. The terminal takes numbers (`1,3,5-8`, `all`). Only `.jsession`
-  accounts are moved from the menu.
+  them, and one busy with a job stays. Only `.jsession` accounts are moved from the menu.
 - **Personal accounts** — `personal_sessions/`: same format, used for scraping only, never as workers;
   shared by all projects (one scrape at a time on each).
 
-Adding accounts (bot: a project's **🤖 Аккаунты → ➕ Добавить**; terminal: the same, on the project's card;
-or the scripts, which ask for the project):
+Adding accounts (bot: a project's **🤖 Аккаунты → ➕ Добавить**; or the scripts, which ask for the project and
+don't run while the bot does):
 
 ```bash
 python sessions/add_session.py           # worker or personal account by phone, tdata, or a free one
 python sessions/login.py [file.jsession] # login codes received in the last 15 minutes
-python sessions/import_tdata.py          # import tdata_import/<name>/tdata folders
 ```
 
-- **tdata import.** Place each Telegram Desktop `tdata` folder in `tdata_import/<name>/`
-  (optionally with a `Пароль 2фа*.txt` file containing `<label>: <password>` for 2FA). Each folder is converted to
-  the project's `sessions/<phone>.jsession` and marked `.imported`; an account that is already the project's
-  worker is left untouched. The bot accepts a ZIP of one `tdata` folder (≤ 10 MB, ≤ 100 MB unpacked).
+- **From files** (bot: **➕ Добавить → 📥 Из файлов**; `sessions/add_session.py` → [3]): accounts as sellers give them,
+  each made the project's `sessions/<phone>.jsession` on one of its proxies. An account already the project's is
+  left as is; one that is a worker elsewhere or a personal account is refused.
+  - **tdata** — a Telegram Desktop `tdata` folder: in the bot a ZIP of it (≤ 20 MB, ≤ 100 MB unpacked), for the
+    script `tdata_import/<name>/tdata` (marked `.imported` once done). Its 2FA password, optionally, in a `.txt`
+    beside it: one named so — `Пароль 2фа.txt`, `2fa.txt`, `twoFA.txt`, `password.txt`… — or the only `.txt`
+    there, holding `<label>: <password>` or the password alone; without one the bot asks for it. A changed
+    password is written back into that `.txt`.
+  - **.session** — Telethon `.session` files (SQLite), each optionally with a `.json` of the same name (`app_id`,
+    `app_hash`, `device`, `sdk`, `app_version`, `lang_pack`, `system_lang_pack`, `twoFA`): the `.json`'s app and
+    device are presented (a random official one without it). In the bot send a `.session` with its `.json` at
+    once (selected together) or a ZIP of them; for the script put them in `session_import/` (moved to
+    `imported/` once done).
+  - The bot takes several files at once — the `.session` ones first, then the tdata ones in turn — and after them
+    waits for the next ones: no ➕ Добавить again for each account.
 - **Proxies.** Each project's own list, `projects/<id>/proxies.txt` (set with **🌐 Прокси**), one per line,
   `scheme://[user:pass@]ip:port` (`socks5`, `socks4`, `http`), up to 3 accounts per proxy; the project's
   new accounts take theirs from it. Personal accounts use no proxy.
   Optionally, `projects/<id>/proxies_restricted.txt` (the second step of **🌐 Прокси**): proxies for the
   permanently restricted workers, no cap per proxy, none of the pool's. They stay workers (they still answer
   replies and can scrape) but leave the pool, so its places go to new accounts and no fresh account shares
-  an IP with a restricted one. After each status check the bot offers **🔁 Пересадить** for a day (the
-  terminal asks): the restricted ones go onto these proxies, the ones clean again back into the pool (or
+  an IP with a restricted one. After each status check the bot offers **🔁 Пересадить** for a day: the
+  restricted ones go onto these proxies, the ones clean again back into the pool (or
   stay, reported, while it is full); the other workers keep their proxies, and one busy right now (a scrape,
   a login) is left for the next check. **🗑 Не отделять** at that step
-  (in the terminal: `-`) drops the list and brings them back into the pool. Any other worker not on a pool
+  drops the list and brings them back into the pool. Any other worker not on a pool
   proxy (clean again, its list replaced, or moved here from another project) is offered back into it too.
-- Session files put in by hand are read when the bot starts (or the terminal opens the project's card).
+- Session files put in by hand are read when the bot starts.
 
 ## Usage
 
 ```bash
-python main.py   # terminal menu
 python -m bot    # Telegram control bot (needs BOT_TOKEN and [bot] admins)
 ```
 
-- **Terminal menu.** Pick an item by number; a project's card lists its screens in the bot's order: the
-  buttons of each one on its files a line, its screens on its workers (🤖 Аккаунты, 💬 Активность) on a
-  line of their own; their accounts connect for the work they are in. A function asks what the bot asks and
-  runs on every worker of the project with the ⚙️ delay. On startup it checks git for updates
-  (30 s timeout).
 - **Control bot.** The bot only orchestrates; all MTProto actions are performed by the workers.
   Access is limited to `[bot] admins`. Commands: `/start`, `/status`, `/cancel`.
 - **Navigation.** One tree of screens (`modules/registry.py`). A project's screen is titled with its path
@@ -131,7 +137,9 @@ python -m bot    # Telegram control bot (needs BOT_TOKEN and [bot] admins)
   step, buttons too —, which leads back to the screen the form was started from. Where a value can be left
   out or taken by default, a button says so (**⏭ Без пароля**, **♾ Все**, **♾ Без лимита**,
   **📄 assets/…**); a typed «-» still works. Why a button can't run now (no worker, nothing to work on
-  yet, a job in the way, a stale button) is said in a pop-up over its screen.
+  yet, a job in the way, a stale button) is said in a pop-up over its screen. An irreversible action (delete, clear,
+  reset) asks first in its screen's place; **↩️ Отмена** brings the screen back; a stale confirmation (an older one,
+  or one left too long) does nothing.
 - **Jobs.** Each project runs one account-based job at a time, its scraper jobs and analysis in slots of
   their own; projects run side by side, and an account is never used by two jobs at once. Long jobs show
   **📊 Прогресс** and **⏹ Стоп**; each job is named as its button (in **📊 Задачи** too) and ends with a
@@ -139,12 +147,12 @@ python -m bot    # Telegram control bot (needs BOT_TOKEN and [bot] admins)
   its own project. A message sent, or a form's last button tapped, while the project's slot is busy is not
   lost: the step stays, to be sent or tapped again once that job is over. A change to a project (its
   channels, name, list, base) ends on the screen it was started from, the result above it.
-- Only one teleharvester process runs per folder (lock in `tmp/`); stop the service before using
-  the terminal menu.
+- Only one teleharvester process runs per folder (lock in `tmp/`); stop the service before running
+  a session script.
 
 ## Worker rules
 
-Applied identically in the bot and the terminal, within each project.
+Applied within each project.
 
 - **Contacts ledger.** *Add to contacts* records which worker added each person
   (the project's `contacts.json`); the mailing writes to that person only from that worker. People without
@@ -163,8 +171,8 @@ Applied identically in the bot and the terminal, within each project.
   hash may be another account's), a phone not found, a base row's username nobody has (renamed, not gone). A recipient who blocked the worker can't be told
   apart: Telegram accepts the message, and it counts as sent.
 - **Order.** Workers are ordered by username in the pool and in reports.
-- **Settings** (`config.toml`: delays, daily caps, auto-reply) are shared by all projects; the daily caps
-  count per account.
+- **Settings** (`config.toml`: delays, daily caps) are shared by all projects; the daily caps count per
+  account. The auto-reply is each project's own (its default: `config.toml`'s `[autoreply]`).
 
 ## Projects
 
@@ -180,20 +188,60 @@ shared `stats/pm_mailing.json` and `stats/contacts.json` (so no project writes a
 written to); the shared files stay as they are. The workers from `sessions/` become free accounts and
 are moved into projects by hand. Proxies are not copied: set each project's with 🌐 Прокси.
 
-The card shows the project's workers, channels count, an unfinished scrape or the top-up to make, and its
-files count; **📥 Сбор** lists its channels and files.
+The card shows the project's workers and their warmup (🔥 warmed of all, ⛔ restricted, 💀 dead), its base (records,
+whom the mailing wrote to, whom the workers added to contacts), channels count, an unfinished scrape or the top-up to
+make, and its files count; **📥 Сбор** lists its channels and the scrape's files, **🎯 База и рассылка** the base's files (members bases, the list).
 
 | Card screen → button | Description |
 |---|---|
-| **📥 Сбор → ▶️ Скрап проекта** | Scrapes all project channels; resumes an unfinished scrape. |
-| **📥 Сбор → 🔄 Дособрать** | Updates the newest scrape from one week before its end to today and merges the result into the project files; replaced files go to `<name>_previous/`. Must run on the account that made the scrape. |
-| **📥 Сбор → 📄 Загрузить список** | Adds usernames/phones to `<name>_participants_list.txt` (mailing only). |
+| **📥 Сбор → 📢 Каналы** | The project's channels and groups to scrape (**➕ Добавить каналы** while it has none); the new list replaces the old one. |
+| **📥 Сбор → ▶️ Скрап** | Scrapes all project channels; resumes an unfinished scrape. |
+| **📥 Сбор → ⏩ Дособрать** | Updates the newest scrape from one week before its end to today and merges the result into the project files; replaced files go to `<name>_previous/`. Must run on the account that made the scrape. |
 | **📥 Сбор → 👥 Участники групп** | Adds a group's full member list to `<name>_participants_members.parquet`; a previous base that can't be read is moved to `<name>_previous/`, not overwritten. |
 | **📥 Сбор → 🔍 Верификация** | Checks a scrape against the live channel for missed posts. |
-| **📥 Сбор → 📈 Анализ** | t.me links, keyword search, file view, combine, comments table, monthly activity, sample. Combine merges the project's scrapes into `<name>_posts_combined.parquet`, offered on the card like its other posts files (🔄 still continues the newest scrape). |
-| **📨 База и рассылка → 📇 В контакты** / **📨 ЛС по базе** | Add the base to the project's workers' contacts, then mail it. With «skip those already messaged» (asked before each mailing), each person is mailed once within the project. |
-| **🛠 Управление** | Edit channels, rename (files are renamed too), clear the members base or list (moved to `<name>_previous/`), delete (files are kept; a project with workers is not deleted — move them first). |
-| **🤖 Аккаунты** / **💬 Активность** | The project's accounts and the work of its workers on one target (see [Features](#features)). |
+| **📥 Сбор → 📈 Анализ** | Every tool on one screen, each with what it does: t.me links, keyword search, file view, combine, comments table, monthly activity, sample, rebuilding the members base. Combine merges the project's scrapes into `<name>_posts_combined.parquet`, offered on the card like its other posts files (⏩ still continues the newest scrape). |
+| **🎯 База и рассылка → 📄 Свой список** | Adds usernames/phones to `<name>_participants_list.txt` (mailing only). |
+| **🎯 База и рассылка → 🧹 Очистить базу** | Moves the members base or the list to `<name>_previous/`, where it can be taken back from. |
+| **🎯 База и рассылка → 📬 Автоответ** | The project's auto-reply: on/off, its text, how many of its workers' mailing recipients answered (in all, a day, a week, per worker; **🔄 Обновить** for the latest). Each worker answers a person once; what they write is forwarded to the admins. |
+| **🎯 База и рассылка → 📇 В контакты** / **📨 Рассылка** | Add the base to the project's workers' contacts, then mail it. With «skip those already messaged» (asked before each mailing), each person is mailed once within the project. |
+| **🛠 Управление** | **🌍 Регион** — the project's content: the warmup's and 👤 Профиль's lists ([Content](#content)), rename (files are renamed too), delete (files are kept; a project with workers is not deleted — move them first). |
+| **🤖 Аккаунты** / **💬 Активность** | The project's accounts with their warmup, and the work of its workers on one target (see [Features](#features), [Warmup](#warmup)). |
+
+## Warmup
+
+A project's **🤖 Аккаунты → 🔥 Прогрев** warms its accounts up before they work, one day of it per account a day: on the first, the
+profile and its security (a step that fails, e.g. terminating other sessions, which Telegram refuses a new session for
+24 h, is tried again the next day); every day, light activity. An account is ✅ warmed once its days are run (**📅 Дней**:
+1 — a single pass) and every setup step is done; a day where no step went through (a flood limit, the profile not read)
+is not counted. **▶️ Прогреть** (on top) runs it now; **🔁 Ежедневно** runs it by itself once a day
+at a random time between 10:00 and 21:00 when the project's job slot is free (bot only; one still busy at 21:00, or a
+bot started later, waits for the next day), reporting to the chat that switched it on. **🧵 Потоков** — accounts warmed at once, typed (any number from 1; each next one after the profile
+pause), but never two of one proxy side by side (those without one: the server's address), so at most as many as the
+accounts' proxies; the ⚙️ delay between steps. The screen shows whether it runs now and when the daily run is (**🔄 Обновить** redraws it), the accounts by
+category and the warmed today / in all; **♻️ Сбросить прогрев** starts every account of the project from day one.
+
+- **🧩 Шаги** — each step on (✅), off (⬜) or, for username, avatars, bio and music, only while the field is empty
+  (🛡, a filled one is kept); 🎲 next to a step — how many or with what chance:
+  - setup: name, username (made of the name, `olga_petrova`, `opetrova92`…), avatars (1 or 1–3; the old ones
+    removed, each slightly cropped and re-encoded so no two accounts share a file), bio, profile music, a sticker set,
+    hide last seen, a random 2FA password (only where there is none; kept in the `.jsession` and `tdata_import/` — a
+    `.session` worker, with nowhere to keep it, gets none),
+    terminate other sessions;
+  - activity: join channels (0–3, 1, 2, 3, 5, 3–7 or 5–10 a day, at most as many as `channels.txt` holds) and read
+    them and the joined ones, `/start` a bot, notes in Saved Messages, one pinned.
+- The content is the project's region's (**🛠 Управление → 🌍 Регион**, [Content](#content)). A step without content
+  is skipped.
+- The steps also mark the profile pickers' ledger (`stats/profile_done.json`), so a later 👤 Профиль run picks the
+  rest. Permanently restricted accounts are not warmed; a dead one goes to `sessions/inactive/`.
+
+## Content
+
+What accounts are given — by the warmup and by 👤 Профиль's «📄 Из …» lists — is one set
+per region, the project's (🛠 Управление → 🌍 Регион): `assets/content/ru/` or `assets/content/en/` — `names.txt`,
+`usernames.txt` (👤 Профиль only), `bios.txt`, `channels.txt`, `bots.txt`, `stickers.txt` (a set's short name or
+`t.me/addstickers/…` link), `notes.txt` (a line each, `#` comments; the starter lists ship with the repo), `photos/`
+and `music/` (`Artist - Title.mp3`; yours). **Upgrading:** move your `assets/bios.txt`, `usernames.txt` and `photos/`
+into the region's folder; the old `assets/names.txt` is in `assets/content/en/names.txt`.
 
 ## Scraping & analysis
 
@@ -223,12 +271,15 @@ Scraping more than ~150–200 communities in one block may trigger a 24-hour sof
 | Path | Purpose |
 |---|---|
 | `assets/databases/` | Scraped bases (default output). |
-| `assets/names.txt`, `usernames.txt`, `bios.txt`, `photos/` | Pools for profile changes. |
+| `assets/content/<ru\|en>/` | The content: lists and files for profiles and the warmup (see [Content](#content)). |
 | `assets/targets.txt` | Mailing recipients (username/phone per line). |
 | `assets/contacts.parquet` | Base for *Add to contacts* (`user_id`, `access_hash`). |
 | `projects/<id>/sessions/` | The project's workers (`inactive/`, `restricted/` inside). |
 | `projects/<id>/proxies.txt`, `pm_mailing.json`, `contacts.json` | The project's proxy pool, mailing statistics and contacts ledger. |
 | `projects/<id>/proxies_restricted.txt` | Optional: the project's proxies for its permanently restricted workers. |
+| `projects/<id>/warmup.json` | The project's warmup settings. |
+| `stats/warmup.json` | Each account's warmup: day, steps done, status, last error (by user id: kept when moved). |
+| `session_import/` | `.session` (+ `.json`) files for `sessions/add_session.py`'s import; imported ones in `imported/`. |
 | `sessions/` | Free accounts: workers in no project. |
 | `stats/account_limits.json`, `invite_limits.json`, `contacts_limits.json` | Daily per-account counters (mailing, invites, contact adds). |
 | `stats/released.json` | Released workers. |
@@ -238,8 +289,8 @@ Scraping more than ~150–200 communities in one block may trigger a 24-hour sof
 | `stats/profile_done.json` | Which profile function last changed which worker (the pickers tick the rest). |
 | `stats/bot_scrape.json`, `bot_running` | Each project's bot scrape to continue after a restart; a marker telling a crash from a clean stop. |
 
-Git-ignored: `.env`, `config.toml`, session files, `projects/`, `stats/` and everything in `assets/`
-except `names.txt`.
+Git-ignored: `.env`, `config.toml`, session files, `projects/`, `stats/`, `session_import/` and everything in `assets/`
+except the content's text lists.
 
 ## Running under systemd
 

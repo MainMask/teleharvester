@@ -2,13 +2,16 @@ from typing import List, Tuple, Optional
 from telethon import TelegramClient
 from telethon.tl.functions.account import UpdateProfileRequest
 from modules import profile_done
-from modules.console import console
 from functions.base import TelethonFunction
-from functions.base.base import console_report
+from modules.types.account import full_name
 
 
 class ChangeNameFunc(TelethonFunction):
     """Change names"""
+
+    # the step after the worker picker, bot/routers/profile.py
+    PROMPT = ("Пришлите имя для выбранных воркеров (например, «Иван Петров») или .txt со списком имён, по одному "
+              "на строку: каждый воркер получит случайное.")
     
     @staticmethod
     def get_random_name(names: List[str], taken=()) -> Tuple[str, Optional[str]]:
@@ -20,6 +23,13 @@ class ChangeNameFunc(TelethonFunction):
 
         return name[0], " ".join(name[1:])
     
+    @staticmethod
+    def current_names(storage) -> list[str]:
+        """The names the workers have now (their .jsessions): a name from a list goes to one worker only, while it
+        lasts (the warmup's too)."""
+        return [full_name(js.account.account.first_name, js.account.account.last_name)
+                for js in storage.jsessions_paths.values()]
+
     async def change_name(
         self,
         session: TelegramClient,
@@ -29,16 +39,16 @@ class ChangeNameFunc(TelethonFunction):
         last_name: Optional[str] = None,
         taken: Optional[List[str]] = None,
     ):
-        if names is not None:
-            first_name, last_name = self.get_random_name(names, taken)
-            taken.append(" ".join(p for p in (first_name, last_name) if p))
-
         async with self.storage.ainitialize_session(session):
             me = await self.poll_me(session, report)
             if me is None:
                 return
 
-            full_name = (me.first_name or "") + (" " + me.last_name if me.last_name else "")
+            if names is not None:  # picked once it is polled: a worker skipped takes no name from the others
+                first_name, last_name = self.get_random_name(names, taken)
+                taken.append(full_name(first_name, last_name))
+
+            old_name = full_name(me.first_name, me.last_name)
 
             try:
                 await session(
@@ -53,16 +63,12 @@ class ChangeNameFunc(TelethonFunction):
             else:
                 self.storage.remember_name(session, first_name, last_name or None)
                 self.mark_done(session)
-                new_name = " ".join(p for p in (first_name, last_name) if p)
+                new_name = full_name(first_name, last_name)
                 self.progress_ok()
-                await report(f"Имя изменено: {full_name} → {new_name}")
+                await report(f"Имя изменено: {old_name} → {new_name}")
 
     async def run(self, report, names=None, first_name=None, last_name=None):
-        # the names the workers have now: a name from the list goes to one worker only, while it lasts
-        taken = [
-            " ".join(p for p in (js.account.account.first_name, js.account.account.last_name) if p)
-            for js in self.storage.jsessions_paths.values()
-        ] if names is not None else []
+        taken = self.current_names(self.storage) if names is not None else []
         await self.run_sequential(
             lambda session, report: self.change_name(
                 session, report,
@@ -70,36 +76,4 @@ class ChangeNameFunc(TelethonFunction):
             ),
             report,
         )
-
-    async def execute(self):
-        self.ask_workers()
-
-        from_file = console.input("[bold red]из файла? (y/n)> ")
-
-        if from_file == "y":
-            try:
-                with open("assets/names.txt", encoding="utf-8") as file:
-                    names = [line for line in file.read().splitlines() if line.strip()]
-            except FileNotFoundError:
-                console.print("[bold red]Файл assets/names.txt не найден!")
-                return
-
-            if not names:
-                console.print("[bold red]Список имён пуст!")
-                return
-
-            await self.run(console_report, names=names)
-
-        else:
-            name = console.input("[bold red]имя> [/]").split(maxsplit=1)
-
-            while not name:
-                name = console.input("[bold red]имя> [/]").split(maxsplit=1)
-
-            print()
-
-            first_name = name[0]
-            last_name = name[1] if len(name) == 2 else None
-
-            await self.run(console_report, first_name=first_name, last_name=last_name)
 

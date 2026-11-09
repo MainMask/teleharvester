@@ -1,9 +1,8 @@
 
 from telethon import functions, types, TelegramClient
-from rich.prompt import Confirm
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited, console_report
+from functions.base.base import AccountLimited
 
 
 class ClearDialogsFunc(TelethonFunction):
@@ -23,20 +22,20 @@ class ClearDialogsFunc(TelethonFunction):
                             offset = 1
                             while offset > 0:
                                 # safe_call waits out short FloodWaits (a mass wipe trips rate limits)
-                                result = await self.safe_call(lambda: session(functions.messages.DeleteHistoryRequest(
+                                result = await self.call(session, functions.messages.DeleteHistoryRequest(
                                     peer=dialog.entity,
                                     max_id=0,
                                     just_clear=True,
                                     revoke=True
-                                )))
+                                ))
                                 offset = result.offset
                         else:
                             # pass the (freshly iterated) Channel entity, not the marked id,
                             # so the InputChannel is built directly instead of via a cache lookup
                             # — matching the DeleteHistoryRequest branch above
-                            await self.safe_call(lambda: session(
+                            await self.call(session,
                                 functions.channels.LeaveChannelRequest(dialog.entity)
-                            ))
+                            )
                     except AccountLimited as err:
                         # a long FloodWait: stop clearing this account, leave the others to run
                         self.progress_failed()
@@ -55,10 +54,4 @@ class ClearDialogsFunc(TelethonFunction):
 
     async def run(self, report):
         await self.gather_in_order(self.clear, report)
-
-    async def execute(self):
-        confirm = Confirm.ask("[bold red]точно очистить все диалоги?[/]")
-
-        if confirm:
-            await self.run(console_report)
 

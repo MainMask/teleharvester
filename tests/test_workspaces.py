@@ -8,6 +8,7 @@ from types import SimpleNamespace as ns
 
 from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB, NavCB
 from bot.routers import accounts, menu, stale
+from bot.services import autoreply
 from bot.services.workspaces import NO_PROJECT, PROJECT_GONE, ProjectMiddleware, Workspaces
 from modules import projects, restricted_workers
 from test_sync import _Callback, _Msg, _SCallback, _State
@@ -111,7 +112,7 @@ def test_a_project_s_button_acts_on_its_own_project_whichever_the_chat_is_in(mon
     workspaces = _workspaces(green, blue)
     middleware = ProjectMiddleware(workspaces)
     workspaces.open(5, blue)  # Blue's card opened since
-    for data in (FunctionCB(key="reactions", project=green.id), MenuCB(action=MenuAction.LIST, project=green.id),
+    for data in (FunctionCB(key="reactions", project=green.id), MenuCB(action=MenuAction.PROXY, project=green.id),
                  NavCB(screen="💬 Активность", project=green.id)):
         workspaces.open(5, blue)
         state = _State({"link": "t.me/blue/1"})  # a form under way in Blue
@@ -124,7 +125,7 @@ def test_a_project_s_button_acts_on_its_own_project_whichever_the_chat_is_in(mon
     # one of the current project: nothing left
     state = _State({"link": "t.me/green/1"})
     state.state = "Reactions:link"
-    assert _through(middleware, MenuCB(action=MenuAction.LIST, project=green.id), state)[0] is workspaces.get(green.id)
+    assert _through(middleware, MenuCB(action=MenuAction.PROXY, project=green.id), state)[0] is workspaces.get(green.id)
     assert state.state == "Reactions:link"
 
 
@@ -132,7 +133,7 @@ def test_a_button_of_a_project_deleted_since_says_so():
     green = _project("Green")
     workspaces = _workspaces(green)
     workspaces.open(5, green)
-    workspace, alerts = _through(ProjectMiddleware(workspaces), MenuCB(action=MenuAction.LIST, project=99), _State())
+    workspace, alerts = _through(ProjectMiddleware(workspaces), MenuCB(action=MenuAction.PROXY, project=99), _State())
     assert workspace is None and alerts == [PROJECT_GONE] and workspaces.current[5] == green.id
 
 
@@ -143,10 +144,11 @@ def test_status_shows_every_project_s_jobs_by_name_and_stops_each_by_its_button(
     workspaces.get(blue.id).analyses.acquire("Анализ", timeout=0)
     msg = _Msg("/status")
     asyncio.run(menu.status(msg, workspaces))
-    assert [text for text, _ in msg.answers] == ["📊 Задачи — выполняется: 2\n\n▶️ 📁 Green · Рассылка",
-                                                 "▶️ 📁 Blue · Анализ"]
+    [(text, markup)] = msg.answers  # one message, every project's jobs in it
+    assert text == "<b>📊 Задачи</b> — выполняется: 2\n\n▶️ 📁 Green · Рассылка\n\n▶️ 📁 Blue · Анализ"
     # a dialog that can be left (as the report's choice: both acquired so here) has its ⏹ too
-    assert [markup is not None for _, markup in msg.answers] == [True, True]
+    assert [b.text for row in markup.inline_keyboard for b in row] == [
+        "⏹ 📁 Green · Рассылка", "⏹ 📁 Blue · Анализ", "🔄 Обновить"]
 
     answers = []
     callback = ns(answer=lambda text, **k: answers.append(text) or asyncio.sleep(0))
@@ -178,6 +180,7 @@ def test_workers_are_ticked_and_moved_to_another_project_with_their_restrictions
     source, target = workspaces.get(green.id), workspaces.get(blue.id)
     old = os.path.join(projects.sessions_dir(green), "111.jsession")
     restricted_workers.save([old])
+    autoreply.save_replied({f"{old}:42": "2026-01-01 10:00:00", "elsewhere:7": "2026-01-01 10:00:00"})
     source.pool.polling = os.path.join(projects.sessions_dir(green), "113.jsession")  # the auto-reply polls it now
     state, callback = _State(), _SCallback()
     asyncio.run(accounts.move.move_start(callback, state, source.pool))
@@ -200,10 +203,34 @@ def test_workers_are_ticked_and_moved_to_another_project_with_their_restrictions
                                             "• W (@w113) — занят задачей — перенесите после её окончания")
     new = os.path.join(projects.sessions_dir(blue), "111.jsession")
     assert (source.pool.count(), target.pool.count()) == (1, 2) and restricted_workers.load() == [new]
+    # the people it answered stay answered: no second auto-reply from its new place
+    assert autoreply.load_replied() == {f"{new}:42": "2026-01-01 10:00:00", "elsewhere:7": "2026-01-01 10:00:00"}
     assert state.state is None  # the flow is over: its buttons are stale now
     answers = []  # the last router's (stale.py)
     asyncio.run(stale.stale_button(ns(answer=lambda text, **kw: answers.append(text) or asyncio.sleep(0))))
     assert answers == ["Кнопка устарела — откройте раздел заново."]
+
+
+def test_the_projects_to_move_to_come_a_page_at_a_time():
+    """Telegram takes at most 100 buttons under a message: the target projects are paged, 📦 always under them."""
+    green = _project("Green", ["111"])
+    others = [projects.add(f"P{i:02}", []) for i in range(25)]
+    workspaces = _workspaces(green)
+    source, state = workspaces.get(green.id), _State()
+    asyncio.run(accounts.move.move_start(_SCallback(), state, source.pool))
+    _tap(accounts.move.move_pick, "mv_out", "all", state, source)
+    callback, _ = _tap(accounts.move.move_pick, "mv_out", "go", state, source)
+    buttons = _ticks(callback.message.edits[0][1])
+    assert buttons[:2] == ["📁 P00", "📁 P01"] and "📁 P20" not in buttons
+    assert buttons[-5:] == ["◀️", "📄 стр. 1/2", "▶️", "📦 В свободные", "✖️ Отмена"]
+
+    callback, _ = _tap(accounts.move.move_to, "mv_to", "pg.1", state, source.pool, source, workspaces)
+    buttons = _ticks(callback.message.edited[0])
+    assert buttons[0] == "📁 P20" and "📁 P19" not in buttons and buttons[-2:] == ["📦 В свободные", "✖️ Отмена"]
+    assert state.data["move_chosen"]  # a page turned: nothing moved, the step goes on
+
+    callback, _ = _tap(accounts.move.move_to, "mv_to", str(others[21].id), state, source.pool, source, workspaces)
+    assert callback.message.edits[0][0].startswith("✅ Перенесено в проект «P21»: 1 из 1")
 
 
 def test_free_accounts_are_ticked_into_the_project():
@@ -215,7 +242,7 @@ def test_free_accounts_are_ticked_into_the_project():
     state, callback = _State(), _SCallback()
     asyncio.run(accounts.move.free_start(callback, state))
     text, markup = callback.message.edits[0]  # in ➕ Добавить's place
-    assert "<b>📦 Воркеры — из свободных</b>" in text and text.endswith("Отмечено: 0 из 3")
+    assert "<b>📦 Из свободных</b>" in text and text.endswith("Отмечено: 0 из 3")
     assert _ticks(markup)[:3] == ["⬜ @free331 · +331", "⬜ @free332 · +332", "⬜ @free333 · +333"]
 
     for index in ("0", "2"):

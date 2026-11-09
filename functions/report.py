@@ -1,9 +1,6 @@
-from modules.console import console
-from rich.prompt import Prompt
 
 from telethon import types, functions, utils
 from functions.base import TelethonFunction
-from functions.base.base import console_report
 
 
 class ReportFunc(TelethonFunction):
@@ -66,26 +63,6 @@ class ReportFunc(TelethonFunction):
 
             return "done", None  # ReportResultReported (or an unknown result: nothing to follow)
 
-    async def resolve_and_report(self, session, peer, ids, comment):
-        """Walk the report flow interactively on the first account; record menu choices."""
-        selections = []
-
-        def ask(result):
-            console.print(f"\n[bold white]{result.title}[/]")
-            for i, opt in enumerate(result.options):
-                console.print(f"[bold white][{i + 1}] {opt.text}[/]")
-
-            choice = console.input("[bold white]>> ")
-
-            while not (choice.isdigit() and 1 <= int(choice) <= len(result.options)):
-                choice = console.input("[bold white]>> ")
-
-            selections.append(int(choice) - 1)
-            return selections[-1]
-
-        await self.walk(session, peer, ids, comment, b"", ask)
-        return selections
-
     async def replay(self, session, peer, ids, comment, selections):
         """Repeat the recorded report path on another account (menu choices by index). ValueError if
         Telegram asks this one a menu the path has no choice for: its report is not sent rather than sent
@@ -128,42 +105,3 @@ class ReportFunc(TelethonFunction):
                     await report(f"[{me.first_name}] жалоба отправлена.")
                 self.progress_step()
         return False
-
-    async def execute(self):
-        if not self.sessions:
-            return
-
-        link = Prompt.ask("[bold red]ссылка на канал или чат — или сразу на пост[/]")
-        post = self.post_id(link)
-        while True:
-            parts = [p.strip() for p in (Prompt.ask(
-                "[bold red]номера постов через запятую — число в конце ссылки на пост (t.me/name/123 → 123)[/]",
-                default=str(post) if post is not None else None) or "").split(",") if p.strip()]
-            if parts and all(p.isdigit() for p in parts):
-                posts = [int(p) for p in parts]
-                break
-
-        comment = console.input("[bold red]комментарий для модераторов Telegram (пусто или «-» — без него)> [/]")
-        comment = "" if comment.strip() == "-" else comment  # as the bot's
-
-        first, rest = self.sessions[0], self.sessions[1:]
-
-        async with self.storage.ainitialize_session(first):
-            try:
-                me = await self.get_me(first)
-            except Exception as err:  # a dead proxy / session: say so instead of a bare traceback
-                console.print(f"[bold red]не удалось опросить аккаунт:[/] {self.safe(err)}")
-                return
-
-            try:
-                selections = await self.resolve_and_report(first, link, posts, comment)
-            except Exception as err:
-                console.print(
-                    "[{name}] [bold red]ошибка:[/] {error}"
-                    .format(name=self.safe(me.first_name), error=self.safe(err))
-                )
-                return
-
-            console.print(f"[{self.safe(me.first_name)}] [bold green]жалоба отправлена.[/]")
-
-        await self.replay_rest(rest, link, posts, comment, selections, console_report)

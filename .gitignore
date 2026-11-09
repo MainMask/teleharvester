@@ -140,9 +140,13 @@ assets/proxies.txt
 assets/photos/
 tdata_import/
 assets/databases/
-# local data (scraped bases, lists, photos); names.txt is the one kept in the repo
+# local data (scraped bases, lists, photos); the content's starter lists are kept in the repo
 assets/*
-!assets/names.txt
+!assets/content/
+# the content's photos and music are yours
+assets/content/*/photos/
+assets/content/*/music/
+session_import/
 output/
 data/
 tmp/

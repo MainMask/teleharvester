@@ -1,6 +1,7 @@
-"""Add an account: the terminal menu's «➕ Добавить» (functions/sign_in.py), by the bot's
+"""Add an account: as the bot's «➕ Добавить» (functions/sign_in.py), by the bot's
 rules, into a project — by phone a worker or a personal account, no duplicates, a worker's proxy from its pool,
-a personal account without a proxy and without its 2FA password; or the tdata_import/ folders."""
+a personal account without a proxy and without its 2FA password; from files (the tdata_import/ folders, the .session
+files in session_import/); or free accounts (sessions/) taken into the project."""
 import os
 import sys
 

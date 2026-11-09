@@ -61,4 +61,4 @@ def test_the_marker_is_dropped_after_every_other_shutdown_step():
 
     shutdown = [line.strip() for line in inspect.getsource(app.run_bot).splitlines()
                 if line.strip().startswith("dp.shutdown.register(")]
-    assert shutdown[-1] == "dp.shutdown.register(mark_stopped)" and len(shutdown) == 3
+    assert shutdown[-1] == "dp.shutdown.register(mark_stopped)" and len(shutdown) == 4

@@ -1,6 +1,5 @@
 from functions.base import TelethonFunction
-from functions.base.base import console_report
-from functions.broadcast import Broadcast, ask_run_options, save_run_options
+from functions.broadcast import Broadcast
 
 
 class BroadcastChatFunc(TelethonFunction):
@@ -21,12 +20,3 @@ class BroadcastChatFunc(TelethonFunction):
             broadcast.handle(session, report)
             for session in broadcast.sessions
         ]
-
-    async def execute(self):
-        broadcast = Broadcast(self.storage, self.settings)
-
-        broadcast.ask()
-        options = ask_run_options(self.settings, trigger=True)
-        if not save_run_options(self.settings, options):
-            return
-        await broadcast.start_campaign(console_report)

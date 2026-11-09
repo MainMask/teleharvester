@@ -6,8 +6,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, NavCB
-from bot.keyboards.common import choice_kb, scrape_kb, stop_kb
-from bot.keyboards.menu import back_kb, main_menu
+from bot.keyboards.common import button
+from bot.keyboards.menu import back_kb, main_menu, screen_kb
 from bot.routers._common import STALE_BUTTON, leave_form
 from bot.services import screens
 from bot.services.jobs import JobManager
@@ -76,35 +76,43 @@ async def cancel(message: Message, state: FSMContext, manager: JobManager | None
     await message.answer("Отменено." if stopped else "Нечего отменять.", reply_markup=main_menu())
 
 
-@screens.view(TASKS)  # 📊 Задачи: the same
+MAX_TASKS_TEXT = 4000  # 📊 Задачи's message: within Telegram's 4096
+
+
+@screens.view(TASKS)  # 📊 Задачи: /status's message; its 🔄 shows it anew in its place
 async def tasks(message: Message, state: FSMContext, edit: bool, workspaces: Workspaces, **_):
-    await status(message, workspaces)
+    await _tasks(message, workspaces, edit)
 
 
 @router.message(Command("status"))
 async def status(message: Message, workspaces: Workspaces):
-    """What runs now in every project, each job with its 📊 and ⏹ as under its start message (which
-    may be far up); a form under way stays where it is."""
+    await _tasks(message, workspaces, edit=False)
+
+
+async def _tasks(message: Message, workspaces: Workspaces, edit: bool):
+    """What runs now in every project, in one message: each job's progress (▶️ for a dialog holding the slot,
+    or a job with nothing to count), a ⏹ for each that can be stopped, 🔄; a form under way stays where it is."""
     try:
         names = {project.id: project.name for project in projects.load()}
     except ValueError:  # the projects' file can't be read: the jobs are shown all the same
         names = {}
-    active = []
+    blocks, stops = [], []
     for workspace in workspaces.all():
-        for slot, markup in ((workspace.manager, stop_kb), (workspace.scrapes, scrape_kb), (workspace.analyses, None)):
-            if slot.active:
-                active.append((names.get(workspace.project_id, "?"), slot, markup and markup(slot.key)))
-    if not active:
-        await message.answer(f"{TASKS} — сейчас ничего не выполняется.")
-        return
-    for index, (name, slot, markup) in enumerate(active):
-        head = "" if index else f"{TASKS} — выполняется: {len(active)}\n\n"  # on the first job's message
-        label = f"📁 {name} · {slot.label}"
-        if slot.progress is None:  # a dialog holding the slot (its ⏹ if it can be left), or a job with nothing to count
-            stop = choice_kb("job_stop", [("⏹ Стоп", str(slot.key))]) if slot.stoppable else None
-            await message.answer(f"{head}▶️ {label}", reply_markup=stop)
-        else:
-            await message.answer(head + slot.progress.render(label), reply_markup=markup)
+        # a scrape's, a members list's or a verify's ⏹ keeps what it collected (stop_job)
+        for slot, scope in ((workspace.manager, "job_stop"), (workspace.scrapes, "scrape_stop"),
+                            (workspace.analyses, "job_stop")):
+            if not slot.active:
+                continue
+            label = f"📁 {names.get(workspace.project_id, '?')} · {slot.label}"
+            blocks.append(f"▶️ {html.escape(label)}" if slot.progress is None else
+                          html.escape(slot.progress.render(label)))
+            if slot.stoppable:
+                stops.append([button(f"⏹ {label}"[:60], ChoiceCB(scope=scope, value=str(slot.key)))])
+    head = f"<b>{TASKS}</b> — " + (f"выполняется: {len(blocks)}" if blocks else "сейчас ничего не выполняется.")
+    text = "\n\n".join([head, *blocks])
+    if len(text) > MAX_TASKS_TEXT:
+        text = text[:MAX_TASKS_TEXT].rsplit("\n", 1)[0] + "\n…"
+    await screens.send(message, edit)(text, parse_mode="HTML", reply_markup=screen_kb(TASKS, own=stops))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "cancel"))

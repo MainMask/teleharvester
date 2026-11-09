@@ -1,0 +1,13 @@
+# Bots a warmed account sends /start to (one a day, with the 🎲 chance): @username per line
+@BotFather
+@gif
+@vid
+@pic
+@wiki
+@imdb
+@vote
+@like
+@Stickers
+@QuizBot
+@PollBot
+@bold

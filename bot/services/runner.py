@@ -4,10 +4,11 @@ import re
 import time
 
 from aiogram.exceptions import TelegramRetryAfter
+from aiogram.types import Message
 
 from scraper.datafiles import format_duration
 
-ID = re.compile(r"🆔 (-?\d+)")  # an id in a function's report line ("🆔 123"), plain text in the terminal
+ID = re.compile(r"🆔 (-?\d+)")  # an id in a function's report line ("🆔 123")
 
 
 def render(text: str) -> str:
@@ -80,13 +81,15 @@ class TelegramReporter:
         body = self._body(max(0, 4096 - _units(header) - 2))
 
         try:
-            await self.bot.edit_message_text(
+            edited = await self.bot.edit_message_text(
                 f"{header}\n\n{body}",
                 chat_id=self.chat_id,
                 message_id=self.message_id,
                 parse_mode="HTML",
                 reply_markup=self.reply_markup,
             )
+            if isinstance(edited, Message):  # a status message gone: SafeEdit sent it anew, edited from now on
+                self.message_id = edited.message_id
         except TelegramRetryAfter as err:
             # final: the result and the Stop-button removal must not be lost; a long wait
             # isn't waited out, as it would hold the bot's single job slot meanwhile

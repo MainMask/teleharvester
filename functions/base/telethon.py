@@ -1,10 +1,8 @@
 import random
 
-from rich.prompt import Prompt
 
-from functions.base.base import AccountLimited, BaseFunction, _report_console
-from modules import profile_done, restricted_workers
-from modules.scraper_creds import scrape_accounts
+from functions.base.base import AccountLimited, BaseFunction
+from modules import profile_done
 from modules.storages.sessions_storage import SessionsStorage
 from modules.settings import Settings
 
@@ -93,19 +91,19 @@ class TelethonFunction(BaseFunction):
             await report(f"[{me.first_name}] {done}")
             return True
 
-    def mark_done(self, session, value=None):
-        """Note that this function has changed the worker (to `value`, if picked from a list;
-        see modules.profile_done)."""
+    def mark_done(self, session, value=None, classname=None):
+        """Note that this function — or `classname`'s, done by another (the warmup) — has changed the worker (to
+        `value`, if picked from a list; see modules.profile_done)."""
         key = profile_done.worker_key(self.storage, self.storage.get_session_path(session))
-        profile_done.mark(key, type(self).__name__, value)
+        profile_done.mark(key, classname or type(self).__name__, value)
 
     @staticmethod
-    def parse_picks(raw: str, total: int, new: list[int]) -> list[int]:
-        """Worker indexes from the CLI's answer: "" or "new" the new ones, "all" every one,
-        else numbers and ranges from 1 ("1,3,5-8"); [] for an answer that is none of these."""
+    def parse_picks(raw: str, total: int) -> list[int]:
+        """Account indexes from a typed answer (sessions/add_session.py): "all" every one, else numbers and ranges
+        from 1 ("1,3,5-8"); [] for "" (back) or an answer that is none of these."""
         raw = raw.strip().lower()
-        if raw in ("", "new"):
-            return new
+        if not raw:
+            return []
         if raw == "all":
             return list(range(total))
         picked = set()
@@ -118,40 +116,6 @@ class TelethonFunction(BaseFunction):
                 return []
             picked.update(range(first - 1, last))
         return sorted(picked)
-
-    def ask_workers(self):
-        """CLI: which workers to run on; the ones this function has not changed yet by default."""
-        if not self.sessions:
-            return  # nothing to choose from; functions guard the empty case themselves
-
-        accounts = scrape_accounts(self.storage)
-        keys = [profile_done.worker_key(self.storage, account.path) for account in accounts]
-        profile_done.seed(keys)
-        ledger, classname = profile_done.load(), type(self).__name__
-        forever, status = set(restricted_workers.load()), restricted_workers.load_status()
-
-        for index, (account, key) in enumerate(zip(accounts, keys), 1):
-            notes = profile_done.notes(key, account.path, classname, ledger, forever, status)
-            _report_console.print(f"  [{index}] {' '.join([account.label, *notes])}", markup=False, highlight=False)
-        new = [i for i, key in enumerate(keys) if classname not in ledger["done"].get(key, {})]
-        _report_console.print(f"[bold white]✓ — уже менялось этой функцией; новых: {len(new)}[/]")
-
-        while True:
-            raw = Prompt.ask("[bold magenta]номера (1,3,5-8), all — все, Enter — только новые[/]", default="")
-            picked = self.parse_picks(raw, len(accounts), new)
-            if picked:
-                break
-            _report_console.print("[bold red]Никого не выбрано: номера из списка или all — все.[/]")
-        self.sessions = [accounts[i].client for i in picked]
-
-    async def reconnect_rebuilt(self, old: dict):
-        """After a proxy change (`old`: full_sessions before it): the CLI keeps clients connected, so
-        drop the ones a new client replaced and connect the rebuilt ones."""
-        for path, client in old.items():
-            if self.storage.full_sessions.get(path) is not client:
-                await client.disconnect()
-                if self.storage.initialize:
-                    await self.storage.check_session(self.storage.full_sessions[path], path)
 
     async def by_username(self, session, row):
         """A base row's peer by its username, if the username is still that person's: an old base's
@@ -167,14 +131,14 @@ class TelethonFunction(BaseFunction):
         Returns the resolved users list (empty if Telegram found no account). AccountLimited when
         the worker is out of imports: Telegram then puts the number in retry_contacts, not an error.
         """
-        result = await self.safe_call(lambda: session(functions.contacts.ImportContactsRequest(
+        result = await self.call(session, functions.contacts.ImportContactsRequest(
             contacts=[types.InputPhoneContact(
                 client_id=random.randrange(-2**63, 2**63),
                 phone=phone,
                 first_name='contact',
                 last_name=''
             )]
-        )))
+        ))
 
         if result.retry_contacts:
             raise AccountLimited("лимит импорта контактов")

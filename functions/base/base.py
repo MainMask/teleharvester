@@ -2,9 +2,6 @@ import asyncio
 import random
 import re
 from urllib.parse import parse_qs, urlparse
-from rich.console import Console
-from rich.markup import escape
-from rich.prompt import Prompt
 from telethon import types
 from telethon.errors import (
     FloodWaitError as RateLimitError,
@@ -18,15 +15,6 @@ from telethon.errors import (
 from modules.registry import menu_path
 from modules import restricted_workers
 from modules.account_limits import AccountLimited  # here too: the functions import it from this module
-from modules.settings import parse_seconds
-
-
-_report_console = Console()
-
-
-async def console_report(text: str) -> None:
-    """Default progress reporter (CLI path): print plain text, no Rich markup parsing."""
-    _report_console.print(text, markup=False, highlight=False)
 
 
 def pick_seconds(pause) -> int:
@@ -52,7 +40,7 @@ def _problems_only(report):
 class BaseFunction:
     rate_wait_limit = 300  # seconds; a longer wait means the account is exhausted
     max_rate_retries = 5   # consecutive rate-limit waits on one call before giving up
-    progress = None        # the bot's Progress for the running job (the 📊 button); None on the CLI
+    progress = None        # the bot's Progress for the running job (the 📊 button); None outside a job
     on_hold = []           # workers the bot keeps out of this run for now (the one the scraper runs
                            # on, see WorkerPool.delegate): not gone, their people wait for them
 
@@ -87,33 +75,6 @@ class BaseFunction:
             self.progress.failed += 1
 
     @staticmethod
-    def safe(value) -> str:
-        """Escape a value for safe use inside Rich markup (None -> '')."""
-        return escape("" if value is None else str(value))
-
-    @staticmethod
-    def ask_seconds(label: str, default: list | None = None) -> list:
-        """[sec] or [min, max] (5-10 / 7), asked again until it is one, as the bot takes it;
-        blank takes `default`."""
-        shown = None if default is None else "-".join(str(part) for part in default)
-        while (seconds := parse_seconds(Prompt.ask(label, default=shown))) is None:
-            _report_console.print("[bold red]Нужно число или диапазон, например 5-10 или 7.[/]")
-        return seconds
-
-    @staticmethod
-    def ask_int(label: str, default=None, min_value: int | None = None) -> int:
-        """Prompt for an integer, re-asking until the input is valid."""
-        while True:
-            raw = Prompt.ask(label, default=None if default is None else str(default))
-            try:
-                value = int(raw)
-            except (TypeError, ValueError):
-                continue
-            if min_value is not None and value < min_value:
-                continue
-            return value
-
-    @staticmethod
     def parse_message_link(link):
         """Parse a t.me message link into (peer, message_id).
 
@@ -146,13 +107,6 @@ class BaseFunction:
         # t.me/c/<id> is a private chat's own link, t.me/+<hash> an invite: no post in either
         return not (isinstance(peer, str) and (peer == "c" or peer.startswith("+")))
 
-    @classmethod
-    def ask_message_link(cls, label: str) -> str:
-        """CLI: a post's link, asked again until it is one, as the bot takes it."""
-        while not cls.is_message_link(link := _report_console.input(label)):
-            _report_console.print(POST_LINK_HINT, style="bold red", markup=False)
-        return link
-
     @staticmethod
     def comment_id(link) -> int | None:
         """The comment a t.me post link points at (…/<post>?comment=<id>), or None."""
@@ -178,6 +132,10 @@ class BaseFunction:
             except (PeerLimitError, AccountDeactivatedError, AccountRestrictedError,
                     UserBannedInChannelError) as err:
                 raise AccountLimited(str(err))
+
+    async def call(self, session, request):
+        """session(request) through safe_call: short rate-limit waits waited out, an exhausted account flagged."""
+        return await self.safe_call(lambda: session(request))
 
     async def run_with_rotation(self, items, action, sessions=None):
         """Process items with one account, rotating to the next when it gets limited.
@@ -377,22 +335,6 @@ class BaseFunction:
         others = [s for s in self.sessions if id(s) not in owners]
         queues.append((others + [s for s in self.sessions if id(s) in owners], shared))
         return queues
-
-    @staticmethod
-    def ask_file(label: str, files: list, default: str = "") -> str:
-        """Prompt for a file: a number from `files` ([(path, caption)], see
-        modules.scraped_files) or a typed path; blank takes `default`."""
-        for index, (_, caption) in enumerate(files, 1):
-            _report_console.print(f"  [{index}] {caption}", markup=False, highlight=False)
-        if files:
-            _report_console.print("[bold white]введите номер или путь к файлу[/]")
-
-        while True:
-            raw = (Prompt.ask(label, default=default or None) or "").strip() or default
-            if raw.isdigit() and 1 <= int(raw) <= len(files):
-                return files[int(raw) - 1][0]
-            if raw:
-                return raw
 
     async def delay(self):
         await asyncio.sleep(pick_seconds(self.settings.delay))

@@ -52,7 +52,7 @@ def _warn_if_excel_would_truncate(df: pd.DataFrame) -> None:
             if pd.notna(longest) and longest > _EXCEL_CELL_LIMIT:
                 print(
                     f"  ! WARNING: column {col!r} has cells up to {longest} chars; "
-                    f"Excel truncates at {_EXCEL_CELL_LIMIT}. Use --format parquet to keep full data."
+                    f"Excel truncates at {_EXCEL_CELL_LIMIT}; the scrape's .parquet file keeps the full text."
                 )
 
 

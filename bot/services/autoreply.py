@@ -3,11 +3,11 @@
 Bot-mode workers are online only while a job drives them, so nothing listens for
 replies between jobs. Instead a background loop polls each worker every
 settings.autoreply_interval seconds: it reads the unread private chats, answers each
-person the worker wrote to first with settings.autoreply_text (once per worker and
+person the worker wrote to first with its project's text (once per worker and
 person), marks the chat read and forwards what they wrote to the admins in the bot.
 What an answered person writes later is forwarded too, without another reply.
-On/off and the text are changed from the bot (bot/routers/autoreply.py) and take
-effect on the next round.
+Each project has its own on/off and text (project_settings: config.toml's [autoreply] for a project
+that has set none), changed from the bot (bot/routers/autoreply.py); they take effect on the next round.
 """
 
 import asyncio
@@ -23,6 +23,7 @@ from telethon import types
 
 from modules import json_file, rich_message
 from modules.storages.sessions_storage import connect_client, release_client
+from modules.types.account import full_name
 
 # logging, not the Rich console: under systemd Rich wraps a line at 80 columns into several
 # journald entries; bot/__main__.py routes logging to journald one line per event
@@ -30,6 +31,7 @@ log = logging.getLogger(__name__)
 
 
 REPLIED_PATH = os.path.join("stats", "auto_replies.json")
+SETTINGS_NAME = "autoreply.json"  # a project's own on/off and text, in its folder
 SERVICE_ID = 777000      # Telegram's service account: login codes, never answered
 DIALOGS_LIMIT = 100      # one GetDialogs request; fresh replies sit at the top
 WORKER_TIMEOUT = 120     # a dead proxy must not stall the whole round
@@ -40,9 +42,23 @@ TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 NOTIFY_ATTEMPTS = 3      # a burst of replies can hit the Bot API's flood limit
 
 _task = None
+_replied: dict | None = None  # the ledger the running loop holds (rename_worker edits it in place)
 # unread chats found not to be mailing replies, as "path:user_id:last message id": their
 # search request isn't repeated every round, only when the person writes again
 _not_mailing: set = set()
+
+
+def project_settings(home: str, settings) -> dict:
+    """The project's {"enabled", "text"}: its own once set from the bot, else config.toml's [autoreply]."""
+    default = {"enabled": settings.autoreply_enabled, "text": settings.autoreply_text}
+    try:
+        return {**default, **json_file.load(os.path.join(home, SETTINGS_NAME), {})}
+    except (OSError, ValueError):  # a broken file: the defaults rather than stop the loop
+        return default
+
+
+def save_project_settings(home: str, enabled: bool, text: str):
+    json_file.save(os.path.join(home, SETTINGS_NAME), {"enabled": enabled, "text": text})
 
 
 def load_replied() -> dict:
@@ -54,6 +70,17 @@ def load_replied() -> dict:
 
 def save_replied(replied: dict):
     json_file.save(REPLIED_PATH, replied)
+
+
+def rename_worker(old: str, new: str):
+    """A worker's file moved to another project (workspaces.move_out): the people it answered stay answered.
+    In the running loop's ledger itself: a round saves it whole, a change to the file alone would be lost."""
+    replied = _replied if _replied is not None else load_replied()
+    moved = [key for key in replied if key.rsplit(":", 1)[0] == old]
+    for key in moved:
+        replied[f"{new}:{key.rsplit(':', 1)[1]}"] = replied.pop(key)
+    if moved:
+        save_replied(replied)
 
 
 def _awaits_reply(dialog) -> bool:
@@ -68,7 +95,7 @@ def _awaits_reply(dialog) -> bool:
 
 def _describe(user) -> str:
     """Who wrote (HTML): name, @username or the id in <code> (a tap copies it), phone."""
-    name = html.escape(" ".join(part for part in (user.first_name, user.last_name) if part))
+    name = html.escape(full_name(user.first_name, user.last_name))
     handle = f"@{html.escape(user.username)}" if user.username else f"🆔 <code>{user.id}</code>"
     who = f"{name} ({handle})" if name else handle
     return f"{who}, 📱 +{user.phone}" if user.phone else who
@@ -202,19 +229,24 @@ async def poll_once(pool, text: str, replied: dict, notify):
                 await release_client(client)  # the cache would grow every round
 
 
-def reply_stats(replied: dict, now: datetime) -> dict:
-    """How many people were answered: in all, in the last day / week, per worker path."""
-    day = week = 0
+def reply_stats(replied: dict, now: datetime, directory: str) -> dict:
+    """How many people the workers in `directory` (a project's sessions/) answered: in all, in the last day /
+    week, per worker path."""
+    day = week = total = 0
     per_worker = Counter()
     for key, when in replied.items():
-        per_worker[key.rsplit(":", 1)[0]] += 1
+        path = key.rsplit(":", 1)[0]
+        if os.path.dirname(path) != directory:
+            continue
+        per_worker[path] += 1
+        total += 1
         try:
             age = now - datetime.strptime(when, TIME_FORMAT)
         except (TypeError, ValueError):
             continue
         day += age <= timedelta(days=1)
         week += age <= timedelta(days=7)
-    return {"total": len(replied), "day": day, "week": week, "per_worker": per_worker}
+    return {"total": total, "day": day, "week": week, "per_worker": per_worker}
 
 
 async def _send(bot, chat_id, message: str, markup=None):
@@ -249,22 +281,27 @@ def make_notify(bot, admins):
 
 
 async def _loop(bot, workspaces, settings, admins):
-    replied = load_replied()
+    global _replied
+    replied = _replied = load_replied()
     notify = make_notify(bot, admins)
 
-    while True:
-        await asyncio.sleep(settings.autoreply_interval)
-        if not (settings.autoreply_enabled and settings.autoreply_text):
-            continue  # off from the bot or config: checked again next round
-        for workspace in workspaces.all():  # every project's workers: projects deleted meanwhile are gone
-            try:
-                await poll_once(workspace.pool, settings.autoreply_text, replied, notify)
-            except Exception as err:  # never let one bad round end the loop
-                log.warning("autoreply: round failed: %s", err)
+    try:
+        while True:
+            await asyncio.sleep(settings.autoreply_interval)
+            for workspace in workspaces.all():  # every project's workers: projects deleted meanwhile are gone
+                own = project_settings(workspace.pool.storage.home, settings)
+                if not (own["enabled"] and own["text"]):
+                    continue  # off in this project: checked again next round
+                try:
+                    await poll_once(workspace.pool, own["text"], replied, notify)
+                except Exception as err:  # never let one bad round end the loop
+                    log.warning("autoreply: round failed: %s", err)
+    finally:
+        _replied = None
 
 
 async def start(bot, workspaces, settings, admins):
-    """Bot startup: run the loop in the background; it idles while auto-reply is off."""
+    """Bot startup: run the loop in the background; it skips the projects whose auto-reply is off."""
     global _task
     # kept referenced, or the loop's weak ref lets GC drop it
     _task = asyncio.create_task(_loop(bot, workspaces, settings, admins))

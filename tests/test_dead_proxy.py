@@ -57,7 +57,7 @@ class _Worker:
 
 
 def _storage(tmp_path):
-    return SessionsStorage(str(tmp_path), 1, "x", initialize=False, home=conftest.home())
+    return SessionsStorage(str(tmp_path), 1, "x", home=conftest.home())
 
 
 def _messages():

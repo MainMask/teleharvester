@@ -4,12 +4,12 @@ import asyncio
 import conftest
 import contextlib
 import html
+import os
 import types
 
 import openpyxl
 import pandas as pd
 import pytest
-from git.exc import GitCommandError
 
 from functions.base.base import BaseFunction
 
@@ -32,7 +32,6 @@ def collect():
 
 
 class _Storage:
-    initialize = False
     home = property(lambda self: conftest.home())
 
     def __init__(self, sessions=()):
@@ -63,137 +62,14 @@ async def _no_sleep(*_):
 
 # --- functions/ --------------------------------------------------------------
 
-class TestCtrlCCancelsFunction:
-    def test_task_cancelled_and_sessions_reconnected(self):
-        from modules.storages.functions_storage import FunctionsStorage
-
-        loop = asyncio.new_event_loop()
-        cancelled = []
-
-        class _Client:
-            connected = False
-
-            def is_connected(self):
-                return self.connected
-
-            async def connect(self):
-                self.connected = True
-
-        client = _Client()
-
-        async def listener():
-            try:
-                await asyncio.sleep(10)
-            except asyncio.CancelledError:
-                cancelled.append(True)
-                raise
-
-        def _interrupt():
-            raise KeyboardInterrupt
-
-        class _Listener:
-            def __init__(self, storage, settings):
-                pass
-
-            def execute(self):
-                return listener()
-
-        fs = FunctionsStorage.__new__(FunctionsStorage)
-        fs.loop = loop
-        fs.storage, fs.settings = ns(initialize=True, sessions=[client]), None
-        fs.functions = [(_Listener(None, None), "doc")]
-
-        loop.call_later(0.01, _interrupt)  # Ctrl-C while the loop idles, not inside the task
-        try:
-            fs.run_instance(fs.functions[0][0])
-            assert False, "KeyboardInterrupt must propagate to the menu"
-        except KeyboardInterrupt:
-            pass
-        finally:
-            asyncio.set_event_loop(None)  # execute() set it; don't leak a closed loop
-            loop.close()
-
-        assert cancelled == [True]  # not left pending for the next menu function
-        assert client.connected is True
-
-
-class TestChangeNameBlankLines:
-    def test_blank_lines_dropped(self, monkeypatch, tmp_path):
-        from functions.changename import ChangeNameFunc
-
-        (tmp_path / "assets").mkdir()
-        (tmp_path / "assets" / "names.txt").write_text("Ivan\n\nPetr Petrov\n", encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr("functions.changename.console.input", lambda *_: "y")
-
-        fn = ChangeNameFunc(_Storage(), ns(delay=[0], profile_pause=[0]))
-        got = []
-
-        async def run(report, names=None, **_):
-            got.append(names)
-
-        fn.run = run
-        asyncio.run(fn.execute())
-
-        assert got == [["Ivan", "Petr Petrov"]]
-
 
 class TestSessionsStorage:
     def test_binary_session_file_is_skipped(self, tmp_path):
         from modules.storages.sessions_storage import SessionsStorage
 
         (tmp_path / "sqlite.session").write_bytes(b"SQLite format 3\x00\xff\xfe\x80")
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
+        storage = SessionsStorage(str(tmp_path), 1, "hash", home=conftest.home())
         assert storage.sessions == []
-
-    def test_authorization_check_error_skips_session(self, tmp_path):
-        from modules.storages.sessions_storage import SessionsStorage
-
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
-
-        class _S:
-            async def connect(self):
-                return None
-
-            async def is_user_authorized(self):
-                raise RuntimeError("network")
-
-            async def disconnect(self):
-                return None
-
-        s = _S()
-        storage.full_sessions["p"] = s
-        asyncio.run(storage.check_session(s, "p"))  # must not raise into the init gather
-        assert storage.sessions == []
-
-
-class TestReportCli:
-    def test_rest_goes_through_replay_rest(self, monkeypatch):
-        from functions.report import ReportFunc
-
-        class _S:
-            async def get_me(self):
-                return ns(first_name="A")
-
-        first, other = _S(), _S()
-        fn = ReportFunc(_Storage([first, other]), ns(delay=[0]))
-        answers = iter(["https://t.me/x", "1"])
-        monkeypatch.setattr("functions.report.Prompt.ask", lambda *a, **k: next(answers))
-        monkeypatch.setattr("functions.report.console.input", lambda *_: "c")
-
-        async def resolve_and_report(*_):
-            return [0]
-
-        replayed = []
-
-        async def replay_rest(sessions, *args):
-            replayed.append(sessions)
-
-        fn.resolve_and_report = resolve_and_report
-        fn.replay_rest = replay_rest
-        asyncio.run(fn.execute())
-
-        assert replayed == [[other]]
 
 
 class TestCommentsErrorReset:
@@ -380,7 +256,7 @@ class TestSpamBlockUnusableWorkers:
         from modules.storages.sessions_storage import SessionsStorage
 
         (tmp_path / "sessions").mkdir(exist_ok=True)
-        storage = SessionsStorage("sessions", 1, "x", initialize=False, home=conftest.home())
+        storage = SessionsStorage("sessions", 1, "x", home=conftest.home())
         for s in sessions:
             (tmp_path / s.path).write_text("x")
             storage.full_sessions[s.path] = s
@@ -693,44 +569,20 @@ class TestReportPeer:
 # --- modules/ ----------------------------------------------------------------
 
 class TestSetupBroadcast:
-    def test_requires_one_message(self, monkeypatch):
-        from modules.settings import Settings
-
-        answers = iter(["", "hi", "", "1-3", "go"])
-        monkeypatch.setattr("modules.settings.console.input", lambda *_: next(answers))
-        assert Settings.setup_broadcast() == (["hi"], [1, 3], "go")
-
     def test_reasks_a_delay_of_more_than_two_parts(self, monkeypatch):
         from modules.settings import Settings
 
         # "1-2-3" would be written to config.toml and then rejected by Settings() on the next start
-        answers = iter(["hi", "", "1-2-3", "2-5", "go"])
+        answers = iter(["1-2-3", "2-5", "go"])
         monkeypatch.setattr("modules.settings.console.input", lambda *_: next(answers))
-        assert Settings.setup_broadcast() == (["hi"], [2, 5], "go")
-
-
-class TestUpdaterPullFailure:
-    def test_git_command_error_is_reported(self, monkeypatch):
-        from modules import updater
-
-        class _Remote:
-            def pull(self):
-                raise GitCommandError("pull", 1)
-
-        monkeypatch.setattr(updater, "Repo",
-                            lambda *_: ns(remote=lambda name: _Remote(), head=ns(commit=None)))
-        printed = []
-        console = ns(status=lambda *_: contextlib.nullcontext(), print=printed.append)
-
-        updater.update(console)  # must not crash main before the menu
-
-        assert any("Обновление не удалось" in p for p in printed)
+        assert Settings.setup_broadcast() == ([2, 5], "go")
 
 
 # --- bot/ --------------------------------------------------------------------
 
 class _Manager:
     active = False
+    key = 0  # its slot's: a report flow is its chat's and project's
 
     def __init__(self):
         self.released = 0
@@ -764,7 +616,7 @@ class TestReportFlowConcurrency:
             return "choose", []
 
         flow = {"busy": True, "selections": [], "menu": 5}
-        moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
+        moderation._FLOWS[(7, 0)] = (ns(step=step), flow, [ns(option=b"a")])
         cb, data, _ = _callback(0)
         asyncio.run(moderation.rm_choose(cb, data, _Manager(), ns(in_job=[])))
 
@@ -774,7 +626,7 @@ class TestReportFlowConcurrency:
         from bot.routers import moderation
 
         async def step(flow, option):
-            moderation._FLOWS.pop(7, None)  # /cancel (_abort) ran while we awaited
+            moderation._FLOWS.pop((7, 0), None)  # /cancel (_abort) ran while we awaited
             raise RuntimeError("disconnected")
 
         class _Session:
@@ -782,23 +634,77 @@ class TestReportFlowConcurrency:
                 return None
 
         flow = {"busy": False, "selections": [], "session": _Session(), "menu": 5}
-        moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
+        moderation._FLOWS[(7, 0)] = (ns(step=step), flow, [ns(option=b"a")])
         cb, data, _ = _callback(0)
         manager = _Manager()
         asyncio.run(moderation.rm_choose(cb, data, manager, ns(in_job=[])))
 
         assert manager.released == 0
-        assert 7 not in moderation._FLOWS
+        assert (7, 0) not in moderation._FLOWS
 
     def test_stale_index_ignored(self):
         from bot.routers import moderation
 
         flow = {"busy": False, "selections": [], "menu": 5}
-        moderation._FLOWS[7] = (ns(step=None), flow, [ns(option=b"a")])
+        moderation._FLOWS[(7, 0)] = (ns(step=None), flow, [ns(option=b"a")])
         cb, data, _ = _callback(5)
         asyncio.run(moderation.rm_choose(cb, data, _Manager(), ns(in_job=[])))
 
         assert flow["selections"] == [] and flow["busy"] is False
+
+
+    def test_two_projects_reports_in_one_chat_keep_their_own_flows(self, monkeypatch):
+        """A report of project A waits for its option while one of project B runs in the same chat: A's
+        timeout (/cancel) lets go of A's worker only, and B's menu still answers."""
+        from bot.routers import moderation
+
+        released = []
+
+        async def release(session):
+            released.append(session)
+
+        monkeypatch.setattr(moderation, "release_client", release)
+        stepped = []
+
+        async def step(flow, option):
+            stepped.append(option)
+            return "choose", [ns(option=b"b", text="b")]
+
+        a = {"busy": False, "selections": [], "session": "A's worker", "menu": 4}
+        b = {"busy": False, "selections": [], "session": "B's worker", "menu": 5}
+        moderation._FLOWS[(7, 1)] = (ns(step=None), a, [ns(option=b"a")])
+        moderation._FLOWS[(7, 2)] = (ns(step=step), b, [ns(option=b"a")])
+        asyncio.run(moderation._abort((7, 1), ns(in_job=["A's worker"])))
+        assert released == ["A's worker"] and (7, 2) in moderation._FLOWS
+
+        cb, data, _ = _callback(0)  # B's menu (message 5), tapped in project B
+        cb.message.edit_text = lambda *a, **k: asyncio.sleep(0)
+        manager = _Manager()
+        manager.key = 2
+        asyncio.run(moderation.rm_choose(cb, data, manager, ns(in_job=[])))
+        assert stepped == [b"a"] and b["selections"] == [0]
+
+    def test_a_report_menu_sent_anew_takes_the_taps_from_then_on(self):
+        """The options' message gone, SafeEdit sends the next level as a new one: its taps are the flow's."""
+        import datetime
+
+        from aiogram.types import Chat, Message
+
+        from bot.routers import moderation
+
+        async def step(flow, option):
+            return "choose", [ns(option=b"b", text="b")]
+
+        async def edit_text(*a, **k):
+            return Message(message_id=9, date=datetime.datetime.now(), chat=Chat(id=7, type="private"))
+
+        flow = {"busy": False, "selections": [], "session": "worker", "menu": 5}
+        moderation._FLOWS[(7, 0)] = (ns(step=step), flow, [ns(option=b"a")])
+        cb, data, _ = _callback(0)
+        cb.message.edit_text = edit_text
+        asyncio.run(moderation.rm_choose(cb, data, _Manager(), ns(in_job=[])))
+        assert flow["menu"] == 9 and flow["busy"] is False
+        moderation._FLOWS.pop((7, 0), None)
 
 
 class TestReporterLength:
@@ -818,6 +724,30 @@ class TestReporterLength:
 
         assert sent and len(sent[-1]) <= 4096
         assert sent[-1].startswith("Готово")
+
+    def test_a_status_message_sent_anew_is_edited_from_then_on(self):
+        """SafeEdit sends the text as a new message once the status message is gone: the next edits go
+        to that one, not to the gone one (each would be one more new message)."""
+        import datetime
+
+        from aiogram.types import Chat, Message
+
+        from bot.services.runner import TelegramReporter
+
+        edited = []
+
+        class _Bot:
+            async def edit_message_text(self, text, message_id, **k):
+                edited.append(message_id)
+                if message_id == 1:  # gone: SafeEdit's new message instead
+                    return Message(message_id=7, date=datetime.datetime.now(), chat=Chat(id=1, type="private"))
+                return True
+
+        reporter = TelegramReporter(_Bot(), 1, header="H", min_interval=0)
+        reporter.message_id = 1
+        asyncio.run(reporter("a"))
+        asyncio.run(reporter("b"))
+        assert edited == [1, 7] and reporter.message_id == 7
 
 
 class TestMailLimit:
@@ -1028,11 +958,14 @@ class TestProfilePhotoSkipsHiddenFiles:
     def test_only_regular_visible_files(self, monkeypatch, tmp_path):
         from functions.change_profile_photo import ChangeProfilePhotoFunc
 
-        photos = tmp_path / "assets" / "photos"
+        from pathlib import Path
+
+        from modules import content
+
+        photos = Path(content.path("ru", "photos"))
         (photos / "sub").mkdir(parents=True)
         (photos / ".DS_Store").write_bytes(b"\x00")
         (photos / "a.jpg").write_bytes(b"jpg")
-        monkeypatch.chdir(tmp_path)
 
         fn = ChangeProfilePhotoFunc(_Storage([object()] * 5), ns(delay=[0], profile_pause=[0]))
         picked = []
@@ -1115,18 +1048,6 @@ class TestMailRunStats:
 
 # --- round 3 -----------------------------------------------------------------
 
-class TestCliLoopReuse:
-    def test_functions_run_on_the_sessions_loop(self, tmp_path):
-        from modules.storages.functions_storage import FunctionsStorage
-
-        loop = asyncio.new_event_loop()
-        try:
-            fs = FunctionsStorage(str(tmp_path), ns(loop=loop, sessions=[]), ns())
-            assert fs.loop is loop  # Telethon refuses calls from another loop
-        finally:
-            asyncio.set_event_loop(None)
-            loop.close()
-
 
 class TestStickerRequest:
     def test_hash_is_passed(self, monkeypatch):
@@ -1142,7 +1063,7 @@ class TestStickerRequest:
             async def send_file(self, *a, **k):
                 return None
 
-        fn = Broadcast(_Storage(), ns(delay=[0]))
+        fn = Broadcast(_Storage(), ns(delay=[0], messages_count=0))
         fn.configure(choice=4, sticker_set="https://t.me/addstickers/Pack", content=None)
 
         async def no_send(*a, **k):
@@ -1235,7 +1156,7 @@ class TestReportCancelDuringConnect:
 
         class _First:
             async def connect(self):
-                moderation._FLOWS.pop(7, None)  # /cancel ran _abort while connecting
+                moderation._FLOWS.pop((7, 0), None)  # /cancel ran _abort while connecting
 
             async def disconnect(self):
                 return None
@@ -1245,7 +1166,7 @@ class TestReportCancelDuringConnect:
             return "done", None
 
         class _Manager:
-            active, label = False, ""
+            active, label, key = False, "", 0
 
             def acquire(self, *a, **k):
                 return True
@@ -1343,7 +1264,6 @@ class TestMailLimitSuperscript:
 
 class TestNewFilesOverwritten:
     def test_rewritten_file_is_new(self, tmp_path):
-        import os
         from bot.services.scraping import dir_snapshot, new_files
 
         f = tmp_path / "x_posts.parquet"
@@ -1370,30 +1290,6 @@ class TestExcelHeaderFormula:
         path = save_table(pd.DataFrame({"=promo": [1]}), tmp_path / "h", "excel")
         cell = openpyxl.load_workbook(path)["Sheet1"]["A1"]
         assert (cell.value, cell.data_type) == ("=promo", "s")
-
-
-class TestScrapeFuncDates:
-    def test_a_bad_or_swapped_date_is_asked_again(self, monkeypatch):
-        # as the bot's steps: a typo in «с», then «по» before «с», each asked again; the scrape goes on
-        from functions import scraper as fs
-
-        answers = iter(["@chan", "32.13.2024", "01.01.2024", "31.12.2023", "31.01.2024", ""])
-        monkeypatch.setattr(fs, "pick_session",
-                            lambda storage, personal=None: ns(path="sessions/a.jsession", client=object(),
-                                                              personal=False))
-        monkeypatch.setattr(fs.Prompt, "ask", lambda *a, **k: next(answers))
-        monkeypatch.setattr(fs.Confirm, "ask", lambda *a, **k: False)
-        printed = []
-        monkeypatch.setattr(fs.console, "print", lambda *a, **k: printed.append(str(a[0])))
-
-        f = fs.ScrapeFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h"))
-        f.ask_int = lambda *a, **k: 100
-        ran = []
-        f._run = lambda account, params: ran.append(params)
-        f.scrape("name")
-
-        assert [(p.date_min.day, p.date_max.day, p.date_max.hour) for p in ran] == [(1, 31, 23)]
-        assert any("Неверная дата" in p for p in printed) and any("позже даты «по»" in p for p in printed)
 
 
 class TestInvitingMissingInvitees:
@@ -1548,7 +1444,7 @@ class TestSessionFiles:
         (tmp_path / "v6.session").write_text(v6)
         (tmp_path / "junk.session").write_text("x" * 100)
 
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
+        storage = SessionsStorage(str(tmp_path), 1, "hash", home=conftest.home())
         assert list(storage.full_sessions) == [str(tmp_path / "v6.session")]
 
     def test_string_session_has_entities_set(self):
@@ -1562,25 +1458,8 @@ class TestSessionFiles:
         from modules.storages.sessions_storage import SessionsStorage
 
         (tmp_path / "broken.jsession").write_text("{not json")
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
+        storage = SessionsStorage(str(tmp_path), 1, "hash", home=conftest.home())
         assert storage.sessions == []
-
-
-class TestUpdaterAheadOfOrigin:
-    def test_no_update_when_origin_is_ancestor(self, monkeypatch):
-        from modules import updater
-
-        upcoming = ns(hexsha="origin", message="m")
-        repo = ns(
-            remotes=ns(origin=ns(refs=ns(master=ns(commit=upcoming)))),
-            head=ns(commit=ns(hexsha="local")),
-            is_ancestor=lambda a, b: a is upcoming,
-        )
-        monkeypatch.setattr(updater.git, "Repo", lambda *a: repo)
-        monkeypatch.setattr(updater.git, "Remote", lambda r, name: ns(fetch=lambda: ["info"]))
-        monkeypatch.setattr(updater, "get_current_commit", lambda: "local")
-
-        assert updater.check_update() == {"has_update": False}
 
 
 # --- round 5 -----------------------------------------------------------------
@@ -1697,26 +1576,6 @@ class TestScraperCredentials:
                                 "app_version": "10.3", "lang_code": "en", "system_lang_code": "en-US"}
 
 
-class TestVerifyFuncDates:
-    def test_a_swapped_date_is_asked_again_and_the_missed_go_next_to_the_posts(self, monkeypatch):
-        from functions import scraper as fs
-
-        answers = iter(["posts.parquet", "@chan", "31.12.2024", "01.01.2024", "31.12.2024"])
-        monkeypatch.setattr(fs, "pick_session", lambda storage, personal=None: ns(label="a", client=None))
-        monkeypatch.setattr(fs, "build_credentials", lambda client: None)
-        monkeypatch.setattr(fs.Prompt, "ask", lambda *a, **k: next(answers))
-        printed = []
-        monkeypatch.setattr(fs.console, "print", lambda *a, **k: printed.append(str(a[0])))
-        ran = []
-        monkeypatch.setattr(fs, "verify_run", lambda credentials, params: ran.append(params))
-
-        fs.VerifyFunc(_Storage(), ns(delay=[0], api_id=1, api_hash="h")).execute(posts=[], project="P")
-
-        assert any("позже даты «по»" in p for p in printed)
-        assert [(p.date_min.month, p.date_max.month, p.output, p.comment_sample) for p in ran] == [
-            (12, 12, fs.scraped_files.missed_path("posts.parquet", "@chan"), 0)]
-
-
 class TestExcelErrorStrings:
     def test_error_code_text_stays_text(self, tmp_path):
         from scraper.datafiles import save_table
@@ -1761,10 +1620,10 @@ class TestReportAbortDuringAnswer:
             return "choose", []
 
         async def answer(*a, **k):
-            moderation._FLOWS.pop(7, None)  # /cancel ran _abort meanwhile
+            moderation._FLOWS.pop((7, 0), None)  # /cancel ran _abort meanwhile
 
         flow = {"busy": False, "selections": [], "menu": 5}
-        moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
+        moderation._FLOWS[(7, 0)] = (ns(step=step), flow, [ns(option=b"a")])
         cb = ns(message=ns(chat=ns(id=7), message_id=5, answer=answer), answer=answer, bot=None)
         try:
             asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager(), ns(in_job=[])))
@@ -1799,55 +1658,6 @@ class TestScrapeSnapshotBeforeSlot:
         asyncio.run(scraping.scrape._run_scrape(_Bot(), 1, manager, pool, None, params))
 
         assert manager.active is False and any("недоступна" in r for r in replies)
-
-
-class TestCheckSessionDisconnects:
-    def test_unauthorized_client_disconnected(self, tmp_path):
-        from modules.storages.sessions_storage import SessionsStorage
-
-        path = tmp_path / "a.session"
-        path.write_text("x")
-        storage = SessionsStorage(str(tmp_path), 1, "hash", initialize=False, home=conftest.home())
-
-        class _S:
-            disconnected = False
-
-            async def connect(self):
-                return None
-
-            async def is_user_authorized(self):
-                return False
-
-            async def disconnect(self):
-                self.disconnected = True
-
-        s = _S()
-        storage.full_sessions[str(path)] = s
-        asyncio.run(storage.check_session(s, str(path)))
-        assert s.disconnected and (tmp_path / "inactive" / "a.session").exists()
-
-
-class TestUpdaterRequirements:
-    def test_installs_when_requirements_changed(self, monkeypatch):
-        from modules import updater
-
-        new_head = object()
-        old_head = ns(diff=lambda other: [ns(b_path="requirements.txt")] if other is new_head else [])
-        repo = ns(head=ns(commit=old_head))
-
-        def pull():
-            repo.head.commit = new_head  # HEAD moves; FetchInfo would carry no old_commit
-
-        repo.remote = lambda name: ns(pull=pull)
-        monkeypatch.setattr(updater, "Repo", lambda *_: repo)
-        installed, restarted = [], []
-        monkeypatch.setattr(updater, "update_requirements", lambda console: installed.append(1))
-        monkeypatch.setattr(updater, "restart_app", lambda: restarted.append(1))
-        console = ns(status=lambda *_: contextlib.nullcontext(), print=lambda *a: None)
-
-        updater.update(console)
-
-        assert installed == [1] and restarted == [1]
 
 
 # --- round 5 leftovers ---------------------------------------------------------
@@ -2209,29 +2019,6 @@ class TestJoinerBotCaptcha:
         assert not any("captcha" in m for m in msgs)
 
 
-class TestUpdaterPipFailure:
-    def test_reported_without_restart(self, monkeypatch):
-        import subprocess
-        from modules import updater
-
-        new_head = object()
-        old_head = ns(diff=lambda other: [ns(b_path="requirements.txt")])
-        repo = ns(head=ns(commit=old_head))
-        repo.remote = lambda name: ns(pull=lambda: setattr(repo.head, "commit", new_head))
-        monkeypatch.setattr(updater, "Repo", lambda *_: repo)
-
-        def fail(console):
-            raise subprocess.CalledProcessError(1, ["pip"])
-
-        monkeypatch.setattr(updater, "update_requirements", fail)
-        restarted, printed = [], []
-        monkeypatch.setattr(updater, "restart_app", lambda: restarted.append(1))
-        console = ns(status=lambda *_: contextlib.nullcontext(), print=lambda *a: printed.append(a[0]))
-
-        updater.update(console)
-        assert restarted == [] and any("Не удалось установить зависимости" in p for p in printed)
-
-
 class TestReporterFloodRetries:
     def test_final_survives_two_retry_afters(self, monkeypatch):
         from aiogram.exceptions import TelegramRetryAfter
@@ -2293,19 +2080,18 @@ class TestReportAnswerFailure:
             return None
 
         flow = {"busy": False, "selections": [], "menu": 5}
-        moderation._FLOWS[7] = (ns(step=step), flow, [ns(option=b"a")])
+        moderation._FLOWS[(7, 0)] = (ns(step=step), flow, [ns(option=b"a")])
         cb = ns(message=ns(chat=ns(id=7), message_id=5, answer=answer, edit_text=answer), answer=failing_answer,
                 bot=None)
         try:
             asyncio.run(moderation.rm_choose(cb, ns(value="0"), _Manager(), ns(in_job=[])))
-            assert stepped == [b"a"] and moderation._FLOWS[7][1]["busy"] is False
+            assert stepped == [b"a"] and moderation._FLOWS[(7, 0)][1]["busy"] is False
         finally:
             moderation._FLOWS.clear()
 
 
 class TestSnapshotDanglingSymlink:
     def test_skipped(self, tmp_path):
-        import os
         from bot.services.scraping import dir_snapshot
 
         (tmp_path / "real.parquet").write_text("x")
@@ -2385,7 +2171,7 @@ class TestReportFlowHoldsItsWorkers:
             return "choose", [ns(text="spam", option=b"1")]
 
         class _Manager:
-            active, label = False, ""
+            active, label, key = False, "", 0
 
             def acquire(self, *a, **k):
                 return True
@@ -2409,7 +2195,7 @@ class TestReportFlowHoldsItsWorkers:
         try:
             asyncio.run(moderation.rm_begin(msg, _State(), pool, {"ReportFunc": lambda: ns(step=step)}, _Manager()))
             assert pool.in_job == workers  # the flow drives them: no scrape may start on them
-            asyncio.run(moderation._abort(7, pool))  # /cancel or the inactivity timeout
+            asyncio.run(moderation._abort((7, 0), pool))  # /cancel or the inactivity timeout
             assert pool.in_job == []
         finally:
             moderation._FLOWS.clear()
@@ -2605,7 +2391,7 @@ def test_a_public_peer_is_passed_as_is():
 
 # --- the «Очистить диалоги» confirmation expires: an old «Да» must not wipe the workers ---
 
-def _clear(age):
+def _clear(age, value="yes.1", project=1):
     import datetime
 
     from bot.callbacks import ChoiceCB
@@ -2626,12 +2412,12 @@ def _clear(age):
     async def edit_reply_markup(reply_markup=None):
         return None
 
-    message = ns(date=datetime.datetime.now(datetime.timezone.utc) - age, chat=ns(id=1),
+    message = ns(date=datetime.datetime.now(datetime.timezone.utc) - age, edit_date=None, chat=ns(id=1),
                  edit_reply_markup=edit_reply_markup)
     callback = ns(message=message, answer=answer, bot=None)
     functions = {"ClearDialogsFunc": object}
-    asyncio.run(service.clear_run(callback, ChoiceCB(scope="clear_confirm", value="yes"),
-                                  ns(), functions, _Manager(), ns(project_id=1)))
+    asyncio.run(service.clear_run(callback, ChoiceCB(scope="clear_confirm", value=value),
+                                  ns(), functions, _Manager(), ns(project_id=project)))
     return alerts, runs
 
 
@@ -2647,6 +2433,16 @@ def test_a_fresh_clear_confirmation_runs_the_wipe():
 
     alerts, runs = _clear(datetime.timedelta(seconds=5))
     assert runs and not alerts
+
+
+def test_a_clear_confirmation_asked_in_another_project_wipes_nothing():
+    """Asked in project 1, tapped once the chat is in project 2 (its card opened since): stale, not 2's wipe."""
+    import datetime
+
+    alerts, runs = _clear(datetime.timedelta(seconds=5), value="yes.1", project=2)
+    assert not runs and alerts and "устарела" in alerts[0]
+    alerts, runs = _clear(datetime.timedelta(seconds=5), value="yes", project=1)  # a button from before the fix
+    assert not runs and alerts
 
 
 class TestMailingLastChoiceWins:
@@ -2690,3 +2486,26 @@ class TestMailingLastChoiceWins:
         asyncio.run(mailing.mail_run(ns(answer=answer), state, None, None,
                                         {"PmMailingFunc": lambda: instance}, manager, None))
         assert read == ["assets/databases/G_participants.parquet"]
+
+
+def test_the_clear_dialogs_question_takes_the_screen_s_place_and_its_cancel_brings_it_back():
+    from types import SimpleNamespace as ns
+
+    from bot.callbacks import ChoiceCB
+    from bot.routers import service
+
+    edits, answers = [], []
+
+    async def edit_text(text, **kwargs):
+        edits.append((text, kwargs.get("reply_markup")))
+
+    async def answer(text=None, **kwargs):
+        answers.append(text)
+
+    message = ns(edit_text=edit_text, answer=answer, chat=ns(id=1))
+    callback = ns(message=message, answer=answer)
+    asyncio.run(service.clear_start(callback, ns(count=lambda: 1), ns(project_id=0)))
+    assert edits[0][0].startswith("🧹 Очистить диалоги — ⚠️ очистить ВСЕ диалоги")  # in 🔐's place
+    no = edits[0][1].inline_keyboard[0][1].callback_data  # its ✖️, as drawn: names its project
+    asyncio.run(service.clear_run(callback, ChoiceCB.unpack(no), ns(), {}, ns(active=False), ns(project_id=0)))
+    assert edits[1][0].startswith("<b>🔐 Безопасность</b>")  # ↩️: the screen again, in the question's place

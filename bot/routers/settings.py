@@ -11,13 +11,13 @@ from bot.keyboards.menu import screen_kb
 from bot.routers._common import STALE_STEP, back_answer, left_flow
 from bot.services import screens
 from bot.states import SetSetting
-from modules.registry import LIMITS, SCREENS, SETTINGS
+from modules.registry import SCREENS, SETTINGS
 from modules.settings import Settings, count_text, parse_seconds, seconds_text
 
 router = Router()
 
-# ⚙️ Настройки: the values the bot writes back to config.toml (the CLI reads them too), and the
-# auto-reply kept there too: its own screen, bot/routers/autoreply.py. The chat campaign's trigger and
+# ⚙️ Настройки: the values the bot writes back to config.toml; the auto-reply is each
+# project's own (🎯 База и рассылка → 📬 Автоответ, bot/routers/autoreply.py). The chat campaign's trigger and
 # messages per worker are asked (and saved) by 🔔 Чат — по слову itself (bot/routers/chat_broadcasts.py).
 
 
@@ -29,7 +29,6 @@ class _Setting:
     parse: Callable[[str], object]  # None: asked again
     retry: str
     save: Callable[[Settings, object], None]
-    screen: str = SETTINGS  # the screen it is on: shown again with the new value
     unlimited: bool = False  # 0 means no limit: a button says so
 
 
@@ -60,35 +59,30 @@ VALUES = {
         count_text, lambda settings, key=key: getattr(settings, key),
         f"Пришлите число на аккаунт в сутки или нажмите «{UNLIMITED}»:",
         _count, f"Нужно целое число или «{UNLIMITED}». Пришлите ещё раз:",
-        lambda settings, value, key=key: settings.set_daily_cap(key, value), LIMITS, unlimited=True)
+        lambda settings, value, key=key: settings.set_daily_cap(key, value), unlimited=True)
        for action, key in DAILY_CAPS.items()},
 }
-_BUTTONS = {button.action: button for title in (SETTINGS, LIMITS) for button in SCREENS[title].buttons}
+_BUTTONS = {button.action: button for button in SCREENS[SETTINGS].buttons}
 
 
-def _header(settings: Settings) -> str:
-    autoreply = "включён" if settings.autoreply_enabled and settings.autoreply_text else "выключен"
-    return (f"{screens.title_line(SETTINGS)} — задержка <b>{seconds_text(settings.delay)}</b> · "
-            f"пауза профиля <b>{seconds_text(settings.profile_pause)}</b> · автоответ <b>{autoreply}</b>")
+def _on_button(setting: _Setting, value) -> str:
+    """The value as its button shows it: no limit as ♾, short enough to share a row."""
+    return "♾" if setting.unlimited and value == 0 else setting.shown(value)
 
 
-def _limits_header(settings: Settings) -> str:
-    caps = " · ".join(f"{_BUTTONS[action.value].title.split(' ', 1)[1]} <b>{count_text(getattr(settings, key))}</b>"
-                      for action, key in DAILY_CAPS.items())
-    return f"{screens.title_line(LIMITS)} на аккаунт — {caps}"
+def _titles(settings: Settings) -> dict:
+    """Each button with its value on it — ⏱ Задержка: 5–10 с, 📨 ЛС: ♾ —, as 🔥 Прогрев's are (screens.show's
+    `titles`)."""
+    return {action.value: f"{_BUTTONS[action.value].title}: {_on_button(setting, setting.current(settings))}"
+            for action, setting in VALUES.items()}
 
 
-HEADERS = {SETTINGS: _header, LIMITS: _limits_header}
+HEADER = f"{screens.title_line(SETTINGS)} — общие для всех проектов"
 
 
-@screens.view(SETTINGS)  # by ⬅️ from the auto-reply's screen too: the settings come back in its place
+@screens.view(SETTINGS)
 async def settings_screen(message: Message, state: FSMContext, edit: bool, settings: Settings, **_):
-    await screens.show(message, SETTINGS, edit, _header(settings))
-
-
-@screens.view(LIMITS)
-async def limits_screen(message: Message, state: FSMContext, edit: bool, settings: Settings, **_):
-    await screens.show(message, LIMITS, edit, _limits_header(settings))
+    await screens.show(message, SETTINGS, edit, HEADER, titles=_titles(settings))
 
 
 @router.callback_query(MenuCB.filter(F.action.in_(VALUES)))
@@ -140,6 +134,7 @@ async def _apply(message: Message, state: FSMContext, settings: Settings, raw: s
     await state.clear()
     # the settings screen again, with the new value: the one above still shows the old
     title = _BUTTONS[action].title.split(" ", 1)[1]
-    screen = screens.screen_text(setting.screen, HEADERS[setting.screen](settings))
-    await message.answer(f"✅ {title}: {setting.shown(value)}. Действует сразу и в CLI.\n\n{screen}",
-                         parse_mode="HTML", reply_markup=screen_kb(setting.screen))
+    titles = _titles(settings)
+    await message.answer(f"✅ {title}: {setting.shown(value)}. Действует сразу.\n\n"
+                         f"{screens.screen_text(SETTINGS, HEADER, titles=titles)}",
+                         parse_mode="HTML", reply_markup=screen_kb(SETTINGS, titles=titles))

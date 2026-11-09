@@ -14,8 +14,7 @@ from bot.keyboards.menu import main_menu, screen_kb
 from bot.routers import chat_broadcasts
 from modules.analysis_tools import TOOLS as ANALYSIS
 from modules.registry import (
-    ACCOUNTS, BOT_FUNCTIONS, BOT_FUNCTIONS_BY_KEY, CLI_EXTRAS, MAIN_MENU, NOT_MENU_ITEMS, PROJECT_FILES, SCREENS,
-    children, menu_path, trail, AUTOREPLY,
+    ACCOUNTS, ADD, BOT_FUNCTIONS, BOT_FUNCTIONS_BY_KEY, MAIN_MENU, SCREENS, children, menu_path, trail, AUTOREPLY,
 )
 from bot.services.screens import screen_text
 
@@ -30,17 +29,16 @@ def _texts(markup):
 
 
 def test_every_function_has_an_emoji_and_a_description():
-    for function in BOT_FUNCTIONS + CLI_EXTRAS:
+    for function in BOT_FUNCTIONS:
         assert _starts_with_emoji(function.title), function.title
         assert function.hint.strip(), f"{function.title}: no description"
 
 
 def test_every_menu_button_starts_with_an_emoji():
     from bot.keyboards.common import cancel_kb
-    from bot.routers.login import add_kb
     from bot.states import SetSetting
 
-    texts = _texts(main_menu()) + _texts(yes_no_kb("x")) + _texts(cancel_kb(SetSetting.value)) + _texts(add_kb())
+    texts = _texts(main_menu()) + _texts(yes_no_kb("x")) + _texts(cancel_kb(SetSetting.value))
     for screen in SCREENS:
         texts += _texts(screen_kb(screen))
     texts += [label for label, _ in
@@ -71,37 +69,26 @@ def test_every_screen_button_is_described_on_its_screen_and_does_something():
             assert f"<b>{child}</b> — {SCREENS[child].hint}" in text
 
 
-def test_the_cli_accounts_items_are_the_bot_s_buttons():
-    titles = {button.title for button in SCREENS[ACCOUNTS].buttons}
-    assert {f.title for f in CLI_EXTRAS if f.category == ACCOUNTS} == titles
-
-
 def test_every_analysis_tool_is_described():
     assert [tool for tool, (_, hint, *_) in ANALYSIS.items() if not hint.strip()] == []
 
 
 def test_menu_path_finds_functions_and_screen_buttons():
     # all the work is a project's: in its card's screens; the card is opened by its name
-    assert menu_path("status") == "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка SpamBot"
+    assert menu_path("status") == "📁 Проекты → проект → 🤖 Аккаунты → 📋 Список → 🩺 SpamBot"
     assert menu_path("2fa") == "📁 Проекты → проект → 🤖 Аккаунты → 🔐 Безопасность → 🔒 Пароль 2FA"
     assert menu_path("invite") == "📁 Проекты → проект → 💬 Активность → 🤝 Инвайтинг"
-    assert trail(AUTOREPLY) == ["⚙️ Настройки", "📬 Автоответ"]  # a screen of its own
+    assert trail(AUTOREPLY) == ["📁 Проекты", "📁 Проект", "🎯 База и рассылка", "📬 Автоответ"]  # each project's
     assert menu_path("members") == "📁 Проекты → проект → 📥 Сбор → 👥 Участники групп"
-    assert menu_path("pmmailing") == "📁 Проекты → проект → 📨 База и рассылка → 📨 ЛС по базе"
+    assert menu_path("pmmailing") == "📁 Проекты → проект → 🎯 База и рассылка → 📨 Рассылка"
     # 🧹: the base's, on the card, and the dialogs', on a worker's screen — two keys, two places
-    assert menu_path("clearbase") == "📁 Проекты → проект → 🛠 Управление → 🧹 Очистить базу"
+    assert menu_path("clearbase") == "📁 Проекты → проект → 🎯 База и рассылка → 🧹 Очистить базу"
     assert menu_path("clear") == "📁 Проекты → проект → 🤖 Аккаунты → 🔐 Безопасность → 🧹 Очистить диалоги"
-    assert menu_path("channels") == "📁 Проекты → проект → 🛠 Управление → 📢 Каналы"
-    assert "projects" not in BOT_FUNCTIONS_BY_KEY  # 📁 Проекты: a main-menu button; the CLI's item (CLI_EXTRAS)
-    assert menu_path("add") == "📁 Проекты → проект → 🤖 Аккаунты → ➕ Добавить"
+    assert menu_path("channels") == "📁 Проекты → проект → 📥 Сбор → 📢 Каналы"
+    assert "projects" not in BOT_FUNCTIONS_BY_KEY  # 📁 Проекты: a main-menu button
+    assert menu_path(ADD) == "📁 Проекты → проект → 🤖 Аккаунты → ➕ Добавить"
     actions = {b.action for screen in SCREENS.values() for b in screen.buttons}
     assert not actions & set(BOT_FUNCTIONS_BY_KEY)  # one key, one place
-
-
-def test_the_card_s_functions_are_its_own():
-    on_card = {function.classname for function in BOT_FUNCTIONS if function.category in PROJECT_FILES}
-    # not menu items of their own: run from a card or ➕ Добавить
-    assert set(NOT_MENU_ITEMS) == on_card | {"ScrapeFunc", "TdataImportFunc", "LoginCodesFunc"}
 
 
 def test_every_menu_button_s_callback_fits_telegram_s_64_bytes():
@@ -164,7 +151,7 @@ def _sources(*roots):
 
 
 def test_no_message_names_a_button_by_hand():
-    """A button's title typed in a message («▶️ Скрап проекта») outlives the button renamed: messages take it
+    """A button's title typed in a message («▶️ Скрап») outlives the button renamed: messages take it
     from the registry (registry.title, its constants)."""
     from modules.registry import ADD_CHANNELS
 
@@ -224,8 +211,10 @@ def test_every_screen_of_the_main_menu_starts_with_an_emoji(monkeypatch, tmp_pat
     from modules.registry import ACTIVITY, PROJECTS, SETTINGS
     from modules import projects
 
-    deps = dict(pool=types.SimpleNamespace(count=lambda: 1), settings=types.SimpleNamespace(
-        delay=[2, 5], profile_pause=[60, 180], trigger="go", messages_count=0,
+    deps = dict(pool=types.SimpleNamespace(count=lambda: 1, storage=types.SimpleNamespace(directory=str(tmp_path))),
+                personal=None, settings=types.SimpleNamespace(
+        delay=[2, 5], profile_pause=[60, 180], trigger="go", messages_count=0, per_account_daily=40,
+        invite_per_account_daily=0, contacts_per_account_daily=0,
                   autoreply_enabled=False, autoreply_text=""),
         workspace=types.SimpleNamespace(project_id=0))  # a project opened: its screens
 

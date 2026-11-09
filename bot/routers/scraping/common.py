@@ -19,11 +19,11 @@ from bot.services.delegation import WorkerPool, borrow
 from bot.services.jobs import JobManager, busy
 from bot.services.progress import Progress
 from modules import projects, scraped_files
-from modules.registry import COLLECT, menu_path, title
+from modules.registry import ADD, COLLECT, menu_path, title
 from modules.scraper_creds import find_account, scrape_accounts
 from scraper.scrape import (
     CHAT_LOOKUP_TIMEOUT, chat_block, chat_label,
-    lookup_on, parse_date, started,  # started: its jobs' first word, the terminal's too
+    lookup_on, parse_date, started,  # noqa: F401 — started: its jobs' first word
 )
 
 router = Router()
@@ -117,7 +117,7 @@ async def choose_account(message: Message, state: FSMContext, flow: str, **deps)
     if not accounts:
         await state.clear()
         await to_collect(message, f"У проекта нет аккаунтов: добавьте воркера или личный аккаунт — "
-                                  f"{menu_path('add')}.",
+                                  f"{menu_path(ADD)}.",
                          deps["scrapes"])
         return
     if len(accounts) == 1:  # in 📥 Сбор's place, as after a pick: its buttons gone, the account said
@@ -215,7 +215,7 @@ async def check_chats(message: Message, state: FSMContext, pool: WorkerPool, per
         return True
     if project:
         projects.remember(project, infos)
-    # a block per chat (chat_lines): a long list goes in several messages, each within Telegram's 4096
+    # a block per chat (chat_block): a long list goes in several messages, each within Telegram's 4096
     await send_chunked(message, "", [chat_block(i, info, html=True) for i, info in enumerate(infos, 1)])
     if all(info.problem is None for info in infos):
         return True

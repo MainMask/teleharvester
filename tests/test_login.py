@@ -12,6 +12,7 @@ import pytest
 from telethon import errors
 from telethon.tl.types.auth import SentCodeTypeApp
 
+from bot.callbacks import MenuAction, MenuCB
 from bot.routers import accounts, login as router
 from bot.services import login as logins
 from bot.states import AddByPhone
@@ -378,8 +379,7 @@ def test_personal_account_found_after_sign_in_is_logged_out(monkeypatch, tmp_pat
 def test_the_role_is_asked_before_the_number():
     callback = ns(message=_Msg(), answer=lambda *a, **k: asyncio.sleep(0))
     state = _State()
-    asyncio.run(router.phone_role(callback, router.ChoiceCB(scope="phone_role", value="personal"), state,
-                                  ns(project_id=1)))
+    asyncio.run(router.phone_role(callback, MenuCB(action=MenuAction.PERSONAL, project=1), state, ns(project_id=1)))
     assert state.state == AddByPhone.phone and state.data == {"role": "personal", "project": 1}  # its ⬅️ at the end
 
 
@@ -413,20 +413,6 @@ def test_known_number_gets_no_personal_code(monkeypatch, where):
     personal = _Storage(phones={"+79991234567"}) if where == "personal" else _Storage()
     state, _, msg = _start(monkeypatch, client, storage=storage, personal=personal, role="personal")
     assert client.codes_sent == 0 and state.cleared and logins._logins == {}
-
-
-def test_the_cards_offer_the_workers_then_the_personal_accounts():
-    worker, me = ns(), ns()
-    workers = ns(sessions=[worker], jsessions_paths={}, get_session_path=lambda c: "sessions/w.session")
-    personal = ns(sessions=[me], jsessions_paths={}, get_session_path=lambda c: "personal_sessions/me.session")
-    sent = []
-
-    async def answer(text, **kw):
-        sent.append([b.text for row in kw["reply_markup"].inline_keyboard for b in row])
-    state = _State()
-    asyncio.run(accounts.card.list_personal(ns(answer=answer), state, ns(storage=workers), personal))
-    assert sent == [["🤖 w.session", "👤 me.session", "⬅️ 🤖 Аккаунты"]]  # as listed: the workers first
-    assert state.data["acc_paths"] == ["sessions/w.session", "personal_sessions/me.session"]
 
 
 def test_cancel_closes_the_sign_in_at_once(monkeypatch):

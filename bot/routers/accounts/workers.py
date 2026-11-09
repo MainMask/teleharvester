@@ -1,25 +1,19 @@
-"""🤖 Аккаунты' screen and its 📋 Список: the project's workers, polled, then the personal accounts (card.py)."""
+"""📋 Список' 📡 Опросить: the project's workers, polled (their cards: 📋 Список' categories,
+accounts/base.py)."""
 import asyncio
 import html
 
-from aiogram import F, Router
-from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import Message
 
-from bot.callbacks import MenuAction, MenuCB
 from bot.keyboards.menu import back_kb
 from bot.routers._common import NO_WORKERS, send_chunked
-from bot.routers.accounts import card
-from bot.services import screens
 from bot.services.delegation import WorkerPool
 from bot.services import jobs
 from bot.services.jobs import JobManager
-from bot.services.workspaces import Workspace
 from modules import phone_countries, restricted_workers
-from modules.registry import ACCOUNTS, title
+from modules.registry import ACCOUNT_LIST, POLL
 from modules.storages.sessions_storage import profile_order
-
-router = Router()
+from modules.types.account import full_name
 
 GET_ME_TIMEOUT = 20  # seconds per worker when polling profiles for the accounts list
 
@@ -31,44 +25,23 @@ def _worker_line(storage, client, me, index: int, busy: bool = False, mark: str 
         js = storage.jsessions_paths.get(storage.get_session_path(client))
         if js is not None:
             account = js.account.account
-            name = " ".join(filter(None, [account.first_name, account.last_name])) or "—"
+            name = full_name(account.first_name, account.last_name) or "—"
             return (f"<b>{index}. {html.escape(name)}</b>\n"
                     f"📱 <code>+{html.escape(str(account.phone_number))}</code> · "
                     f"🆔 <code>{account.user_id}</code>\n"
                     f"{status}{mark}")
         return f"<b>{index}.</b> {status} (StringSession){mark}"
 
-    name = " ".join(filter(None, [me.first_name, me.last_name])) or "—"
+    name = full_name(me.first_name, me.last_name) or "—"
     username = f"@{html.escape(me.username)}" if me.username else "—"  # plain: Telegram links it
     premium = " · ⭐ Premium" if me.premium else ""
     return (f"<b>{index}. {html.escape(name)}</b>\n"
             f"👤 {username} · 🆔 <code>{me.id}</code>{premium}{mark}")
 
 
-@screens.view(ACCOUNTS)
-async def accounts_screen(message: Message, state: FSMContext, edit: bool, pool: WorkerPool, workspace: Workspace,
-                          **_):
-    project = workspace.project_id
-    header = f"{screens.title_line(ACCOUNTS, screens.project_name(project))}\n\nВоркеров: <b>{pool.count()}</b>"
-    if pool.count() == 0:
-        header += f"\n\n{html.escape(NO_WORKERS)}"
-    await screens.show(message, ACCOUNTS, edit, header, project)
-
-
 def _list_header(count: int) -> str:
-    """📋 Список' first line (HTML): how many workers the project has."""
-    return f"<b>{html.escape(title('list'))}</b> — воркеров: <b>{count}</b>"
-
-
-@router.callback_query(MenuCB.filter(F.action == MenuAction.LIST))
-async def list_accounts(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, manager: JobManager, personal):
-    await callback.answer()
-    await accounts(callback.message, state, pool, manager, personal)
-
-
-async def accounts(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager, personal):
-    order = await _list_workers(message, pool, manager)
-    await card.list_personal(message, state, pool, personal, order, manager.project_id)
+    """The poll's first line (HTML): how many workers the project has."""
+    return f"<b>{html.escape(POLL)}</b> — воркеров: <b>{count}</b>"
 
 
 def _countries(storage, workers, profiles) -> str:
@@ -78,23 +51,23 @@ def _countries(storage, workers, profiles) -> str:
     return f"\n🌍 {html.escape(countries)}" if countries else ""
 
 
-async def _list_workers(message: Message, pool: WorkerPool, manager: JobManager) -> list[str]:
-    """The workers' list; their session paths in its order ([] when it wasn't polled)."""
+async def accounts(message: Message, pool: WorkerPool, manager: JobManager):
+    """Every worker asked for its profile, as new messages: the restricted last; ⬅️ to 📋 Список under them."""
     count = pool.count()
 
     if count == 0:
         await message.answer(f"{_list_header(0)}\n\n{html.escape(NO_WORKERS)}", parse_mode="HTML",
-                             reply_markup=back_kb(ACCOUNTS, manager.project_id))
-        return []
+                             reply_markup=back_kb(ACCOUNT_LIST, manager.project_id))
+        return
 
-    if not manager.acquire(title("list"), cancelable=False, timeout=0):
+    if not manager.acquire(POLL, cancelable=False, timeout=0):
         workers = pool.workers  # their stored numbers only: none is polled now
         await message.answer(
             f"{_list_header(count)}{_countries(pool.storage, workers, [None] * len(workers))}\n\n"
             f"{html.escape(jobs.busy(manager.label))}\nДетали воркеров — после её окончания.",
-            parse_mode="HTML", reply_markup=back_kb(ACCOUNTS, manager.project_id),
+            parse_mode="HTML", reply_markup=back_kb(ACCOUNT_LIST, manager.project_id),
         )
-        return []
+        return
 
     # the scraper's worker isn't polled: its auth key is in use by the scrape's own client, and
     # a second connection from another IP (a rotating proxy) risks AUTH_KEY_DUPLICATED
@@ -127,5 +100,4 @@ async def _list_workers(message: Message, pool: WorkerPool, manager: JobManager)
     if restricted := sum(1 for group, _ in checks.values() if group):
         header += f" · ограничены: <b>{restricted}</b>"
     header += _countries(pool.storage, workers, profiles)
-    await send_chunked(message, header, lines)
-    return [pool.storage.get_session_path(client) for client, _ in ordered]
+    await send_chunked(message, header, lines, reply_markup=back_kb(ACCOUNT_LIST, manager.project_id))

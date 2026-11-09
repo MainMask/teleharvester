@@ -5,7 +5,7 @@ import contextlib
 import types
 from unittest.mock import patch
 
-from functions.base.base import BaseFunction
+
 from functions.base.telethon import TelethonFunction
 from functions.changeusername import ChangeUsernameFunc
 from telethon.tl.functions.account import CheckUsernameRequest
@@ -16,22 +16,6 @@ def _fn(sessions, delay=(2, 5)):
     storage = types.SimpleNamespace(sessions=list(sessions))
     settings = types.SimpleNamespace(delay=list(delay), messages=["m"])
     return TelethonFunction(storage, settings)
-
-
-class TestAskInt:
-    def test_valid(self):
-        with patch("functions.base.base.Prompt.ask", side_effect=["3"]):
-            assert BaseFunction.ask_int("n", default=1) == 3
-
-    def test_retries_until_valid(self):
-        seq = iter(["abc", "-1", "4"])  # junk, below-min, valid
-        with patch("functions.base.base.Prompt.ask", side_effect=lambda *a, **k: next(seq)):
-            assert BaseFunction.ask_int("n", default=1, min_value=0) == 4
-
-    def test_min_value_enforced(self):
-        seq = iter(["0", "0", "1"])
-        with patch("functions.base.base.Prompt.ask", side_effect=lambda *a, **k: next(seq)):
-            assert BaseFunction.ask_int("n", default=1, min_value=1) == 1
 
 
 class TestDelay:
@@ -84,26 +68,6 @@ class TestChangeUsernameFileMode:
                                      {"sessions/a": "One", "sessions/x": "two"})
         assert changed == ["three", "four"]
         assert "[i] пропущено username, уже занятых вашими воркерами: 2" in reports
-
-
-class TestChangeUsernameCliFile:
-    def test_at_sign_is_dropped_as_in_the_bot(self, tmp_path, monkeypatch):
-        import functions.changeusername as module
-
-        (tmp_path / "assets").mkdir()
-        (tmp_path / "assets" / "usernames.txt").write_text("@alice\nbob\n\n", encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(module.console, "input", lambda prompt="": "y")
-
-        fn = ChangeUsernameFunc(types.SimpleNamespace(sessions=[]), types.SimpleNamespace(delay=[1]))
-        got = []
-
-        async def fake_run(report, usernames=None, base=None):
-            got.append(usernames)
-
-        fn.run = fake_run
-        asyncio.run(fn.execute())
-        assert got == [["alice", "bob"]]
 
 
 class TestChangeUsernameBaseMode:

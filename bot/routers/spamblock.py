@@ -1,19 +1,19 @@
 import datetime
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, InaccessibleMessage, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.callbacks import ChoiceCB, FunctionCB, ReleaseCB
 from bot.keyboards.common import choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import ensure_workers, resolve
+from bot.routers._common import confirm_expired, ensure_workers, resolve
 from bot.routers.accounts.proxies import proxies_busy, rehome_now
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace, Workspaces
 from functions.spamblock import rehome, worker_name
 from modules import restricted_workers
-from modules.registry import ACCOUNTS, menu_path, title
+from modules.registry import ACCOUNT_LIST, menu_path, title
 
 router = Router()
 
@@ -47,7 +47,7 @@ async def offer_rehome(bot, chat_id, workspace):
         pending = rehome(workspace.pool.storage, dry_run=True)
     except ValueError as err:  # a list edited by hand
         await bot.send_message(chat_id, f"⚠️ Пересадка ограниченных невозможна: {err}. Исправьте: {menu_path('proxy')}.",
-                               reply_markup=back_kb(ACCOUNTS, workspace.project_id))
+                               reply_markup=back_kb(ACCOUNT_LIST, workspace.project_id))
         return
     if not (pending["out"] or pending["back"]):
         return
@@ -84,9 +84,7 @@ STALE_CHECK = f"Кнопка устарела: запустите «{title('stat
 # the worker's project, whichever the chat is in now (or none, after a restart): the button is 24 h old at most
 @router.callback_query(ReleaseCB.filter(), flags={"any_project": True})
 async def release(callback: CallbackQuery, callback_data: ReleaseCB, workspaces: Workspaces):
-    message = callback.message  # inaccessible: too old for the bot to read, its date is 0
-    if isinstance(message, InaccessibleMessage) or \
-            datetime.datetime.now(datetime.timezone.utc) - message.date > BUTTON_TTL:
+    if confirm_expired(callback.message, BUTTON_TTL):
         await callback.answer(STALE_CHECK, show_alert=True)
         return
 
@@ -94,7 +92,7 @@ async def release(callback: CallbackQuery, callback_data: ReleaseCB, workspaces:
                                    for workspace in workspaces.all()
                                    for path, js in workspace.pool.storage.jsessions_paths.items()
                                    if js.account.account.user_id == callback_data.user_id), (None, None, 0))
-    back = back_kb(ACCOUNTS, project, fresh=False)
+    back = back_kb(ACCOUNT_LIST, project, fresh=False)
     # checked again since the message: clean now, or the session is gone
     if path is None or path not in restricted_workers.load():
         await callback.message.edit_text("Воркер уже не ограничен бессрочно — передавать нечего.", reply_markup=back)
@@ -110,11 +108,10 @@ async def release(callback: CallbackQuery, callback_data: ReleaseCB, workspaces:
 # the project the button names, whichever the chat is in now (or none, after a restart)
 @router.callback_query(ChoiceCB.filter(F.scope == "rehome"), flags={"any_project": True})
 async def rehome_restricted(callback: CallbackQuery, callback_data: ChoiceCB, workspaces: Workspaces):
-    message = callback.message  # inaccessible: too old for the bot to read, its date is 0
+    message = callback.message
     # a project id; "go" on a button sent before it carried one
     workspace = workspaces.get(int(callback_data.value)) if callback_data.value.isdigit() else None
-    if isinstance(message, InaccessibleMessage) or workspace is None or \
-            datetime.datetime.now(datetime.timezone.utc) - message.date > BUTTON_TTL:
+    if workspace is None or confirm_expired(message, BUTTON_TTL):
         await callback.answer(STALE_CHECK, show_alert=True)
         return
     await callback.answer()
@@ -122,4 +119,4 @@ async def rehome_restricted(callback: CallbackQuery, callback_data: ChoiceCB, wo
     if await proxies_busy(message, pool, workspace.manager):
         return
     if report := await rehome_now(message, pool):
-        await message.edit_text(report, reply_markup=back_kb(ACCOUNTS, workspace.project_id, fresh=False))
+        await message.edit_text(report, reply_markup=back_kb(ACCOUNT_LIST, workspace.project_id, fresh=False))

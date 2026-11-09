@@ -1,0 +1,4 @@
+# Sticker sets installed by the warmup: the short name of each, from its link t.me/addstickers/<name>
+# (a link works too). A name that is not a set fails the step, tried again on the next day.
+HotCherry
+UtyaDuck

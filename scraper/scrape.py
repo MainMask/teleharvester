@@ -1,4 +1,4 @@
-"""Async Telegram scraper (terminal port of the original notebook cells 1-3)."""
+"""Async Telegram scraper: a scrape of channels' posts, comments and reactions, checkpointed and resumable."""
 
 import asyncio
 import html as html_text
@@ -378,7 +378,7 @@ class ScrapeParams:
     # the account's session path: kept in the checkpoint, a resume must run on the same
     # account (the scraped access hashes are valid for it only)
     account: str = ""
-    # the channels' names as the operator saw them at input (see lookup_chats), in the order of
+    # the channels' names as the operator saw them at input (see lookup_on), in the order of
     # `channels`: kept in the checkpoint, so continuing it names them without asking Telegram
     chat_labels: list[str] | None = None
     # a top-up (see modules/projects.topup): the previous run's posts file; the new posts, reactors
@@ -444,12 +444,12 @@ def channel_slug(channel: str) -> str:
 
 
 # how a chat is given, in the prompts that ask for chats (a project's channels, the groups of 👥 Участники групп),
-# the bot's and the terminal's
+# the bot's
 CHAT_FORMAT = "@name, ссылка t.me, инвайт t.me/+… или числовой id"
 
 
 def started(title: str, account: str) -> str:
-    """A scraper job's first word (a scrape, a verify, a members' export), the bot's and the terminal's."""
+    """A scraper job's first word (a scrape, a verify, a members' export)."""
     return f"{title} — запущено на аккаунте {account}. Это может занять много времени."
 
 
@@ -658,21 +658,11 @@ async def _find_in_dialogs(client, ids: list[int]) -> None:
         pass
 
 
-async def lookup_chats(creds: Credentials, chats: list[str]) -> list[ChatInfo]:
-    """The chats' names as the scrape would see them (same steps, on the same account), so the
-    operator can check the input before a long run. A chat that fails gets its problem; a failed
-    connect or the timeout raises."""
-    async with asyncio.timeout(CHAT_LOOKUP_TIMEOUT):
-        client = await connect(creds)
-        try:
-            return await lookup_on(client, chats)
-        finally:
-            await client.disconnect()
-
-
 async def lookup_on(client, chats: list[str]) -> list[ChatInfo]:
-    """lookup_chats on a connected client: the bot's own one of the account, so its key is never
-    used from a second connection (no timeout here: the caller's)."""
+    """The chats' names as the scrape would see them (same steps, on the same account), so the
+    operator can check the input before a long run; a chat that fails gets its problem. On a
+    connected client: the bot's own one of the account, so its key is never used from a second
+    connection (no timeout here: the caller's)."""
     if not await client.is_user_authorized():
         raise SystemExit(NOT_AUTHORIZED)
     refs = [_channel_ref(raw) for raw in chats]  # parsing only: never raises
@@ -715,7 +705,7 @@ def chat_block(number: int, info: ChatInfo, unknown_note: str | None = None, htm
     """One chat in a list (the checked chats, a project's card): its title, else what was typed;
     then its @username (or the typed link / id) and id; then why it can't be scraped, or
     `unknown_note` for a chat never looked up. `html`: for the bot — escaped, the ids in <code>
-    (a tap copies them); without it plain text, for the terminal."""
+    (a tap copies them); without it plain text."""
     esc = html_text.escape if html else str
     code = (lambda value: f"<code>{value}</code>") if html else str
     raw = code(info.raw) if _is_id(info.raw) else esc(info.raw)
@@ -738,14 +728,9 @@ def chat_block(number: int, info: ChatInfo, unknown_note: str | None = None, htm
     return "\n".join(lines)
 
 
-def chat_lines(infos: list[ChatInfo], html: bool = False) -> str:
-    """The checked chats, numbered, a blank line between them (see chat_block)."""
-    return "\n\n".join(chat_block(i, info, html=html) for i, info in enumerate(infos, 1))
-
-
 def chat_label(info: ChatInfo) -> str:
     """How a chat is named in a scrape's checkpoint (ScrapeParams.chat_labels): its title, else what was
-    typed. The bot and the CLI show chats by the project's names instead (modules/projects.chat_list)."""
+    typed. The bot shows chats by the project's names instead (modules/projects.chat_list)."""
     return f"{info.title} ({info.raw})" if info.title else info.raw
 
 
@@ -1150,7 +1135,7 @@ def _sigterm_as_cancel() -> Callable[[], None]:
 
     SIGTERM is NOT turned into a KeyboardInterrupt the way SIGINT is, so without this it would kill
     the run mid-batch; as a cancellation, _scrape's CancelledError handler checkpoints a clean resume
-    point. Only in the main thread (the terminal menu); when the bot runs a scrape in a worker thread
+    point. Only in the main thread; when the bot runs a scrape in a worker thread
     add_signal_handler is unavailable, and the bot stops it through params.stop instead."""
     loop = asyncio.get_running_loop()
     main_task = asyncio.current_task()

@@ -5,14 +5,12 @@ from collections import Counter
 from types import SimpleNamespace
 from typing import Dict, List
 
-from rich.prompt import Confirm
 
 from telethon.errors import YouBlockedUserError
 from telethon.sync import TelegramClient
 from telethon.tl.functions.contacts import UnblockRequest
 
 from functions.base import TelethonFunction
-from functions.base.base import console_report
 from modules import contacts_ledger, projects, restricted_workers, tdata_import
 from modules.storages.sessions_storage import release_client
 
@@ -263,7 +261,7 @@ class SpamBlockFunc(TelethonFunction):
         for session in dead:
             path = self.storage.get_session_path(session)
             if path is not None:
-                await release_client(session)  # CLI clients stay connected: a forgotten one runs on
+                await release_client(session)  # a connected one: a forgotten client runs on
                 self.storage.move_to_inactive(path)
         return dead
 
@@ -271,29 +269,4 @@ class SpamBlockFunc(TelethonFunction):
         blocks = await self.scan(report, replies)
         await self.drop_dead(blocks)
         return blocks
-
-    async def execute(self):
-        await self.run(console_report, replies=True)
-
-        for path, _, name, people in self.waiting():
-            if Confirm.ask(f"[bold magenta]Передать контакты {name} ({people}) другим воркерам? "
-                           "Это не отменить.[/]", default=False):
-                restricted_workers.release(path)
-
-        try:
-            pending = rehome(self.storage, dry_run=True)
-        except ValueError as err:
-            await console_report(f"⚠️ Пересадка ограниченных невозможна: {err}")
-            return
-        if (pending["out"] or pending["back"]) and Confirm.ask(
-                f"[bold magenta]Пересадить на их прокси бессрочно ограниченных: {len(pending['out'])}, "
-                f"вернуть в основной пул остальных вне его: {len(pending['back'])}?[/]", default=True):
-            old = dict(self.storage.full_sessions)
-            try:
-                moves = rehome(self.storage)
-            except ValueError as err:  # a list edited while the question waited
-                await console_report(f"⚠️ Пересадка ограниченных невозможна: {err}")
-                return
-            await self.reconnect_rebuilt(old)
-            await console_report(rehome_report(moves))
 

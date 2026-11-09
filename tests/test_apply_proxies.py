@@ -27,7 +27,7 @@ def _write_jsession(directory, phone):
 def _storage(tmp_path, count):
     for i in range(count):
         _write_jsession(tmp_path, f"100000000{i}")
-    return SessionsStorage(str(tmp_path), 2040, "h", initialize=False)
+    return SessionsStorage(str(tmp_path), 2040, "h")
 
 
 def test_apply_proxies_distributes_three_per_proxy(tmp_path):
@@ -55,7 +55,7 @@ def test_apply_proxies_errors_when_too_few(tmp_path):
 
 def test_add_jsession_registers_and_dedupes(tmp_path):
     _write_jsession(tmp_path, "1000000000")
-    storage = SessionsStorage(str(tmp_path), 2040, "h", initialize=False)
+    storage = SessionsStorage(str(tmp_path), 2040, "h")
     assert len(storage.jsessions_paths) == 1
 
     # a brand-new account registers
@@ -177,7 +177,7 @@ def test_a_pool_proxy_is_never_off_the_pool_and_a_foreign_one_is(tmp_path):
     home.mkdir()
     (home / "proxies.txt").write_text("socks5://10.0.0.0:1080\nsocks5://10.9.9.9:1080\n")  # an old spare, now pool
     _storage(tmp_path, 4)
-    storage = SessionsStorage(str(tmp_path), 2040, "h", initialize=False, home=str(home))
+    storage = SessionsStorage(str(tmp_path), 2040, "h", home=str(home))
     storage.apply_proxies(MAIN[:1] + SPARE)  # 3 on 10.0.0.0, 1 on 10.9.9.9
     assert spamblock.rehome(storage, dry_run=True) == {"out": [], "back": [], "stuck": [], "busy": []}
 

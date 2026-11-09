@@ -67,8 +67,7 @@ async def release_client(client):
 
 
 class SessionsStorage:
-    def __init__(self, directory: str, api_id: Union[str, int], api_hash: str, initialize: bool = True,
-                 home: str | None = None):
+    def __init__(self, directory: str, api_id: Union[str, int], api_hash: str, home: str | None = None):
         # the project whose workers these are (projects.home): its mailing stats, contacts ledger and
         # proxies; None for the personal accounts, which are no project's
         self.directory = directory
@@ -77,9 +76,6 @@ class SessionsStorage:
         self.json_sessions: List[JsonSession] = []
         self.jsessions_paths: Dict[str, JsonSession] = {}
         self.usernames: Dict[str, str] = {}  # path -> username: the pool's order
-
-        self.initialize = initialize
-        self.loop = None  # the loop clients were connected on (initialize=True only)
 
         # stable order (by phone), not filesystem order; a project without workers may have no folder yet
         for file in sorted(os.listdir(directory) if os.path.isdir(directory) else []):
@@ -114,7 +110,7 @@ class SessionsStorage:
                         session_settings = json.load(fileobj)
 
                     session = JsonSession(dict_settings=session_settings)
-                except Exception as err:  # one broken file must not stop the CLI / bot start
+                except Exception as err:  # one broken file must not stop the bot's start
                     console.print(f"[bold yellow]ВНИМАНИЕ:[/] пропущен повреждённый файл сессии {session_path}: {err}")
                     continue
 
@@ -137,29 +133,6 @@ class SessionsStorage:
                 self.jsessions_paths[session_path] = session
                 if session.account.account.username:
                     self.usernames[session_path] = session.account.account.username
-
-        if self.initialize:
-            if len(self.full_sessions) == 0:
-                return print(
-                    "Для работы teleharvester нужно добавить аккаунты"
-                )
-
-            with console.status("Подключение..."):
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:  # no running loop (CLI path): make one for run_until_complete
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                self.loop = loop
-
-                loop.run_until_complete(
-                    asyncio.gather(
-                        *[
-                            self.check_session(session, path)
-                            for path, session in self.full_sessions.items()
-                        ]
-                    )
-                )
 
     @staticmethod
     def build_jsession_client(session: JsonSession) -> TelegramClient:
@@ -294,42 +267,6 @@ class SessionsStorage:
         if json_session is not None and json_session in self.json_sessions:
             self.json_sessions.remove(json_session)
 
-    async def check_session(self, session: TelegramClient, path: str):
-        console.log(f"Подключаю сессию {path}")
-
-        try:
-            await session.connect()
-            authorized = await session.is_user_authorized()
-        except ConnectionError:
-            json_session = self.jsessions_paths.get(path)
-
-            if json_session is not None and json_session.account.proxy is not None:
-                console.log(
-                    f"Не удалось подключить сессию {path}. Возможно, прокси {json_session.account.proxy.ip} недоступен?"
-                )
-            else:
-                console.log(f"Не удалось подключить сессию {path}")
-
-            # disconnect a forgotten client, or its keepalive/update tasks run on forever;
-            # connect() may have succeeded before the check
-            await session.disconnect()
-            self.forget_session(path)
-            return
-
-        except Exception as err:
-            console.log(f"Сессия {path} вернула ошибку: {err}. Пропускаю.")
-            await session.disconnect()
-            self.forget_session(path)
-            return
-
-        if not authorized:
-            console.log(f"Сессия {path} неактивна, переношу в inactive/ рядом с ней")
-            await session.disconnect()
-            self.move_to_inactive(path)
-            return
-
-        console.log(f"Подключена {path}")
-
     def move_to_inactive(self, path: str):
         """Drop a dead (banned / logged out) session from the pool and move its file
         to sessions/inactive/."""
@@ -386,6 +323,14 @@ class SessionsStorage:
         account.first_name, account.last_name = first_name, last_name
         json_session.account.save(path)
 
+    def remember_password(self, session: TelegramClient, password: str):
+        """Note a worker's new 2FA password; a .jsession keeps it, so a later change knows the current one."""
+        path = self.get_session_path(session)
+        json_session = self.jsessions_paths.get(path)
+        if json_session is not None:
+            json_session.account.password = password
+            json_session.account.save(path)
+
     async def fetch_me(self, client: TelegramClient, timeout: float = 20):
         """Live get_me(), or None if the worker can't be polled within `timeout` (it covers
         connect() too: a dead proxy must not stall a whole list)."""
@@ -415,20 +360,18 @@ class SessionsStorage:
 
     @asynccontextmanager
     async def ainitialize_session(self, session):
-        if not self.initialize:
-            try:
-                await connect_client(session)
-            except (OSError, ProxyError) as err:  # ProxyError: the proxy refused (bad login, its upstream down)
-                # one worker's dead proxy / network must not end the whole job: its first request
-                # then fails at once ("Cannot send requests while disconnected"), which every
-                # caller handles per worker, as for any get_me failure (skip it / next account)
-                log.warning("%s: can't connect: %s", self.get_session_path(session), err)
+        try:
+            await connect_client(session)
+        except (OSError, ProxyError) as err:  # ProxyError: the proxy refused (bad login, its upstream down)
+            # one worker's dead proxy / network must not end the whole job: its first request
+            # then fails at once ("Cannot send requests while disconnected"), which every
+            # caller handles per worker, as for any get_me failure (skip it / next account)
+            log.warning("%s: can't connect: %s", self.get_session_path(session), err)
 
         try:
             yield
         finally:
-            if not self.initialize:
-                await release_client(session)
+            await release_client(session)
 
     def __len__(self):
         return len(self.sessions)

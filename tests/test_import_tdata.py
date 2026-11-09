@@ -28,6 +28,16 @@ def test_read_2fa_password(tmp_path):
     assert tdata_import.read_2fa_password(str(tmp_path)) == "secret123"
 
 
+def test_a_2fa_txt_is_found_by_its_name_or_as_the_only_one_and_read_labelled_or_bare(tmp_path):
+    (tmp_path / "twoFA.txt").write_text("login: x\npassword = s3cret\n", encoding="utf-8")
+    (tmp_path / "readme.txt").write_text("not this", encoding="utf-8")
+    assert tdata_import.read_2fa_password(str(tmp_path)) == "s3cret"
+    only = tmp_path / "only"
+    only.mkdir()
+    (only / "info.txt").write_text("bare-password\n", encoding="utf-8")
+    assert tdata_import.read_2fa_password(str(only)) == "bare-password"
+
+
 def test_read_2fa_password_missing(tmp_path):
     assert tdata_import.read_2fa_password(str(tmp_path)) is None
 
@@ -302,8 +312,21 @@ def test_write_2fa_password_keeps_label(tmp_path):
     tdata_import.write_2fa_password("79990001122", "new", str(tmp_path))
 
     assert tdata_import.read_2fa_password(str(worker)) == "new"
-    assert (worker / "Пароль 2фа dark.txt").read_text(encoding="utf-8").startswith("2фа пароль к аккануту:")
+    assert (worker / "Пароль 2фа dark.txt").read_text(encoding="utf-8") == "2фа пароль к аккануту : new\n"
     assert (worker / "Пароль 2фа dark.txt").stat().st_mode & 0o777 == 0o600
+
+
+def test_a_changed_password_goes_into_the_txt_it_was_read_from(tmp_path):
+    worker = tmp_path / "79990001122"
+    worker.mkdir()
+    (worker / "2fa.txt").write_text("login: me\npassword = old\n", encoding="utf-8")
+
+    tdata_import.write_2fa_password("79990001122", "new", str(tmp_path))
+
+    # no second file beside it with the new one: the next read would take the stale one
+    assert sorted(path.name for path in worker.iterdir()) == ["2fa.txt"]
+    assert (worker / "2fa.txt").read_text(encoding="utf-8") == "login: me\npassword = new\n"
+    assert tdata_import.read_2fa_password(str(worker)) == "new"
 
 
 def test_write_2fa_password_creates_file(tmp_path):

@@ -160,36 +160,3 @@ def test_cli_takes_a_free_account_into_the_project(monkeypatch):
     assert list(storage.full_sessions) == [os.path.join(projects.sessions_dir(green), f"{phone}.jsession")
                                            for phone in ("222", "224")]
     assert projects.account_files(projects.FREE_DIR) == [os.path.join(projects.FREE_DIR, "223.jsession")]
-
-
-def test_cli_moves_a_worker_to_another_project(monkeypatch):
-    from functions import accounts as cli
-
-    green, blue = _project("Green"), _project("Blue")
-    for phone in ("111", "112", "113"):
-        _write_jsession(Path(projects.sessions_dir(green)), phone, f"w{phone}")
-    storage = projects.storage(green, 1, "h")
-    printed, answers = [], iter(["1-2", "1"])  # the first two → [1] 📁 Blue
-    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    monkeypatch.setattr(cli.console, "input", lambda *a: next(answers))
-    asyncio.run(cli.MoveWorkersFunc(storage, ns()).execute())
-    assert printed[3:5] == ["[1] 📁 Blue", "[2] 📦 В свободные"] and printed[-1].startswith("✅ Перенесено: 2 из 2.")
-    assert len(storage) == 1 and projects.account_files(projects.sessions_dir(blue)) == [
-        os.path.join(projects.sessions_dir(blue), f"{phone}.jsession") for phone in ("111", "112")]
-
-
-def test_cli_card_sections_run_on_the_project_s_workers(monkeypatch):
-    from functions import projects as cli
-    from modules.storages.functions_storage import FunctionsStorage
-    from test_scraper_menu import FakeSettings, FakeStorage, _answers
-
-    _write_jsession(Path(projects.sessions_dir(_project("Green"))), "111", "w1")
-    ran, printed = [], []
-    monkeypatch.setattr(FunctionsStorage, "run_instance", lambda self, instance: ran.append(
-        (type(instance).__name__, self.storage.home, len(self.storage))))
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))  # [1] Green
-    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    _answers(monkeypatch, cli, texts=["9", "1"])  # 🤖 Аккаунты › → [1] 📋 Список
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert any("[9] 🤖 Аккаунты ›  [10] 💬 Активность ›" in p for p in printed)  # in the bot's order
-    assert ran == [("AccountsFunc", projects.home(projects.find("Green")), 1)]

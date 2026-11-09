@@ -22,8 +22,9 @@ REPORT = BOT_FUNCTIONS_BY_KEY["report"]
 POSTS_ASK = "Пришлите номера постов через запятую — это число в конце ссылки на пост (t.me/name/123 → 123):"
 COMMENT_ASK = "Комментарий для модераторов Telegram — пришлите текст или нажмите «⏭ Без комментария»:"
 
-# chat_id -> (instance, flow-state dict, current options list) for the dynamic report flow
-_FLOWS: dict[int, tuple] = {}
+# (chat id, its project's slot key) -> (instance, flow-state dict, current options list) for the dynamic report
+# flow: one a chat and project, so two projects' reports in one chat never take each other's place
+_FLOWS: dict[tuple[int, int], tuple] = {}
 
 
 # =========================== report (user) ===========================
@@ -106,10 +107,10 @@ def _free(manager: JobManager, pool: WorkerPool):
     manager.release()
 
 
-async def _abort(chat_id: int, pool: WorkerPool):
+async def _abort(key: tuple[int, int], pool: WorkerPool):
     """on_abort for the manager: disconnect the held worker and drop the flow."""
     pool.in_job = []  # the manager already freed the slot
-    entry = _FLOWS.pop(chat_id, None)
+    entry = _FLOWS.pop(key, None)
     if entry is not None:
         await release_client(entry[1]["session"])
 
@@ -195,9 +196,9 @@ async def _report_posts(message: Message, state: FSMContext, pool: WorkerPool, f
     data = await state.get_data()
     await state.clear()
 
-    chat_id = message.chat.id
+    key = (message.chat.id, manager.key)
 
-    if not manager.acquire(REPORT.title, on_abort=lambda: _abort(chat_id, pool), timeout=600):
+    if not manager.acquire(REPORT.title, on_abort=lambda: _abort(key, pool), timeout=600):
         await back_answer(message, busy(manager.label), ACTIVITY, manager.project_id)
         return
 
@@ -223,40 +224,42 @@ async def _report_posts(message: Message, state: FSMContext, pool: WorkerPool, f
     # registered before the first await, so a /cancel or timeout meanwhile (_abort)
     # can disconnect the session; `entry` tells whether this flow still owns the slot
     entry = (instance, flow, [])
-    _FLOWS[chat_id] = entry
+    _FLOWS[key] = entry
 
     try:
         await connect_client(first)
-        if _FLOWS.get(chat_id) is not entry:  # cancelled during connect: send no report
+        if _FLOWS.get(key) is not entry:  # cancelled during connect: send no report
             await release_client(first)
             return
         status, options = await instance.step(flow, b"")
     except Exception as err:
-        if _FLOWS.get(chat_id) is not entry:  # aborted meanwhile: the slot is no longer ours
+        if _FLOWS.get(key) is not entry:  # aborted meanwhile: the slot is no longer ours
             return
-        _FLOWS.pop(chat_id, None)
+        _FLOWS.pop(key, None)
         _free(manager, pool)  # before any await: a /cancel meanwhile must not free a foreign slot
         await release_client(first)
         await back_answer(message, f"⚠️ Ошибка: {err}", ACTIVITY, manager.project_id)
         return
 
-    if _FLOWS.get(chat_id) is not entry:
+    if _FLOWS.get(key) is not entry:
         return
 
     if status == "choose":
-        _FLOWS[chat_id] = (instance, flow, options)
+        _FLOWS[key] = (instance, flow, options)
         menu = await message.answer(f"{REPORT.title} — выберите вариант (его повторят остальные воркеры):",
                                     reply_markup=_options_kb(options))
         flow["menu"] = menu.message_id  # its next levels come in its place: the only message whose taps count
     else:
-        await _finish(instance, flow, message.bot, chat_id, manager, pool)
+        await _finish(instance, flow, message.bot, message.chat.id, manager, pool)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "report_opt"))
 async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: JobManager, pool: WorkerPool):
     chat_id = callback.message.chat.id
-    entry = _FLOWS.get(chat_id)
-    # none running, or a tap on an earlier report's options: it must not choose (nor ✖️ stop) this one
+    key = (chat_id, manager.key)  # the chat's current project's report (ProjectMiddleware)
+    entry = _FLOWS.get(key)
+    # none running, or a tap on an earlier report's options (or another project's): it must not choose (nor ✖️
+    # stop) this one
     if entry is None or entry[1].get("menu") != callback.message.message_id:
         await stale_tap(callback)
         return
@@ -279,7 +282,7 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
         await callback.answer()
     except Exception:  # e.g. "query is too old": harmless, and must not leave busy stuck
         pass
-    if _FLOWS.get(chat_id) is not entry:  # aborted during answer(): the client is no longer ours
+    if _FLOWS.get(key) is not entry:  # aborted during answer(): the client is no longer ours
         return
 
     flow["selections"].append(idx)
@@ -287,24 +290,26 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
     try:
         status, options = await instance.step(flow, options[idx].option)
     except Exception as err:
-        if _FLOWS.get(chat_id) is not entry:  # aborted meanwhile: the slot is no longer ours
+        if _FLOWS.get(key) is not entry:  # aborted meanwhile: the slot is no longer ours
             return
-        _FLOWS.pop(chat_id, None)
+        _FLOWS.pop(key, None)
         _free(manager, pool)  # before any await: a /cancel meanwhile must not free a foreign slot
         await release_client(flow["session"])
         await back_answer(callback.message, f"⚠️ Ошибка: {err}", ACTIVITY, manager.project_id)
         return
 
-    if _FLOWS.get(chat_id) is not entry:
+    if _FLOWS.get(key) is not entry:
         return
 
     if status == "choose":
         flow["busy"] = False
-        _FLOWS[chat_id] = (instance, flow, options)
-        await callback.message.edit_text(f"{REPORT.title} — выберите вариант:",  # the next level
-                                         reply_markup=_options_kb(options))
+        _FLOWS[key] = (instance, flow, options)
+        menu = await callback.message.edit_text(f"{REPORT.title} — выберите вариант:",  # the next level
+                                                reply_markup=_options_kb(options))
+        if isinstance(menu, Message):  # the menu gone: SafeEdit sent it anew, its taps count from now on
+            flow["menu"] = menu.message_id
     else:
-        _FLOWS.pop(chat_id, None)
+        _FLOWS.pop(key, None)
         await _finish(instance, flow, callback.bot, chat_id, manager, pool)
 
 
@@ -317,7 +322,7 @@ def _options_kb(options):
 
 
 async def _finish(instance, flow, bot, chat_id, manager: JobManager, pool: WorkerPool):
-    _FLOWS.pop(chat_id, None)
+    _FLOWS.pop((chat_id, manager.key), None)
     manager.disarm_timeout()  # work starts now; don't let the inactivity timeout free the slot mid-replay
     manager.lock()            # ...nor a /cancel: replay_rest is driving the workers until release()
     stop = manager.soft_stop()  # ⏹ / /cancel skip the accounts not reached yet; _free still frees the slot

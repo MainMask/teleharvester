@@ -2,8 +2,6 @@ import random
 
 from telethon import functions, types
 from functions.base import TelethonFunction
-from functions.base.base import console_report
-from modules.console import console
 
 
 class ReactionsFunc(TelethonFunction):
@@ -27,11 +25,11 @@ class ReactionsFunc(TelethonFunction):
                 # safe_call waits out short FloodWaits so the reaction actually lands
                 # (mass reactions on one post trip rate limits); a long wait raises
                 # AccountLimited, caught by the except below and reported.
-                await self.safe_call(lambda: session(functions.messages.SendReactionRequest(
+                await self.call(session, functions.messages.SendReactionRequest(
                     peer=peer,
                     msg_id=int(message_id),
                     reaction=[types.ReactionEmoji(emoticon=reaction)]
-                )))
+                ))
             except Exception as err:
                 self.progress_failed()
                 await report(f"[{me.first_name}] ошибка: {err}")
@@ -49,22 +47,3 @@ class ReactionsFunc(TelethonFunction):
             report,
             pause="delay",
         )
-
-    async def execute(self):
-        link_to_message = self.ask_message_link("[bold red]ссылка на сообщение/пост> [/]")
-
-        # as the bot's buttons: one of the list (its number, or itself), or a random one each
-        console.print("  ".join(f"[{number}] {emoji}" for number, emoji in enumerate(self.reactions, 1)),
-                      markup=False, highlight=False)
-        listed = {emoji.replace("\ufe0f", ""): emoji for emoji in self.reactions}  # a terminal may drop the selector
-        while True:
-            raw = console.input("[bold red]реакция — номер или сама реакция, пусто — случайная у каждого> [/]").strip()
-            if raw.isdigit() and 1 <= int(raw) <= len(self.reactions):
-                reaction = self.reactions[int(raw) - 1]
-                break
-            if not raw or (key := raw.replace("\ufe0f", "")) in listed:
-                reaction = listed[key] if raw else ""  # "": a random one each (run)
-                break
-            console.print("Такой реакции нет в списке: номер из него или пусто.", style="bold red", markup=False)
-
-        await self.run(link_to_message, reaction, console_report)

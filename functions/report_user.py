@@ -1,9 +1,6 @@
-from modules.console import console
-from rich.prompt import Prompt
 
 from telethon import types, functions
 from functions.base import TelethonFunction
-from functions.base.base import console_report
 
 
 class ReportUserFunc(TelethonFunction):
@@ -48,30 +45,3 @@ class ReportUserFunc(TelethonFunction):
             report,
             pause="delay",
         )
-
-    async def execute(self):
-        link = Prompt.ask("[bold red]username или ссылка>[/]")
-
-        print()
-
-        for index, reasons in enumerate(self.reasons):
-            reason, _ = reasons
-
-            console.print(
-                "[bold white][{}] {}[/]"
-                .format(index + 1, reason)
-            )
-
-        print()
-
-        choice = console.input("[bold white]>> [/]")
-
-        while not (choice.isdigit() and 1 <= int(choice) <= len(self.reasons)):
-            choice = console.input("[bold white]>> [/]")
-
-        reason_type = self.reasons[int(choice) - 1][1]
-
-        comment = console.input("[bold red]комментарий для модераторов Telegram (пусто или «-» — без него)> [/]")
-        comment = "" if comment.strip() == "-" else comment  # as the bot's
-
-        await self.run(link, reason_type, comment, console_report)

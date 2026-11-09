@@ -12,13 +12,14 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.routers import mailing
-from bot.routers._common import back_answer, busy_step, read_text_document, require_text, typed_channels
+from bot.routers._common import (back_answer, busy_step, confirm_expired, read_text_document, require_text,
+                                 typed_channels)
 from bot.routers.projects import views
 from bot.services.jobs import busy
 from bot.services.workspaces import Workspaces
 from bot.states import Projects
 from modules import projects, scraped_files
-from modules.registry import ADD_CHANNELS, COLLECT, MANAGE, menu_path, title
+from modules.registry import ADD_CHANNELS, BASE, COLLECT, MANAGE, menu_path, title
 
 router = Router()
 
@@ -61,20 +62,20 @@ async def confirm_delete(message: Message, state: FSMContext, project: projects.
     # any card shown since, or a newer confirmation (B's), makes this one stale
     token = secrets.token_hex(4)
     await state.update_data(delete_name=project.name, delete_token=token)
-    await message.edit_text(  # in 🛠's place: ↩️ brings it back
+    await message.edit_text(  # in 🛠's place: ✖️ brings it back
         f"{title('delete')} проект «{project.name}»? Файлы скрапа останутся в {scraped_files.BASES_DIR}. Проект с "
         f"аккаунтами не удаляется — сначала перенесите их ({menu_path('move')}).",
-        reply_markup=choice_kb("prj_del", [(title("delete"), f"y{token}"), ("↩️ Отмена", "no")], widths=(2,)))
+        reply_markup=choice_kb("prj_del", [("🗑 Да, удалить", f"y{token}"), ("✖️ Отмена", "no")], widths=(2,)))
 
 
 async def offer_clear(message: Message, state: FSMContext, project: projects.Project):
-    """🧹: what the project has to clear, each with its count, in 🛠's place; ↩️ brings it back."""
+    """🧹: what the project has to clear, each with its count, in 🎯's place; ✖️ brings it back."""
     counts = await asyncio.to_thread(lambda: {
         "members": scraped_files.row_count(scraped_files.members_base(project.name)),
         "list": len(scraped_files.read_list(scraped_files.list_path(project.name)))})
     present = [what for what, path in projects.CLEARABLE.items() if path(project.name).exists()]
     if not present:  # cleared meanwhile, from another chat
-        await views.show_screen(message, project, MANAGE)
+        await views.show_screen(message, project, BASE)
         return
     # as the delete confirmation: only from the last one shown (its token)
     token = secrets.token_hex(4)
@@ -84,7 +85,7 @@ async def offer_clear(message: Message, state: FSMContext, project: projects.Pro
         f"{scraped_files.BASES_DIR}/{project.name}_previous/ — оттуда его можно вернуть (до следующего "
         f"«{title('topup')}»). «{title('pmmailing')}» и «{title('addcontacts')}» его больше не увидят.",
         reply_markup=choice_kb("prj_clr", [*((f"🧹 {CLEAR_LABELS[what]} · {counts[what]}", f"{what}.{token}")
-                                             for what in present), ("↩️ Отмена", f"no.{token}")]))
+                                             for what in present), ("✖️ Отмена", f"no.{token}")]))
 
 
 # --- their steps ---
@@ -100,7 +101,7 @@ async def project_edit(message: Message, state: FSMContext, workspaces: Workspac
 
 
 async def save_channels(message: Message, state: FSMContext, workspaces: Workspaces, channels: list[str]):
-    """The current project gets `channels` in place of its own (none: `[]`, by its button), then 🛠 Управление."""
+    """The current project gets `channels` in place of its own (none: `[]`, by its button), then 📥 Сбор."""
     project = await views.current(message, state, workspaces)
     if project is None:
         return
@@ -108,9 +109,9 @@ async def save_channels(message: Message, state: FSMContext, workspaces: Workspa
         project = projects.set_channels(project.name, channels)
     except (ValueError, OSError) as err:
         await state.clear()
-        await back_answer(message, f"⚠️ Не сохранено: {err}", MANAGE, project.id)
+        await back_answer(message, f"⚠️ Не сохранено: {err}", COLLECT, project.id)
         return
-    await views.show_done(message, state, project, MANAGE,
+    await views.show_done(message, state, project, COLLECT,
                           f"✅ Каналы сохранены: {len(channels)}." if channels else "✅ Каналы убраны.")
 
 
@@ -134,13 +135,13 @@ async def project_upload(message: Message, state: FSMContext, workspaces: Worksp
         added, total, skipped = await asyncio.to_thread(projects.add_to_list, project.name, text.splitlines())
     except OSError as err:
         await state.clear()
-        await back_answer(message, f"⚠️ Список не сохранён: {err}", COLLECT, project.id)
+        await back_answer(message, f"⚠️ Список не сохранён: {err}", BASE, project.id)
         return
     if added == 0 and total == 0:  # nothing it could take: asked again
         await message.answer("Ни одного @username, ссылки t.me или номера в списке. Пришлите ещё раз:")
         return
     note = f" Пропущено строк: {skipped} — не @username, не ссылка t.me и не номер." if skipped else ""
-    await views.show_done(message, state, project, COLLECT,
+    await views.show_done(message, state, project, BASE,
                           f"✅ В список проекта добавлено: {added}, всего в нём: {total}.{note}")
 
 
@@ -184,20 +185,23 @@ async def project_clear(callback: CallbackQuery, callback_data: ChoiceCB, state:
     project = await views.find(callback, state, data.get("clear_name") if token == data.get("clear_token") else None)
     if project is None:
         return
+    if what != "no" and confirm_expired(callback.message):
+        await callback.answer(f"Подтверждение устарело — нажмите «{title('clearbase')}» заново.", show_alert=True)
+        return
     scrapes = workspaces.open(callback.message.chat.id, project).scrapes
     if what != "no" and scrapes.active:  # its members list would add to the base cleared
         await callback.answer(busy(scrapes.label), show_alert=True)
         return
     await callback.answer()
     if what == "no":
-        await views.show_screen(callback.message, project, MANAGE)
+        await views.show_screen(callback.message, project, BASE)
         return
     try:
         moved = projects.clear(project.name, what)
     except (KeyError, ValueError, OSError) as err:
-        await back_answer(callback.message, f"⚠️ Не очищено: {err}", MANAGE, project.id)
+        await back_answer(callback.message, f"⚠️ Не очищено: {err}", BASE, project.id)
         return
-    await views.show_done(callback.message, state, project, MANAGE,
+    await views.show_done(callback.message, state, project, BASE,
                           f"✅ Очищено: {CLEAR_LABELS[what].lower()}. Файл — в {moved}.", edit=True)
 
 
@@ -208,6 +212,9 @@ async def project_delete(callback: CallbackQuery, callback_data: ChoiceCB, state
     current = callback_data.value in ("no", f"y{data.get('delete_token')}")
     project = await views.find(callback, state, data.get("delete_name") if current else None)
     if project is None:
+        return
+    if callback_data.value != "no" and confirm_expired(callback.message):
+        await callback.answer(f"Подтверждение устарело — нажмите «{title('delete')}» заново.", show_alert=True)
         return
     workspace = workspaces.get(project.id) if callback_data.value != "no" else None
     if workspace is not None and (running := next((slot for slot in workspace.slots if slot.active), None)):

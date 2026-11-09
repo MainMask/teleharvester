@@ -4,7 +4,7 @@ from telethon.tl.functions.contacts import AddContactRequest
 from telethon.tl.types import InputUser
 
 from functions.base import TelethonFunction
-from functions.base.base import SKIPPED, AccountLimited, console_report
+from functions.base.base import SKIPPED, AccountLimited
 from modules import contacts_ledger, parquet_db
 from modules.account_limits import DailyCounter
 
@@ -16,13 +16,13 @@ class AddContactsFunc(TelethonFunction):
     """Add users to contacts from a .parquet database"""
 
     async def _add(self, session, user, row):
-        await self.safe_call(lambda: session(AddContactRequest(
+        await self.call(session, AddContactRequest(
             id=user,
             # a scrape base has the full name in "name" (no first/last split)
             first_name=row.get("first_name") or row.get("name") or row.get("username") or "contact",
             last_name=row.get("last_name") or "",
             phone=row.get("phone") or ""
-        )))
+        ))
 
     async def _add_by_username(self, session, row):
         await self._add(session, await self.by_username(session, row), row)
@@ -115,7 +115,7 @@ class AddContactsFunc(TelethonFunction):
         stopped = set()  # workers that ran out on a queue: not tried again this run
         try:
             for sessions, queue in self.split_queues(rows):
-                # on hold (scraping, or left out of a CLI run): its people wait for it
+                # on hold (scraping): its people wait for it
                 if sessions and sessions[0] in self.on_hold:
                     waiting += len(queue)
                     self.progress_drop(len(queue))
@@ -141,12 +141,3 @@ class AddContactsFunc(TelethonFunction):
                 f"Внимание: обработано {processed}/{len(rows)} — аккаунты исчерпаны, "
                 "остаток пропущен."
             )
-
-    async def execute(self, bases):  # bases: the project's own (functions/projects.py)
-        path = self.ask_file(
-            "[bold red]путь к .parquet[/]",
-            bases,
-            default="assets/contacts.parquet",
-        )
-
-        await self.run(path, console_report)

@@ -46,7 +46,7 @@ def personal_storage(api_id, api_hash) -> SessionsStorage | None:
     """The personal accounts, loaded like the workers (no connection); None without the folder."""
     if not os.path.isdir(PERSONAL_DIR):
         return None
-    return SessionsStorage(PERSONAL_DIR, api_id, api_hash, initialize=False)
+    return SessionsStorage(PERSONAL_DIR, api_id, api_hash)
 
 
 def _label(storage, path: str) -> str:
@@ -62,7 +62,7 @@ def _label(storage, path: str) -> str:
 def card_lines(storage, account: ScrapeAccount, html: bool = False) -> list[str]:
     """An account's card, from what is stored — never connected for it: its kind, number, proxy, a worker's
     last @SpamBot check, its file. `html`: for the bot — escaped, the number, id and file in <code> (a tap
-    copies them), else plain text for the terminal."""
+    copies them), else plain text."""
     esc = html_text.escape if html else str
     code = (lambda value: f"<code>{html_text.escape(str(value))}</code>") if html else str
     kind = "👤 Личный (только для скрапа)" if account.personal else "🤖 Воркер"
@@ -103,6 +103,12 @@ def pick_session(storage, personal=None) -> ScrapeAccount | None:
     if not accounts:
         console.print("[bold red]Нет аккаунтов: ни воркеров проекта, ни личных. Сначала добавьте аккаунт.[/]")
         return None
+
+    if len(accounts) == 1:  # as the bot's: the only one is taken at once, and said
+        only = accounts[0]
+        console.print(f"аккаунт: {only.label}{' — личный' if only.personal else ''}", markup=False,
+                      highlight=False, style="bold white")
+        return only
 
     for index, account in enumerate(accounts):
         mark = " — личный" if account.personal else ""

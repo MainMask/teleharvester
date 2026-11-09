@@ -4,7 +4,6 @@
 admins = []
 
 [broadcast]
-messages = []   # terminal chat campaigns send one of them at random (the bot asks for its own)
 delay = [2, 5]
 messages_count = 0   # per-chat cap for chat/comment campaigns; 0 = unlimited (send until stopped)
 trigger = ""
@@ -18,7 +17,8 @@ contacts_per_account_daily = 0  # max contact-adds per account per day (0 = unli
 
 [autoreply]
 # Bot only: answer once anyone who replies to a PM mailing, and forward their messages to the admins.
-# Off when enabled = false or the text is empty; both can also be changed in the bot (⚙️ Настройки → 📬 Автоответ).
+# Off when enabled = false or the text is empty. enabled and text are the default of every project: each one
+# can set its own in the bot (🎯 База и рассылка → 📬 Автоответ, kept in projects/<id>/autoreply.json).
 # Example: text = "Спасибо за ответ! Для дальнейшей связи напишите @MainMask"
 enabled = true
 text = ""

@@ -7,10 +7,10 @@ the project's `sessions/<phone>.jsession` and the source folder is marked so a l
 does not reconnect it again.
 """
 
-import glob
 import io
 import json
 import os
+import re
 import zipfile
 
 from opentele.api import UseCurrentSession
@@ -95,24 +95,48 @@ def choose_pool_proxy(used: list[Proxy | None], available: list[Proxy]) -> Proxy
     )
 
 
+# a .txt next to a tdata holding its 2FA password: named so (Пароль 2фа.txt, 2fa.txt, twoFA.txt, password.txt…),
+# or the only .txt there; inside, a line "<label>: <password>" (or "="), or the password alone
+PASSWORD_NAME = re.compile(r"2fa|2фа|two_?fa|pass|пароль", re.IGNORECASE)
+
+
+def parse_2fa(text: str) -> str | None:
+    """The password in a 2FA .txt: of its line labelled so (2fa: …, password = …), else of its only line —
+    what follows its first ":" if it has one (the `<label>: <password>` of tdata_import/), else the line."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in lines:
+        labelled = re.match(r"([^:=]*)[:=]\s*(\S.*)", line)
+        if labelled and PASSWORD_NAME.search(labelled.group(1)):
+            return labelled.group(2).strip()
+    if len(lines) == 1:
+        _, colon, value = lines[0].partition(":")
+        return value.strip() if colon and value.strip() else lines[0]
+    return None
+
+
+def _password_files(names: list[str]) -> list[str]:
+    """The .txt of `names` that hold the 2FA password: the ones named so, else the only .txt."""
+    texts = [name for name in names if name.lower().endswith(".txt")]
+    named = [name for name in texts if PASSWORD_NAME.search(os.path.basename(name))]
+    return named or (texts if len(texts) == 1 else [])
+
+
 def read_2fa_password(worker_dir: str) -> str | None:
-    """Return the two-step password from a `Пароль 2фа*.txt` file in `worker_dir`.
+    """The two-step password from a .txt in `worker_dir` (_password_files, parse_2fa); None without one."""
+    for name in _password_files(sorted(os.listdir(worker_dir))):
+        with open(os.path.join(worker_dir, name), encoding="utf-8", errors="replace") as fileobj:
+            if password := parse_2fa(fileobj.read()):
+                return password
+    return None
 
-    The file is `<label>: <password>`; everything after the first colon is the
-    password. Missing or malformed file -> None.
-    """
-    matches = glob.glob(os.path.join(worker_dir, "Пароль 2фа*.txt"))
 
-    if not matches:
-        return None
-
-    with open(matches[0], encoding="utf-8") as fileobj:
-        content = fileobj.read().strip()
-
-    _, _, password = content.partition(":")
-    password = password.strip()
-
-    return password or None
+def zip_2fa_password(archive_bytes: bytes) -> str | None:
+    """The two-step password from a .txt in a tdata's ZIP (as read_2fa_password, anywhere in it)."""
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+        for name in _password_files(sorted(info.filename for info in archive.infolist() if not info.is_dir())):
+            if password := parse_2fa(archive.read(name).decode("utf-8", "replace")):
+                return password
+    return None
 
 
 def write_2fa_password(phone: str, password: str, workers_dir: str = "tdata_import") -> None:
@@ -126,46 +150,51 @@ def write_2fa_password(phone: str, password: str, workers_dir: str = "tdata_impo
     else:
         return
 
-    matches = glob.glob(os.path.join(worker_dir, "Пароль 2фа*.txt"))
-    path = matches[0] if matches else os.path.join(worker_dir, "Пароль 2фа.txt")
-    label = "2фа пароль"
+    # the .txt read_2fa_password reads, its old password replaced (its label and other lines kept); else a new one
+    matches = _password_files(sorted(os.listdir(worker_dir)))
+    path = os.path.join(worker_dir, matches[0] if matches else "Пароль 2фа.txt")
+    text = ""
     if matches:
-        with open(path, encoding="utf-8") as fileobj:
-            label = fileobj.read().strip().partition(":")[0].strip() or label
+        with open(path, encoding="utf-8", errors="replace") as fileobj:
+            text = fileobj.read()
+    if old := parse_2fa(text):
+        head, _, tail = text.rpartition(old)
+        text = head + password + tail
+    else:
+        text = f"2фа пароль: {password}\n"
+    atomic_file.write(path, text, mode=0o600)
 
-    atomic_file.write(path, f"{label}: {password}\n", mode=0o600)
+
+def remember_password(storage, session, password: str):
+    """A worker's new 2FA password, kept where it is read back: its .jsession (storage.remember_password) and the
+    .txt next to its tdata (write_2fa_password), for a re-import."""
+    storage.remember_password(session, password)
+    if (json_session := storage.jsessions_paths.get(storage.get_session_path(session))) is not None:
+        write_2fa_password(json_session.account.account.phone_number, password)
 
 
 def _personal_user_ids() -> set[int]:
     """The user ids of the personal accounts (personal_sessions/): never workers."""
-    ids = set()
-    directory = scraper_creds.PERSONAL_DIR
-    if os.path.isdir(directory):
-        for name in os.listdir(directory):
-            if not name.endswith(".jsession"):
-                continue
-            try:
-                with open(os.path.join(directory, name), encoding="utf-8") as fileobj:
-                    ids.add(json.load(fileobj)["account"]["user_id"])
-            except (OSError, ValueError, KeyError, TypeError):  # a broken file is skipped by SessionsStorage too
-                continue
-    return ids
+    return {account["user_id"] for path in projects.account_files(scraper_creds.PERSONAL_DIR)
+            if (account := projects.read_account(path)) and "user_id" in account}
 
 
 def _worker_phone(user_id: int, sessions_dir: str) -> str | None:
     """The phone of the worker already in sessions_dir with this user id (read offline), or None."""
-    if not os.path.isdir(sessions_dir):
-        return None
-    for name in os.listdir(sessions_dir):
-        if not name.endswith(".jsession"):
-            continue
-        try:
-            with open(os.path.join(sessions_dir, name), encoding="utf-8") as fileobj:
-                account = json.load(fileobj)["account"]
-            if account["user_id"] == user_id:
-                return account["phone_number"]
-        except (OSError, ValueError, KeyError, TypeError):  # a broken file is skipped by SessionsStorage too
-            continue
+    return next((account.get("phone_number") for path in projects.account_files(sessions_dir)
+                 if (account := projects.read_account(path)) and account.get("user_id") == user_id), None)
+
+
+def existing_worker(user_id: int, sessions_dir: str) -> str | None:
+    """Before an account is imported (read offline: its key must not show up from a proxy needlessly): the phone
+    of the project's worker with this id, if it is one; ValueError for a personal account or another place's
+    worker — an account is in one place only (the .session import too, modules/session_import.py)."""
+    if user_id in _personal_user_ids():
+        raise ValueError(f"это личный аккаунт из {scraper_creds.PERSONAL_DIR}/ — воркером он не станет")
+    if (phone := _worker_phone(user_id, sessions_dir)) is not None:
+        return phone
+    if (elsewhere := projects.find_account(user_id=user_id)) is not None:
+        raise ValueError(f"этот аккаунт {projects.taken(elsewhere)}")
     return None
 
 
@@ -183,45 +212,45 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
     project's, a free one): ValueError — an account is in one place only.
     """
     tdesktop = TDesktop(tdata_dir)
-    # read offline, before connecting: its key must not show up from a worker's proxy
-    if tdesktop.mainAccount.UserId in _personal_user_ids():
-        raise ValueError(f"это личный аккаунт из {scraper_creds.PERSONAL_DIR}/ — воркером он не станет")
-    # already a worker: its key must not show up from another proxy either
-    if (phone := _worker_phone(tdesktop.mainAccount.UserId, sessions_dir)) is not None:
+    if (phone := existing_worker(tdesktop.mainAccount.UserId, sessions_dir)) is not None:
         return phone
-    if (elsewhere := projects.find_account(user_id=tdesktop.mainAccount.UserId)) is not None:
-        raise ValueError(f"этот аккаунт {projects.taken(elsewhere)}")
 
     client = await tdesktop.ToTelethon(
         session=StringSession(),
         flag=UseCurrentSession,
         proxy=proxy.as_telethon() if proxy else None,
     )
+    phone, _ = await save_worker(client, proxy, password, client._init_request.lang_pack, sessions_dir)
+    return phone
 
+
+async def save_worker(client, proxy: Proxy | None, password: str | None, lang_pack: str,
+                      sessions_dir: str) -> tuple[str | None, bool]:
+    """An imported account's fresh client (from tdata, or a .session: modules/session_import.py) into
+    `<sessions_dir>/<phone>.jsession`, without the personal channel pinned to its profile: (its phone, True if it is
+    new). (None, False) for a session no longer authorized; an account already the project's: its phone, its file
+    left as is; a personal account or another place's worker: ValueError (existing_worker)."""
     await client.connect()
-
     try:
         if not await client.is_user_authorized():
-            return None
-
+            return None, False
         me = await client.get_me()
-
+        if (phone := existing_worker(me.id, sessions_dir)) is not None:
+            return phone, False
         try:  # new workers start without a personal channel pinned to the profile
             await client(UpdatePersonalChannelRequest(InputChannelEmpty()))
         except Exception as err:
             console.print(f"[bold yellow]ВНИМАНИЕ:[/] не удалось убрать канал из профиля +{me.phone}: {err}")
-
-        account_settings = AccountSettings.from_client(client, me, proxy, password, client._init_request.lang_pack)
+        account_settings = AccountSettings.from_client(client, me, proxy, password, lang_pack)
     finally:
         await client.disconnect()
 
     os.makedirs(sessions_dir, exist_ok=True)
     out_path = os.path.join(sessions_dir, f"{me.phone}.jsession")
-
-    if not os.path.exists(out_path):
-        account_settings.save(out_path)
-
-    return me.phone
+    if os.path.exists(out_path):  # one not read as a worker (broken?): kept as it is, not overwritten
+        return me.phone, False
+    account_settings.save(out_path)
+    return me.phone, True
 
 
 IMPORT_DIR = "tdata_import"  # the tdata folders to import: <name>/tdata

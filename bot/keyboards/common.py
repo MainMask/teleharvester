@@ -1,7 +1,12 @@
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import ChoiceCB
+
+
+def button(text: str, callback_data) -> InlineKeyboardButton:
+    """One inline button of a keyboard built by hand (a screen's own: its CallbackData)."""
+    return InlineKeyboardButton(text=text, callback_data=callback_data.pack())
 
 
 def choice_kb(scope: str, options: list[tuple[str, str]], widths: tuple[int, ...] = (1,)) -> InlineKeyboardMarkup:
@@ -62,7 +67,7 @@ def cancel_kb(step, markup: InlineKeyboardMarkup | None = None) -> InlineKeyboar
 
 
 def yes_no_kb(scope: str) -> InlineKeyboardMarkup:
-    return choice_kb(scope, [("✅ Да", "yes"), ("❌ Нет", "no")])
+    return choice_kb(scope, [("✅ Да", "yes"), ("✖️ Нет", "no")])
 
 
 def stop_kb(slot: int) -> InlineKeyboardMarkup:

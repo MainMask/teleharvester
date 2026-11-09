@@ -59,15 +59,30 @@ def classify(path, forever: set, status: dict) -> tuple[int, str]:
     return 1, f"🚫 ЛС ограничены до {status[path]}"
 
 
+def _replace(old: str, new: str | None):
+    """A worker's file `old` now at `new` (None: gone) in every store: its state goes with it."""
+    def moved(paths: list) -> list:
+        return sorted(new if path == old else path for path in paths if new is not None or path != old)
+
+    if old in (restricted := load()):
+        save(moved(restricted))
+    if old in (released := load_released()):
+        save_released(moved(released))
+    if old in (status := load_status()):
+        value = status.pop(old)
+        if new is not None:
+            status[new] = value
+        save_status(status)
+
+
 def rename(old: str, new: str):
     """A worker's file moved to another project (projects.move_account): its state goes with it."""
-    if old in (restricted := load()):
-        save(sorted(new if path == old else path for path in restricted))
-    if old in (released := load_released()):
-        save_released(sorted(new if path == old else path for path in released))
-    if old in (status := load_status()):
-        status[new] = status.pop(old)
-        save_status(status)
+    _replace(old, new)
+
+
+def forget(path: str):
+    """A worker's file deleted: its state goes too."""
+    _replace(path, None)
 
 
 def release(path: str):

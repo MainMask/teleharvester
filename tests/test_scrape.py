@@ -1941,7 +1941,16 @@ def test_stop_works_while_connecting(monkeypatch, tmp_path):
     assert time.monotonic() - started < 10  # not after the connect gave up
 
 
-# --- lookup_chats: the chats' names at input time ------------------------------------------
+# --- lookup_on: the chats' names at input time ---------------------------------------------
+
+async def _lookup(chats):
+    """lookup_on on the account's client, as the bot's borrow() gives it: connected, then released."""
+    client = await scrape.connect(Credentials(1, "h", ""))
+    try:
+        return await scrape.lookup_on(client, chats)
+    finally:
+        await client.disconnect()
+
 
 class LookupClient(ForumClient):
     """@chan a channel, @user a private chat, @forum a forum, t.me/+join an invite not joined
@@ -1978,10 +1987,9 @@ class LookupClient(ForumClient):
         await super().disconnect()
 
 
-def test_lookup_chats_names_each_chat_as_the_scrape_sees_it(monkeypatch):
+def test_lookup_names_each_chat_as_the_scrape_sees_it(monkeypatch):
     monkeypatch.setattr(scrape, "TelegramClient", LookupClient)
-    infos = asyncio.run(scrape.lookup_chats(
-        Credentials(1, "h", ""),
+    infos = asyncio.run(_lookup(
         ["@chan", "t.me/user", "https://t.me/forum/42", "@nope", "t.me/+join", "t.me/+old"]))
     assert [(i.title, i.problem) for i in infos] == [
         ("«Берлога»", None), ("«Иван Петров»", None), ("«Forum» / тема «Sales»", None),
@@ -1989,23 +1997,11 @@ def test_lookup_chats_names_each_chat_as_the_scrape_sees_it(monkeypatch):
         ("«Закрытый клуб»", "аккаунт не состоит в чате — вступите"),
         (None, "инвайт-ссылка истекла")]
     assert LookupClient.disconnected
-    assert scrape.chat_lines(infos[:1] + infos[3:5]) == (
+    assert "\n\n".join(scrape.chat_block(i, info) for i, info in enumerate(infos[:1] + infos[3:5], 1)) == (
         "1. «Берлога»\n👤 @chan\n\n"
         "2. @nope\n⚠️ нет такого username\n\n"
         "3. «Закрытый клуб»\n🔗 t.me/+join\n⚠️ аккаунт не состоит в чате — вступите")
     assert [scrape.chat_label(i) for i in infos[3:5]] == ["@nope", "«Закрытый клуб» (t.me/+join)"]
-
-
-class HangingClient(FakeClient):
-    async def connect(self):  # a dead proxy, retried for hours
-        await asyncio.sleep(3600)
-
-
-def test_lookup_chats_gives_up_on_a_connect_that_hangs(monkeypatch):
-    monkeypatch.setattr(scrape, "TelegramClient", HangingClient)
-    monkeypatch.setattr(scrape, "CHAT_LOOKUP_TIMEOUT", 0.05)
-    with pytest.raises(TimeoutError):
-        asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["@chan"]))
 
 
 def test_lookup_on_a_logged_out_account_says_so_before_any_chat():
@@ -2073,7 +2069,7 @@ class DialogsLookupClient(LookupClient):
 
 def test_lookup_walks_the_dialogs_only_until_the_ids_are_found(monkeypatch):
     monkeypatch.setattr(scrape, "TelegramClient", DialogsLookupClient)
-    infos = asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["-1001", "@chan", "-1002"]))
+    infos = asyncio.run(_lookup(["-1001", "@chan", "-1002"]))
     assert [i.title for i in infos] == ["«Chat -1001»", "«Берлога»", "«Chat -1002»"]
     assert DialogsLookupClient.walked == 3  # not the whole list
 
@@ -2084,7 +2080,7 @@ def test_a_slow_dialog_walk_still_names_the_other_chats(monkeypatch):
 
     monkeypatch.setattr(scrape, "TelegramClient", Hanging)
     monkeypatch.setattr(scrape, "DIALOGS_LOOKUP_BUDGET", 0.05)
-    infos = asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["-1001", "@chan"]))
+    infos = asyncio.run(_lookup(["-1001", "@chan"]))
     assert [(i.title, i.problem) for i in infos] == [
         (None, "аккаунт не видит этот чат (нет среди его диалогов)"), ("«Берлога»", None)]
 
@@ -2297,7 +2293,7 @@ def test_lookup_gives_a_channel_s_id_and_username(monkeypatch):
             return await super().get_entity(arg)
 
     monkeypatch.setattr(scrape, "TelegramClient", ChannelClient)
-    channel, private = asyncio.run(scrape.lookup_chats(Credentials(1, "h", ""), ["@citadel", "@chan"]))
+    channel, private = asyncio.run(_lookup(["@citadel", "@chan"]))
     assert (channel.title, channel.chat_id, channel.username) == ("«Цитадель»", -1001629147115, "citadel")
     assert (private.title, private.chat_id) == ("«Берлога»", None)  # no id told: still named
     assert scrape.chat_block(1, channel) == "1. «Цитадель»\n👤 @citadel · 🆔 -1001629147115"

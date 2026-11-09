@@ -10,12 +10,13 @@ from telethon import errors
 from telethon.tl.types.auth import SentCodeTypeApp
 
 from functions.base import TelethonFunction
-from modules import instance_lock, login as sign_in, projects
+from modules import instance_lock, login as sign_in, projects, session_import
 from modules.tdata_import import IMPORT_DIR, import_all
 from modules.config import load_env
 from modules.console import console
 from modules.settings import Settings
 from modules import scraper_creds
+from modules.registry import title
 from modules.scraper_creds import find_account, personal_storage, pick_session, scrape_accounts
 
 
@@ -23,9 +24,9 @@ def say(text: str):
     console.print(text, markup=False, highlight=False)  # a name or an error may hold "[...]"
 
 
-def pick_project() -> "projects.Project | None":
-    """The project to work in, asked by number (the only one without asking); None without any, or if
-    the projects' file can't be read (said why)."""
+def pick_project(path: str | None = None) -> "projects.Project | None":
+    """The project to work in, asked by number (the only one without asking; with `path`, a worker's file, its
+    own); None without any, or if the projects' file can't be read (said why)."""
     try:
         found = projects.load()
     except ValueError as err:
@@ -34,24 +35,30 @@ def pick_project() -> "projects.Project | None":
     if not found:
         say("Проектов нет — создайте проект в меню: 📁 Проекты.")
         return None
+    folder = os.path.dirname(os.path.normpath(path)) if path else None
+    if own := next((project for project in found if os.path.normpath(projects.sessions_dir(project)) == folder),
+                   None):
+        return own
     if len(found) == 1:
         return found[0]
     for index, project in enumerate(found, 1):
         say(f"  [{index}] 📁 {project.name}")
     choice = console.input("[bold white]Проект (номер) >> [/]").strip()
-    return found[int(choice) - 1] if choice.isdigit() and 0 < int(choice) <= len(found) else None
+    if choice.isdigit() and 0 < int(choice) <= len(found):
+        return found[int(choice) - 1]
+    say("Нет такого проекта.")
+    return None
 
 
 def run_standalone(func_class, *args):
-    """sessions/add_session.py, import_tdata.py and login.py: the project card's item without the menu
-    (run from the root), on the project asked for. Not while the bot or the menu runs: the same sessions
-    from two processes."""
+    """sessions/add_session.py and login.py: run from the root, on the project asked for (login.py's file: its own).
+    Not while the bot runs: the same sessions from two processes."""
     instance_lock.hold()
     load_env()
     Settings.ensure_config()
     settings = Settings()
     projects.migrate()
-    project = pick_project()
+    project = pick_project(*args)  # login.py's file: the project it is in
     if project is None:
         return
     storage = projects.storage(project, settings.api_id, settings.api_hash)
@@ -66,14 +73,14 @@ class AddByPhoneFunc(TelethonFunction):
 
     async def execute(self):
         """As the bot's ➕ Добавить: by phone, a worker of the project or a personal account; the
-        tdata_import/ folders (TdataImportFunc); or an account in no project."""
-        say("[1] 🤖 Воркер — по номеру: в проект, для рассылок и задач\n"
-            "[2] 👤 Личный — по номеру: общий для всех проектов, только для скрапа (personal_sessions/)\n"
-            "[3] 📥 Воркер — из tdata (папки tdata_import/)\n"
-            f"[4] 📦 Воркеры — из свободных ({projects.FREE_DIR}/: ещё ни в одном проекте)")
+        files (tdata_import/, session_import/); or an account in no project."""
+        say(f"[1] {title('byphone')}: в проект, для рассылок и задач\n"
+            f"[2] {title('personal')}: общий для всех проектов, только для скрапа (personal_sessions/)\n"
+            f"[3] {title('files')} (папки tdata в {IMPORT_DIR}/, файлы .session в {session_import.IMPORT_DIR}/)\n"
+            f"[4] {title('free')} ({projects.FREE_DIR}/: ещё ни в одном проекте)")
         choice = console.input("[bold white]>> [/]").strip()
         if choice == "3":
-            await TdataImportFunc(self.storage, self.settings).execute()
+            await self.import_files()
             return
         if choice == "4":
             await self.take_free()
@@ -182,14 +189,11 @@ class AddByPhoneFunc(TelethonFunction):
             say(f"ℹ️ +{me.phone} уже есть среди воркеров или личных аккаунтов — вход отменён.")
             return
         try:
-            path = sign_in.store(login, me, role, self.storage, personal)
+            sign_in.store(login, me, role, self.storage, personal)
         except Exception as err:
             await sign_in.log_out(login.client)  # without its saved key the new authorization is of no use
             say(f"⚠️ Аккаунт не сохранён: {err}")
             return
-        if role != sign_in.PERSONAL and self.storage.initialize:
-            # the menu's workers were connected at start: so is this one, for the next items
-            await self.storage.check_session(self.storage.full_sessions[path], path)
         say(sign_in.added_text(login, me, role, len(self.storage)))
 
 
@@ -203,41 +207,41 @@ class AddByPhoneFunc(TelethonFunction):
             say(f"[{index}] {projects.account_label(path)}")
         raw = console.input("[bold white]номера (1,3,5-8), all — все (Enter — назад)> [/]")
         added = 0
-        for path in [free[index] for index in self.parse_picks(raw, len(free), [])]:
+        for path in [free[index] for index in self.parse_picks(raw, len(free))]:
             try:
                 path = projects.move_account(path, self.storage.directory)
             except (ValueError, OSError) as err:
                 say(f"{projects.account_label(path)}: не добавлен — {err}")
                 continue
             self.storage.add_jsession(path)
-            if self.storage.initialize:  # the card's workers were connected when it was opened
-                await self.storage.check_session(self.storage.full_sessions[path], path)
             added += 1
         if added:
             say(f"✅ Добавлено в проект: {added}. Воркеров: {len(self.storage)}.")
 
 
-class TdataImportFunc(TelethonFunction):
-    """Import tdata"""
-
-    async def execute(self):
-        """The tdata_import/ folders, converted into the project's workers; they join its pool, as an
-        account added by phone does."""
+    async def import_files(self):
+        """As the bot's 📥 Из файлов: the tdata_import/ folders and the .session (+ .json) files in
+        session_import/ become the project's workers and join its pool, as an account added by phone does."""
         known = set(self.storage.full_sessions)
         try:
-            imported = await import_all(IMPORT_DIR, self.storage.directory, projects.proxies_path(self.storage.home))
-        except Exception as err:  # e.g. too few proxies for the new accounts: nothing is converted
+            await import_all(IMPORT_DIR, self.storage.directory, projects.proxies_path(self.storage.home))
+        except Exception as err:  # e.g. too few proxies for the new accounts: no tdata is converted
             say(f"⚠️ Импорт tdata не удался: {err}")
+        for path in projects.account_files(self.storage.directory):  # tdata's, in no live pool yet
+            if path.endswith(".jsession") and path not in known:
+                self.storage.add_jsession(path)
+        _, failed = await session_import.import_all(session_import.IMPORT_DIR, self.storage)
+        added = [path for path in self.storage.full_sessions if path not in known]
+        for path in added:
+            say(f"✅ {projects.account_label(path)}")
+        for name, why in failed:
+            say(f"⚠️ {name} — {why}")
+        if not added and not failed:
+            say(f"Нечего импортировать: положите папку tdata аккаунта в {IMPORT_DIR}/<имя>/tdata (пароль 2FA — в .txt "
+                f"рядом) или файлы .session с .json того же имени в {session_import.IMPORT_DIR}/. Уже "
+                "импортированные пропускаются.")
             return
-        if not imported:
-            say("Нечего импортировать: положите папку tdata аккаунта в tdata_import/<имя>/tdata "
-                "(пароль 2FA — в файле «Пароль 2фа….txt» рядом). Уже импортированные папки пропускаются.")
-            return
-        for path in projects.account_files(self.storage.directory):
-            if path.endswith(".jsession") and path not in known and self.storage.add_jsession(path):
-                if self.storage.initialize:  # the menu's workers were connected at start
-                    await self.storage.check_session(self.storage.full_sessions[path], path)
-        say(f"✅ Импортировано воркеров: {imported}. Воркеров в проекте: {len(self.storage)}.")
+        say(f"Добавлено воркеров: {len(added)}. Воркеров в проекте: {len(self.storage)}.")
 
 
 class LoginCodesFunc(TelethonFunction):

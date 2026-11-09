@@ -17,26 +17,6 @@ from modules.generators.telegram_android import TelegramAppAPI
 from modules.generators.linux import LinuxAPI
 
 
-class AskSecondsTest(unittest.TestCase):
-    def ask(self, answers, default=None):
-        with mock.patch("functions.base.base.Prompt.ask", side_effect=answers) as prompt:
-            return BaseFunction.ask_seconds("задержка", default), prompt
-
-    def test_range_and_single(self):
-        self.assertEqual(self.ask(["3-7"])[0], [3, 7])
-        self.assertEqual(self.ask(["5"])[0], [5])
-
-    def test_a_typo_is_asked_again_not_a_crash(self):
-        # an en dash, a word, three parts, blank: none is a delay
-        seconds, prompt = self.ask(["5–10", "abc", "1-2-3", "", "5-10"])
-        self.assertEqual(seconds, [5, 10])
-        self.assertEqual(prompt.call_count, 5)
-
-    def test_the_default_is_offered_as_typed(self):
-        _, prompt = self.ask(["2-4"], default=[1, 3])
-        self.assertEqual(prompt.call_args.kwargs["default"], "1-3")
-
-
 class PickSecondsTest(unittest.TestCase):
     def test_single(self):
         self.assertEqual(pick_seconds([7]), 7)

@@ -1,4 +1,5 @@
-"""Post-processing tools for scraped data (terminal ports of the original helper scripts)."""
+"""Post-processing tools for scraped data: the analysis tools (modules/analysis_tools.py) and the scrape's own
+final steps (the posts file's normalizing, the participants base)."""
 
 import json
 import re
@@ -142,7 +143,7 @@ def _comment_pairs(df: pd.DataFrame):
                 items = json.loads(raw) if raw.strip() else []
             except json.JSONDecodeError:
                 print(f"  ! {post.get('Group')}/{post.get('Message ID')}: Comments List is not valid "
-                      f"JSON (e.g. truncated by Excel's 32k limit) - skipped; use --format parquet")
+                      f"JSON (e.g. truncated by Excel's 32k limit) - skipped; the scrape's .parquet file has it whole")
                 items = []
         else:
             items = []

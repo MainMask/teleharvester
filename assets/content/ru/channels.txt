@@ -1,0 +1,13 @@
+# Channels a warmed account joins and reads: @username, t.me link or invite link (t.me/+…) per line
+@telegram
+@durov_russia
+@rian_ru
+@tass_agency
+@rbc_news
+@meduzalive
+@bbcrussian
+@breakingmash
+@kommersant
+@interfaxonline
+@tginfo
+@rozetked

@@ -15,8 +15,8 @@ from bot.routers._common import CHAT_FORMAT, menu_answer
 from bot.services import screens
 from bot.services.workspaces import PROJECT_GONE, Workspaces
 from bot.states import Projects
-from modules import projects, scraped_files
-from modules.registry import ADD_CHANNELS, CARD, COLLECT, MANAGE, PROJECTS
+from modules import projects, scraped_files, warmup
+from modules.registry import ADD_CHANNELS, BASE, CARD, COLLECT, MANAGE, PROJECTS, SCREENS
 
 STALE_LIST = f"Кнопка устарела — откройте {PROJECTS} заново."
 CHANNELS_ASK = (f"Пришлите каналы или группы через запятую ({CHAT_FORMAT}).\n"
@@ -74,8 +74,8 @@ async def show_list(message: Message, state: FSMContext, note: str = "", edit: b
     await state.clear()
     await state.update_data(project_names=[p.name for p in items])  # buttons carry an index into this
     if items:
-        text = ("📁 <b>Проекты</b> — у каждого свои аккаунты, прокси и база. В карточке проекта — сбор, "
-                "рассылка, аккаунты и их активность. ⏸ — есть незавершённый скрап.")
+        text = ("📁 <b>Проекты</b> — у каждого свои аккаунты, прокси и база. В карточке проекта — "
+                f"{html.escape(SCREENS[CARD].hint)}. ⏸ — есть незавершённый скрап.")
     else:
         text = ("📁 <b>Проекты</b> — пока ни одного. У проекта свои аккаунты и прокси и своя аудитория: каналы "
                 "для скрапа, участники групп или список. Готовые файлы скрапа станут проектом через "
@@ -99,8 +99,9 @@ async def show_card(message: Message, state: FSMContext, workspaces: Workspaces,
     # the list shown before keeps working: its buttons carry an index into project_names
     await state.update_data(project_names=names or [])
     workspace = workspaces.open(message.chat.id, project)
-    # reads the files' footers (and the posts file's attrs): off the event loop
-    text = await asyncio.to_thread(projects.summary, project, workspace.pool.count(), True)
+    # reads the files' footers (and the posts file's attrs), the warmup's state: off the event loop
+    text = await asyncio.to_thread(lambda: projects.summary(project, workspace.pool.count(), True,
+                                                            warmup.summary(workspace.pool.storage)))
     await screens.send(message, edit)(f"{html.escape(note)}\n\n{text}" if note else text, parse_mode="HTML",
                                       reply_markup=screen_kb(CARD, project.id))
 
@@ -110,11 +111,16 @@ def _files_view(project: projects.Project, title: str) -> tuple[str, dict]:
     `hidden` and `titles`); reads the files, so off the event loop."""
     if title == COLLECT:  # a top-up while a scrape is unfinished would drop its checkpoint: ▶️ continues that
         topup = projects.topup(project) is not None and projects.unfinished(project.name) is None
-        return projects.collect_text(project, html=True, budget=2500), dict(hidden=() if topup else ("topup",))
-    if title == MANAGE:  # 🧹 only for what there is to clear: a group members' base or a list (only added to)
+        # 📢 Каналы named ➕ Добавить каналы while the project has none
+        titles = {} if project.channels else {"channels": ADD_CHANNELS}
+        return (projects.collect_text(project, html=True, budget=2500),
+                dict(hidden=() if topup else ("topup",), titles=titles))
+    if title == BASE:  # 🧹 only for what there is to clear: a group members' base or a list (only added to)
         clear = any(path(project.name).exists() for path in projects.CLEARABLE.values())
-        return "", dict(hidden=() if clear else ("clearbase",),
-                        titles=None if project.channels else {"channels": ADD_CHANNELS})
+        return projects.base_text(project, html=True), dict(hidden=() if clear else ("clearbase",))
+    if title == MANAGE:  # 🌍 with the project's region on it: its button cycles it
+        region = warmup.region_title(projects.home(project))
+        return "", dict(titles={"region": region})
     return "", {}
 
 

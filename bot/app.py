@@ -16,7 +16,7 @@ from modules.scraper_creds import PERSONAL_DIR, personal_storage
 from bot.config import BotConfig
 from bot.keyboards.menu import main_menu
 from bot.middlewares.auth import AuthMiddleware
-from bot.services import autoreply, watchdog
+from bot.services import autoreply, warmup_daily, watchdog
 from bot.services.album import AlbumMiddleware
 from bot.services.capture import clear_orphan_temp
 from bot.services.safe_edit import SafeEdit
@@ -43,6 +43,7 @@ from bot.routers import (
     settings as settings_menu,
     spamblock,
     stale,
+    warmup,
 )
 
 # The main menu's buttons first (bot/routers/menu.py opens every screen): a button tapped in the middle
@@ -66,11 +67,12 @@ ROUTERS = (
     mailing,
     chat_broadcasts,
     scraping,
+    warmup,
     stale,  # last: a button nothing above took
 )
 # the work in a project (bot/services/workspaces.py): its handlers run on the chat's current project's
 # workers — every router's but these, so a new one is a project's by default; of 📁 Проекты's, its card's
-OUTSIDE_PROJECTS = (menu, projects, settings_menu, autoreply_menu, stale)
+OUTSIDE_PROJECTS = (menu, projects, settings_menu, stale)
 IN_PROJECT = (*(module for module in ROUTERS if module not in OUTSIDE_PROJECTS), projects.card, projects.manage)
 
 
@@ -177,7 +179,7 @@ async def run_bot():
 
     settings = Settings()
     project_list.migrate()  # before anything reads a project: each needs its id (its folder)
-    # reuse the CLI's auto-discovery: every project runs these classes on its own workers
+    # every project runs these classes on its own workers
     classes = discover("functions")
 
     # fail fast with a clear message if the registry references a class that
@@ -214,6 +216,8 @@ async def run_bot():
     dp.shutdown.register(scraping.stop_for_shutdown)
     dp.startup.register(autoreply.start)
     dp.shutdown.register(autoreply.stop)
+    dp.startup.register(warmup_daily.start)
+    dp.shutdown.register(warmup_daily.stop)
     # last: a stop that hangs until systemd kills the bot leaves the marker, so the next start says so
     dp.shutdown.register(mark_stopped)
 

@@ -1,4 +1,4 @@
-"""📨 ЛС по базе, from a project's 📨 База и рассылка (bot/routers/projects/card.py): personal messages to a
+"""📨 Рассылка, from a project's 🎯 База и рассылка (bot/routers/projects/card.py): personal messages to a
 base's people or a list, with its stats (who was mailed already, who is gone)."""
 import asyncio
 import os
@@ -9,12 +9,12 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB
 from bot.keyboards.common import cancel_kb, choice_kb, yes_no_kb
-from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, back_answer, build_content, busy_step, left_flow,
-                                 pick_from, require_text, resolve, stale_tap)
+from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, back_answer, build_content, busy_step, download,
+                                 left_flow, pick_from, require_text, resolve, stale_tap)
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PmMailing
-from functions.pmmailing import GONE_SKIPPED, PmMailingFunc
+from functions.pmmailing import GONE_SKIPPED, SKIP_ASK, PmMailingFunc
 from modules.registry import BASE, title
 from modules.settings import Settings
 
@@ -22,17 +22,16 @@ router = Router()
 
 DEFAULT_TARGETS = "assets/targets.txt"
 MAX_RECIPIENTS_FILE_SIZE = 5 * 1024 * 1024  # a recipients list is text; cap at 5 MB
-SKIP_ASK = "Пропустить тех, кому уже писали раньше?"
 LIMIT_ASK = "Сколько получателей? Пришлите число или нажмите «♾ Все»:"
 
 
 async def ask_recipients(message: Message, state: FSMContext, bases: list[tuple[str, str]]):
-    """The mailing's first step, from a project's 📨 База и рассылка (bot/routers/projects/card.py): a base by button
+    """The mailing's first step, from a project's 🎯 База и рассылка (bot/routers/projects/card.py): a base by button
     (`bases`: the project's), a .txt, a pasted list or a path."""
     await state.clear()  # an abandoned run's `recipients` would otherwise override a new path
     await state.set_state(PmMailing.path)
     await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
-    await message.edit_text(  # in 📨 База и рассылка's place, as a choice by button
+    await message.edit_text(  # in 🎯 База и рассылка's place, as a choice by button
         f"{title('pmmailing')} — выберите базу ниже, пришлите .txt файлом или вставьте список — по одному "
         "@username, ссылке t.me или номеру на строку (или путь к .parquet/.txt на сервере):",
         reply_markup=cancel_kb(PmMailing.path, choice_kb(
@@ -63,8 +62,9 @@ async def mail_path(message: Message, state: FSMContext):
         if (message.document.file_size or 0) > MAX_RECIPIENTS_FILE_SIZE:
             await message.answer("Файл слишком большой. Пришлите .txt поменьше или путь к нему:")
             return
-        buffer = await message.bot.download(message.document)
-        recipients = PmMailingFunc.parse_list(buffer.read().decode("utf-8", "replace").splitlines())
+        if (data := await download(message, message.document)) is None:
+            return
+        recipients = PmMailingFunc.parse_list(data.decode("utf-8", "replace").splitlines())
         if not recipients:
             await message.answer("В файле нет получателей. Пришлите ещё раз:")
             return
@@ -151,20 +151,19 @@ async def mail_run(
             await end(f"⚠️ Файл не прочитан: {err}")
             return
 
-    def drop_gone(rows):  # the gone ones out before the limit: they take no place in it
+    def by_stats(rows):  # the gone ones out before the limit: they take no place in it; then the mailed, if asked
         instance.load_stats()
-        return instance.drop_gone(rows)
+        alive = instance.drop_gone(rows)
+        return alive, instance.filter_unsent(alive) if data.get("skip") else alive
 
     before = len(recipients)
     try:  # off the event loop, as the base: the stats grow with every recipient ever mailed
-        recipients = await asyncio.to_thread(drop_gone, recipients)
+        alive, recipients = await asyncio.to_thread(by_stats, recipients)
     except Exception as err:
         await end(f"⚠️ Статистика не прочитана: {err}")
         return
-    if gone := before - len(recipients):
+    if gone := before - len(alive):
         await message.answer(f"{GONE_SKIPPED}: {gone}")
-    if data.get("skip"):
-        recipients = instance.filter_unsent(recipients)
 
     if data.get("limit"):
         recipients = recipients[: data["limit"]]

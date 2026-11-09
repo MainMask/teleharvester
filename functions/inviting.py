@@ -12,10 +12,9 @@ from telethon.errors import (
     ChatAdminRequiredError,
 )
 
-from modules.console import console
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited, console_report
+from functions.base.base import AccountLimited
 from modules.account_limits import DailyCounter
 from scraper.scrape import channel_slug
 
@@ -118,10 +117,10 @@ class InvitingFunc(TelethonFunction):
                         break
 
                     try:
-                        result = await self.safe_call(lambda: session(InviteToChannelRequest(
+                        result = await self.call(session, InviteToChannelRequest(
                             channel=dest,
                             users=[user]
-                        )))
+                        ))
                     except AccountLimited as err:
                         self.progress_failed()
                         await report(f"[{me.first_name}] лимит, остановка. {err}")
@@ -197,13 +196,3 @@ class InvitingFunc(TelethonFunction):
             self.invite(session, source_link, destination, chunk, report)
             for session, chunk in zip(self.sessions, chunks)
         ])
-
-    async def execute(self):
-        if not self.sessions:
-            console.print("[bold red]Нет аккаунтов")
-            return
-
-        source_link = console.input("[bold red]ссылка на чат-источник> [/]")
-        destination = console.input("[bold red]куда приглашать> [/]")
-
-        await self.run(source_link, destination, console_report)

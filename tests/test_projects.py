@@ -1,9 +1,8 @@
 """Projects (modules/projects.py): the file, its backups and names, a project's files, and the
-bot's and the CLI's projects screens on the same model, a project's scrape included."""
+bot's projects screens on the same model, a project's scrape included."""
 
 import asyncio
 import conftest
-import inspect
 import json
 import os
 import types
@@ -14,13 +13,13 @@ import pytest
 
 from bot.callbacks import ChoiceCB, FunctionCB, MenuAction, MenuCB, NavCB
 from bot.services.jobs import JobManager
-from modules.registry import BASE, BOT_FUNCTIONS_BY_KEY, CARD, COLLECT, MANAGE, PROJECTS, RISK_NOTE, SCREENS
+from modules.registry import (BASE, BOT_FUNCTIONS_BY_KEY, CARD, COLLECT, MANAGE, PROJECTS,
+                              RISK_NOTE, SCREENS)
 from modules import json_file, projects, scraped_files
-from test_scraper_menu import FakeSettings, FakeStorage, _PICKED, _answers
 from test_sync import _Msg, _SCallback, _SMsg, _State, _buttons, _pool, _scrapes
 
 
-NO_WORKERS = "🤖 Воркеров нет — добавьте их: «🤖 Аккаунты» → «➕ Добавить» (по номеру, из tdata или из свободных)."
+NO_WORKERS = "🤖 Воркеров нет — добавьте их: «🤖 Аккаунты» → «➕ Добавить» (по номеру, из файлов или из свободных)."
 
 
 @pytest.fixture(autouse=True)
@@ -149,16 +148,17 @@ def test_project_files_are_its_own_by_exact_name(tmp_path, monkeypatch):
 def test_card_shows_channels_an_interrupted_scrape_and_files(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     project = projects.add("Green", ["@a", "@b"])
-    assert "📂 Файлов скрапа пока нет." in projects.card(project, 0)
+    assert "📂 Файлов скрапа пока нет." in projects.collect_text(project)
     assert projects.label(project) == "📁 Green · каналов: 2"
 
     _write_parquet(tmp_path / "Green_posts_01.01.2024-31.01.2024.parquet", rows=3)
     _checkpoint(tmp_path, "Green", t_index=1240)
-    card = projects.card(project, 0)
-    assert card.startswith(f"📁 Green\n\n{NO_WORKERS}\n\n📢 Каналы — 2\n\n"
-                           "1. @a\n❔ название — при «▶️ Скрап проекта»\n\n2. @b\n")
-    assert "собрано постов 1240" in card
-    assert f"📂 Файлы в {tmp_path} — 1\n• posts · 01.01.2024-31.01.2024 · 3" in card
+    summary = projects.summary(project, 0)
+    assert summary.startswith(f"📁 Green\n\n{NO_WORKERS}\n\n{projects.base_line(project)}\n\n📢 Каналы — 2\n\n")
+    assert "собрано постов 1240" in summary
+    collect = projects.collect_text(project)
+    assert collect.startswith("1. @a\n❔ название — при «▶️ Скрап»\n\n2. @b\n")
+    assert f"📂 Файлы в {tmp_path} — 1\n• posts · 01.01.2024-31.01.2024 · 3" in collect
     assert projects.label(project) == "📁 Green · каналов: 2 ⏸"
 
 
@@ -166,7 +166,7 @@ def test_card_lists_at_most_max_card_files(tmp_path):
     project = projects.add("Green", ["@a"])
     for day in range(1, projects.MAX_CARD_FILES + 6):
         _write_parquet(tmp_path / f"Green_posts_{day:02}.01.2024-31.01.2024.parquet")
-    card = projects.card(project, 0)
+    card = projects.collect_text(project)
     assert card.count("\n• posts · ") == projects.MAX_CARD_FILES and card.endswith("… и ещё 5")
 
 
@@ -180,10 +180,10 @@ def test_bot_card_fits_a_message_with_long_channel_titles(tmp_path):
     for day in range(1, projects.MAX_CARD_FILES + 1):
         _write_parquet(tmp_path / f"Green_posts_{day:02}.01.2024-31.01.2024.parquet")
     [project] = projects.load()
-    card = projects.card(project, 0, html=True)
+    card = projects.collect_text(project, html=True)
     assert len(card) <= projects.MAX_CARD_TEXT and "\n\n… и ещё " in card
     assert card.count("\n• posts · ") == projects.MAX_CARD_FILES  # the files stay whole
-    assert f"\n\n{projects.MAX_CARD_CHANNELS}. " in projects.card(project, 0)  # the terminal: every channel
+    assert f"\n\n{projects.MAX_CARD_CHANNELS}. " in projects.collect_text(project)  # plain text: every channel
 
 
 def test_importable_offers_the_finished_scrapes_with_no_project_yet(tmp_path):
@@ -208,7 +208,7 @@ def _router():
     return types.SimpleNamespace(**{**vars(views), **vars(listing), **vars(manage), **vars(card)})
 
 
-CARD_BUTTONS = ["📥 Сбор ›", "📨 База и рассылка ›", "🤖 Аккаунты ›", "💬 Активность ›", "🛠 Управление ›",
+CARD_BUTTONS = ["📥 Сбор ›", "🎯 База и рассылка ›", "🤖 Аккаунты ›", "💬 Активность ›", "🛠 Управление ›",
                 "⬅️ Назад"]
 OLD_KEYS = {"collect": COLLECT, "base": BASE, "manage": MANAGE, "contacts": "addcontacts", "mail": "pmmailing",
             "clear": "clearbase"}
@@ -276,7 +276,7 @@ def test_bot_lists_projects_a_page_at_a_time():
 
     card = _SCallback()  # a button of the second page opens its project
     asyncio.run(router.project_pick(card, ChoiceCB(scope="prj", value="22"), state, conftest.Workspaces()))
-    assert card.message.edits[0][0].startswith("📁 P22")
+    assert card.message.edits[0][0].startswith("📁 <b>P22</b>")
 
 
 def test_bot_creates_a_project_and_shows_its_card():
@@ -302,7 +302,7 @@ def test_bot_creates_a_project_and_shows_its_card():
     assert projects.load() == [projects.Project("Green", ["@a", "t.me/b"], id=1)]
     text, markup = done.answers[0]
     # its screens in the order of the work: on its files, on its workers, then ⚙️ to the project itself
-    assert text.startswith("📁 Green") and _buttons(markup) == CARD_BUTTONS
+    assert text.startswith("📁 <b>Green</b>") and _buttons(markup) == CARD_BUTTONS
     assert [len(row) for row in markup.inline_keyboard] == [2, 2, 1, 1]
     assert state.data == {"project_names": []}
     # every screen it opens is Green's, whichever project the chat is in when it is tapped
@@ -321,7 +321,8 @@ def test_bot_lists_projects_and_opens_one_by_its_button():
 
     pick = _SCallback()
     asyncio.run(router.project_pick(pick, ChoiceCB(scope="prj", value="1"), state, conftest.Workspaces()))
-    assert pick.message.answers == [] and pick.message.edits[0][0].startswith("📁 B")  # the list becomes the card
+    # the list becomes the card
+    assert pick.message.answers == [] and pick.message.edits[0][0].startswith("📁 <b>B</b>")
 
     back = _SCallback()
     asyncio.run(_press(back, "back", state))
@@ -338,7 +339,7 @@ def test_bot_list_buttons_still_work_after_a_card_is_opened():
     asyncio.run(router.project_pick(_SCallback(), ChoiceCB(scope="prj", value="0"), state, conftest.Workspaces()))
     again = _SCallback()  # the list's message above, its other button
     asyncio.run(router.project_pick(again, ChoiceCB(scope="prj", value="1"), state, conftest.Workspaces()))
-    assert again.message.edits[0][0].startswith("📁 B")
+    assert again.message.edits[0][0].startswith("📁 <b>B</b>")
 
 
 def test_bot_makes_a_project_from_a_finished_scrape(tmp_path):
@@ -364,7 +365,7 @@ def test_bot_makes_a_project_from_a_finished_scrape(tmp_path):
     asyncio.run(router.project_import(pick, ChoiceCB(scope="prj_imp", value="0"), state, conftest.Workspaces()))
     assert projects.load() == [projects.Project("Green", ["@a", "@b"], id=1)]
     card = pick.message.edits[0][0]
-    assert card.startswith("📁 Green") and "📂 Файлов скрапа: 1 — список в «📥 Сбор»" in card
+    assert card.startswith("📁 <b>Green</b>") and "📂 Файлов скрапа: 1 — список в «📥 Сбор»" in card
     collect = _SCallback()  # its files are listed in 📥 Сбор
     asyncio.run(_press(collect, "collect", state))
     assert "• posts · 01.01.2024-31.01.2024 · 1" in collect.message.edits[0][0]
@@ -394,10 +395,10 @@ def test_bot_makes_a_project_without_channels_by_its_button():
     text, markup = tap.message.answers[0]
     # ⚙️'s button says what to do now
     assert "📢 Каналов нет" in text and "«➕ Добавить каналы»" in text and _buttons(markup) == CARD_BUTTONS
-    manage = _SCallback()
-    asyncio.run(_press(manage, "manage", state))
-    assert _buttons(manage.message.edits[0][1]) == ["➕ Добавить каналы", "🏷 Переименовать", "🗑 Удалить",
-                                                    "⬅️ Назад"]
+    collect = _SCallback()  # 📢 Каналы is 📥 Сбор's, named for what there is to do
+    asyncio.run(_press(collect, "collect", state))
+    assert _buttons(collect.message.edits[0][1])[0] == "➕ Добавить каналы"
+    assert "📢 У проекта нет каналов — добавьте их: «➕ Добавить каналы»." in collect.message.edits[0][0]
 
     listed = _SCallback()
     asyncio.run(router.projects_screen(listed.message, state, False))
@@ -420,9 +421,9 @@ def test_bot_drops_all_the_channels_by_its_button():
     tap = _SCallback()
     asyncio.run(router.project_without_channels(tap, ChoiceCB.unpack(markup.inline_keyboard[0][0].callback_data), state,
                                                 _in(state.data.get("project_name"))))
-    # back on 🛠 Управление, where the change was started, the result above it
+    # back on 📥 Сбор, where the change was started, the result above it
     assert projects.load()[0].channels == [] and tap.message.answers[0][0].startswith(
-        f"✅ Каналы убраны.\n\n📁 <b>A</b> › <b>{MANAGE}</b>")
+        f"✅ Каналы убраны.\n\n📁 <b>A</b> › <b>{COLLECT}</b>")
 
     ask = _SCallback()  # none left: nothing to drop, only to add
     asyncio.run(_press(ask, "channels", state))
@@ -433,15 +434,6 @@ def test_bot_drops_all_the_channels_by_its_button():
 def test_a_project_s_label_says_it_has_no_channels():
     assert projects.label(projects.Project("A", ["@a", "@b"])) == "📁 A · каналов: 2"
     assert projects.label(projects.Project("B", [])) == "📁 B · без каналов"
-
-
-def test_cli_card_of_a_project_without_channels_offers_to_add_them(monkeypatch):
-    projects.add("Green", [])
-    _, printed = _cli_card(monkeypatch, texts=["1"])  # ▶️ Скрап: no channels to scrape
-    assert "📁 Green · без каналов" in "\n".join(printed)
-    menu = next(line for line in printed if "[4] 👥" in line)
-    assert "[11] ➕ Добавить каналы" in menu
-    assert printed[-1] == "У проекта нет каналов — добавьте их: «➕ Добавить каналы»."
 
 
 def test_bot_edits_channels_and_deletes_a_project_keeping_its_files(tmp_path, monkeypatch):
@@ -456,7 +448,7 @@ def test_bot_edits_channels_and_deletes_a_project_keeping_its_files(tmp_path, mo
     edited = _Msg(text="@x @y")
     asyncio.run(router.project_edit(edited, state, _in(state.data.get("project_name"))))
     assert projects.load()[0].channels == ["@x", "@y"] and edited.answers[0][0].startswith(
-        f"✅ Каналы сохранены: 2.\n\n📁 <b>A</b> › <b>{MANAGE}</b>")
+        f"✅ Каналы сохранены: 2.\n\n📁 <b>A</b> › <b>{COLLECT}</b>")
     collect = _SCallback()  # named in 📥 Сбор
     asyncio.run(_press(collect, "collect", state))
     assert "\n\n1. @x\n" in collect.message.edits[0][0]
@@ -506,18 +498,24 @@ def test_bot_card_s_manage_screen_takes_its_place_and_goes_back_to_it():
     text, markup = card.message.edits[1]  # in the card's place
     # each button with what it does, as on the other screens; 🧹 neither shown nor described: nothing to clear
     assert text == ("📁 <b>A</b> › <b>🛠 Управление</b>\n\n"
-                    "<b>📢 Каналы</b> — список каналов и групп проекта для скрапа\n"
+                    "<b>🌍 Регион: СНГ (RU)</b> — язык и страна имён, username, bio, фото и контента прогрева\n"
                     "<b>🏷 Переименовать</b> — новое имя проекта, его файлы переименуются вместе с ним\n"
-                    "<b>🗑 Удалить</b> — проект удаляется, файлы скрапа остаются; аккаунты сначала перенесите") \
+                    "<b>🗑 Удалить</b> — проект удаляется, файлы скрапа остаются; воркеров сначала перенесите") \
         and card.message.answers == []
-    assert _buttons(markup) == ["📢 Каналы", "🏷 Переименовать", "🗑 Удалить", "⬅️ Назад"]
-    assert [len(row) for row in markup.inline_keyboard] == [2, 1, 1]
+    assert _buttons(markup) == ["🌍 Регион: СНГ (RU)", "🏷 Переименовать", "🗑 Удалить", "⬅️ Назад"]
+    assert [len(row) for row in markup.inline_keyboard] == [1, 2, 1]
     *own, back = [button.callback_data for row in markup.inline_keyboard for button in row]
     assert {MenuCB.unpack(data).project for data in own} == {a.id}  # they act on A
     assert NavCB.unpack(back) == NavCB(screen=CARD, project=a.id)  # ⬅️: A's card
 
+    # 🌍: the project's next region, the screen anew in its place; 👤 Профиль's lists take it (warmup.region)
+    from modules import warmup
+    asyncio.run(_press(card, "region", state))
+    assert "🌍 Регион: Global (EN)" in _buttons(card.message.edits[-1][1]) and card.message.answers == []
+    assert warmup.region(projects.home(a)) == "en"
+
     asyncio.run(_press(card, "card", state))
-    assert card.message.edits[2][0].startswith("📁 A") and _buttons(card.message.edits[2][1]) == CARD_BUTTONS
+    assert card.message.edits[-1][0].startswith("📁 <b>A</b>") and _buttons(card.message.edits[-1][1]) == CARD_BUTTONS
 
 
 def _delete_value(confirm):
@@ -590,7 +588,7 @@ def test_bot_project_scrape_skips_name_and_channels_and_runs_on_them(monkeypatch
 
 def test_a_flow_started_on_a_screen_leaves_its_other_buttons_working(monkeypatch, tmp_path):
     """A screen's buttons need nothing a flow clears (they carry their project): 🏷 Переименовать begun and
-    left, ▶️ Скрап проекта on the same 📥 Сбор… screen still runs."""
+    left, ▶️ Скрап on the same 📥 Сбор… screen still runs."""
     from bot.routers import scraping
     from bot.states import Projects, Scrape
 
@@ -654,219 +652,7 @@ def test_bot_project_without_channels_continues_its_scrape_but_never_starts_it_a
     assert state.state is None and projects.unfinished("Green") is not None  # the checkpoint is kept
 
 
-def test_cli_project_without_channels_never_starts_its_scrape_afresh(monkeypatch, tmp_path):
-    from functions import scraper
-
-    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    _checkpoint(tmp_path, "Green")
-    asked, printed = [], []
-    monkeypatch.setattr(scraper.Confirm, "ask", lambda text, **k: asked.append(text) or False)  # «нет»
-    monkeypatch.setattr(scraper, "pick_session", lambda *a: pytest.fail("no account is asked"))
-    monkeypatch.setattr(scraper, "scrape_run", lambda *a: pytest.fail("no scrape runs"))
-    monkeypatch.setattr(scraper.console, "print", lambda *a, **k: printed.append(str(a[0]) if a else ""))
-
-    scraper.ScrapeFunc(FakeStorage(), FakeSettings()).scrape("Green", [])
-    assert "удалится" not in asked[0] and "нет каналов" in asked[0]
-    assert printed[-1] == projects.NO_CHANNELS_TEXT
-    assert projects.unfinished("Green") is not None
-
-
-# --- the CLI ----------------------------------------------------------------------------------
-
-def test_cli_menu_discovers_only_the_projects_function():
-    from functions import projects as cli
-    from modules.registry import CLI_EXTRAS
-
-    # the discovery takes every *Func class in the module: ScrapeFunc must not be one twice
-    assert [name for name, _ in inspect.getmembers(cli, inspect.isclass) if name.endswith("Func")] == ["ProjectsFunc"]
-    assert [f.title for f in CLI_EXTRAS if f.classname == "ProjectsFunc"] == ["📁 Проекты"]  # a CLI item only
-
-
-def test_cli_creates_a_project_and_scrapes_it_on_its_channels(monkeypatch, tmp_path):
-    from functions import projects as cli
-    from functions import scraper
-
-    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
-    captured = {}
-    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
-    monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))  # [1] ➕ Новый
-    _answers(monkeypatch, cli, texts=["Green", "@a, @b", ""])  # name, channels, no action on the card
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert projects.load() == [projects.Project("Green", ["@a", "@b"], id=1)]
-
-    # one rich Prompt class for both modules: [1] Green -> ▶️ Скрап проекта, then the scrape's own
-    # questions — the dates and the keyword, no name and no channels (the limit: ask_int's 1)
-    _answers(monkeypatch, cli, texts=["1", "01.01.2024", "31.01.2024", ""], bools=[True, True, True])
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    p = captured["params"]
-    assert (p.name, p.channels, p.max_messages) == ("Green", ["@a", "@b"], 1)
-
-
-def test_cli_makes_a_project_from_a_finished_scrape(monkeypatch, tmp_path):
-    from functions import projects as cli
-
-    _posts(tmp_path, "Green", 1_000, channels=["@a"])
-    numbers = iter([2, 1])  # [2] 📥 Из готового скрапа -> [1] Green
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: next(numbers)))
-    _answers(monkeypatch, cli, texts=[""])  # no action on the card
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert projects.load() == [projects.Project("Green", ["@a"], id=1)]
-
-
-def test_cli_edits_and_deletes_a_project(monkeypatch):
-    from functions import projects as cli
-
-    projects.add("Green", ["@a"])
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))
-    _answers(monkeypatch, cli, texts=["11", "@x"])
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert projects.load()[0].channels == ["@x"]
-
-    _answers(monkeypatch, cli, texts=["14"], bools=[True])
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert projects.load() == []
-
-
-def _cli_card(monkeypatch, texts, workers=0):
-    """Open the first project's card in the CLI with scripted answers, the project with `workers` of them;
-    (execute's result, printed)."""
-    from functions import projects as cli
-    from modules.storages.sessions_storage import SessionsStorage
-
-    monkeypatch.setattr(SessionsStorage, "__len__", lambda self: workers)
-    printed = []
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))
-    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    _answers(monkeypatch, cli, texts=texts)
-    settings = type("Settings", (FakeSettings,), {"delay": [1, 2]})()  # the contacts' delay default
-    return cli.ProjectsFunc(FakeStorage(), settings).execute(), printed
-
-
-def test_cli_card_shows_every_function_and_says_what_to_collect_first(monkeypatch, tmp_path):
-    projects.add("Green", ["@a"])
-    _, printed = _cli_card(monkeypatch, ["5"])  # no files yet: every item still there
-    assert any("[5] 🔍 Верификация  [6] 📈 Анализ\n  📨 База и рассылка ⚠️:  [7] 📇 В контакты  [8] 📨 ЛС по базе"
-               in p for p in printed)
-    assert printed[-1] == "У проекта ещё нет файла постов — сначала «▶️ Скрап проекта»."
-    _, printed = _cli_card(monkeypatch, ["7"])
-    assert printed[-1].startswith("У проекта ещё нет базы участников — сначала «▶️ Скрап проекта»")
-
-
-def test_cli_card_and_its_screens_say_there_are_no_workers_before_asking_anything(monkeypatch, tmp_path):
-    from functions import add_contacts, pmmailing
-    from modules import registry
-    from modules.storages.functions_storage import FunctionsStorage
-
-    projects.add("Green", ["@a"])
-    _write_parquet(tmp_path / "Green_participants_01.01.2024-31.01.2024.parquet")
-    ran = []
-    monkeypatch.setattr(FunctionsStorage, "run_instance", lambda self, instance: ran.append(type(instance).__name__))
-    for cls in (pmmailing.PmMailingFunc, add_contacts.AddContactsFunc):  # the card runs these itself
-        monkeypatch.setattr(cls, "execute", lambda self, *a, cls=cls, **k: ran.append(cls.__name__) or asyncio.sleep(0))
-    # 📨 ЛС по базе, 📇 В контакты on the card; 💬 Активность → 🚪 Вступить в чат; 🤖 Аккаунты → 🌐 Прокси
-    for texts in (["8"], ["7"], ["10", "5"], ["9", "2"]):
-        _, printed = _cli_card(monkeypatch, texts)
-        assert printed[-1] == registry.NO_WORKERS
-    assert ran == []
-    # 📋 Список and ➕ Добавить need none, as in the bot
-    for texts in (["9", "1"], ["9", "3"]):
-        _cli_card(monkeypatch, texts)
-    assert ran == ["AccountsFunc", "AddByPhoneFunc"]
-
-
-def test_cli_card_numbers_stay_put_with_nothing_to_top_up_or_clear(monkeypatch, tmp_path):
-    from functions import scraper
-
-    projects.add("Green", ["@a"])
-    called = []
-    monkeypatch.setattr(scraper.ScrapeFunc, "topup", lambda self, *a: called.append("topup"))
-    _, printed = _cli_card(monkeypatch, ["2"])  # 🔄 hidden: its number does nothing
-    menu = next(p for p in printed if "[1] ▶️ Скрап проекта" in p)
-    assert "[2]" not in menu and "[13]" not in menu and called == []
-    assert "[3] 📄 Загрузить список  [4] 👥 Участники групп" in menu
-    # the card's screens in the bot's order: the workers' ones before 🛠 Управление
-    assert "[9] 🤖 Аккаунты ›  [10] 💬 Активность ›\n  🛠 Управление:  [11] 📢 Каналы  [12] 🏷 Переименовать  " \
-           "[14] 🗑 Удалить" in menu
-
-
-def test_cli_card_collects_members_as_the_project_s_base(monkeypatch, tmp_path):
-    from functions import scraper
-
-    projects.add("Green", ["@a"])
-    called = []
-    monkeypatch.setattr(scraper.MembersFunc, "execute", lambda self, project=None: called.append(project))
-    _, printed = _cli_card(monkeypatch, ["4"])
-    assert any("[4] 👥 Участники групп" in p for p in printed) and called == ["Green"]
-
-
-def test_cli_card_mailing_and_contacts_offer_the_project_s_bases_only(monkeypatch, tmp_path):
-    from functions import add_contacts, pmmailing
-
-    projects.add("Green", ["@a"])
-    green = tmp_path / "Green_participants_01.01.2024-31.01.2024.parquet"
-    _write_parquet(green)
-    _write_parquet(tmp_path / "Other_participants_01.01.2024-31.01.2024.parquet")
-    offered = []
-
-    def ask_file(label, files, default=""):
-        offered.append([path for path, _ in files])
-        return str(tmp_path / "missing.parquet")  # the function then stops: no such file
-
-    for module, cls, action in ((pmmailing, "PmMailingFunc", "8"), (add_contacts, "AddContactsFunc", "7")):
-        monkeypatch.setattr(getattr(module, cls), "ask_file", staticmethod(ask_file))
-        monkeypatch.setattr(getattr(module, cls), "run", lambda *a, **k: asyncio.sleep(0))
-        _cli_card(monkeypatch, [action, "1-2"], workers=1)  # the action, then contacts' delay: on the project's loop
-    assert offered == [[str(green)], [str(green)]]
-
-
-def test_cli_card_verify_and_analysis_offer_the_project_s_posts_only(monkeypatch, tmp_path):
-    from functions import scraper, scraper_analysis
-
-    projects.add("Green", ["@a"])
-    green = _posts(tmp_path, "Green", 1_000)
-    _posts(tmp_path, "Other", 2_000)
-    _write_parquet(tmp_path / "Green_reactors_01.01.2024-31.01.2024.parquet")
-    offered = []
-
-    class _Stop(Exception):
-        pass
-
-    def ask_file(label, files, default=""):
-        offered.append([path for path, _ in files])
-        raise _Stop
-
-    monkeypatch.setattr(scraper, "pick_session", lambda *a: _PICKED)
-    monkeypatch.setattr(scraper.VerifyFunc, "ask_file", staticmethod(ask_file))
-    with pytest.raises(_Stop):
-        _cli_card(monkeypatch, ["5"])
-    assert offered == [[str(green)]]
-
-    # 📈 Анализ → 🧩 Объединить ([4]), blank: all the project's posts files, as the bot's button
-    combined = []
-    monkeypatch.setattr(scraper_analysis.analysis, "combine", lambda inp, out, dedup: combined.append(inp))
-    _cli_card(monkeypatch, ["6", "4", "", "out", "Group,Message ID"])
-    assert combined == [[str(green)]]
-
-
-def test_cli_combine_takes_the_project_s_posts_files_by_default(monkeypatch, tmp_path):
-    from functions import scraper_analysis
-
-    green = _posts(tmp_path, "Green", 1_000)
-    _write_parquet(tmp_path / "Green_participants_01.01.2024-31.01.2024.parquet")
-    _write_parquet(tmp_path / "Green_reactors_01.01.2024-31.01.2024.parquet")
-    _write_parquet(tmp_path / "Green_posts_combined.parquet")  # the previous combine's: not an input again
-    combined = []
-    monkeypatch.setattr(scraper_analysis.analysis, "combine", lambda inp, out, dedup: combined.append((inp, out)))
-    monkeypatch.setattr(scraper_analysis.Prompt, "ask", lambda *a, default=None, **k: default)  # Enter each time
-
-    _posts(tmp_path, "Other", 2_000)  # another project's
-    scraper_analysis._combine("Green")
-    # the project's posts files: its bases are not even read; the result is the project's own file
-    assert combined == [([str(green)], str(tmp_path / "Green_posts_combined"))]
-
-
-# --- the top-up (🔄 Дособрать) ------------------------------------------------------------------
+# --- the top-up (⏩ Дособрать) ------------------------------------------------------------------
 
 def _scraped(folder, name, mtime=1_000, window=("2024-01-01", "2024-01-31"), channels=("@a",), keyword=None):
     """A finished scrape's posts file with what the scrape stores in it."""
@@ -908,14 +694,14 @@ def test_topup_continues_the_newest_scrape_from_a_week_before_its_end(tmp_path):
 def test_card_offers_the_top_up_and_says_when_its_channels_differ(tmp_path):
     project = projects.add("Green", ["@a"])
     _scraped(tmp_path, "Green", channels=("@old",))
-    card = projects.card(project, 0)
-    assert f"🔄 Дособор: с 24.01.2024 по {_today():%d.%m.%Y}" in card
+    card = projects.summary(project, 0)
+    assert f"⏩ Дособор: с 24.01.2024 по {_today():%d.%m.%Y}" in card
     # one block each, as the card lists its own channels
-    assert "Каналы дособора — как в прошлом скрапе (новому каналу нужна вся история: «▶️ Скрап проекта»):\n\n1. @old" \
+    assert "Каналы дособора — как в прошлом скрапе (новому каналу нужна вся история: «▶️ Скрап»):\n\n1. @old" \
         in card
 
     _checkpoint(tmp_path, "Green")  # unfinished: continuing it comes first
-    assert "🔄" not in projects.card(project, 0)
+    assert "🔄" not in projects.summary(project, 0)
 
 
 def test_bot_top_up_goes_from_the_card_to_the_summary_and_runs_on_the_files_data(monkeypatch, tmp_path):
@@ -932,12 +718,12 @@ def test_bot_top_up_goes_from_the_card_to_the_summary_and_runs_on_the_files_data
     card = _SCallback()
     asyncio.run(router.show_card(card.message, state, conftest.Workspaces(), project))
     asyncio.run(_press(card, "collect", state))
-    assert "🔄 Дособрать" in _buttons(card.message.edits[0][1])
+    assert "⏩ Дособрать" in _buttons(card.message.edits[0][1])
 
     go = _SCallback()
     asyncio.run(_press(go, "topup", state, _in(state.data.get("project_name"), _pool(), scrapes=JobManager())))
     text, markup = go.message.answers[-1]
-    assert state.state == Scrape.confirm and text.startswith("🔄 Дособрать — каналы:\n\n1. @a\n\nПериод: 24.01.2024")
+    assert state.state == Scrape.confirm and text.startswith("⏩ Дособрать — каналы:\n\n1. @a\n\nПериод: 24.01.2024")
     assert f"Дособор к {path.name}" in text and _buttons(markup) == ["▶️ Запустить", "🎛 Дополнительно", "✖️ Отмена"]
 
     more = _SCallback()
@@ -959,26 +745,7 @@ def test_bot_offers_no_top_up_while_a_scrape_is_unfinished(tmp_path):
     _checkpoint(tmp_path, "Green")
     card = _SCallback()
     asyncio.run(router.show_card(card.message, _State(), conftest.Workspaces(), project))
-    assert "🔄 Дособрать" not in _buttons(card.message.answers[0][1])
-
-
-def test_cli_top_up_runs_on_the_files_data(monkeypatch, tmp_path):
-    from functions import projects as cli
-    from functions import scraper
-
-    captured = {}
-    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
-    monkeypatch.setattr(scraper, "scrape_run", lambda creds, params: captured.update(params=params))
-    projects.add("Green", ["@a"])
-    path = _scraped(tmp_path, "Green", channels=("@a", "@b"))
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))  # [1] Green
-    _answers(monkeypatch, cli, texts=["2"], bools=[True, False, True])  # 🔄; comments, no reactors, base
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-
-    p = captured["params"]
-    assert (p.name, p.channels, p.extend, p.with_reactors) == ("Green", ["@a", "@b"], str(path), False)
-    assert p.max_messages == 1  # asked, as the bot's «🔢 Максимум постов» (ask_int's 1)
-    assert p.date_min.date().isoformat() == "2024-01-24"
+    assert "⏩ Дособрать" not in _buttons(card.message.answers[0][1])
 
 
 # --- the card runs the sections' flows on the project's files only ------------------------------
@@ -991,7 +758,8 @@ def _pool_of(*paths):
 
     clients = [object() for _ in paths]
     by_client = dict(zip(map(id, clients), paths))
-    return WorkerPool(types.SimpleNamespace(sessions=clients, jsessions_paths={},
+    return WorkerPool(types.SimpleNamespace(sessions=clients, jsessions_paths={}, home=conftest.home(),
+                                            directory=f"{conftest.home()}/sessions",
                                             get_session_path=lambda c: by_client[id(c)]))
 
 
@@ -1050,21 +818,24 @@ def test_card_shows_every_function_and_says_what_to_collect_first(tmp_path):
     card = _SCallback()
     asyncio.run(router.show_card(card.message, _State(), conftest.Workspaces(), project))
     assert _buttons(card.message.answers[0][1]) == CARD_BUTTONS
-    # no files yet: every function in its section, all the base's risky, so marked once, and the mark explained
+    # no files yet: every function in its section; the base's risky ones marked (its upload and clearing are
+    # not), and the mark explained
     state = _State({"project_name": "Green"})
     collect, base = _SCallback(), _SCallback()
     asyncio.run(_press(collect, "collect", state))
     assert _buttons(collect.message.edits[0][1]) == [
-        "▶️ Скрап проекта", "📄 Загрузить список", "👥 Участники групп", "🔍 Верификация", "📈 Анализ", "⬅️ Назад"]
+        "📢 Каналы", "▶️ Скрап", "👥 Участники групп", "🔍 Верификация", "📈 Анализ", "⬅️ Назад"]
     assert RISK_NOTE not in collect.message.edits[0][0]
     asyncio.run(_press(base, "base", state))
     text, markup = base.message.edits[0]
-    assert _buttons(markup) == ["📇 В контакты", "📨 ЛС по базе", "⬅️ Назад"]
-    assert text.startswith("📁 <b>Green</b> › <b>📨 База и рассылка</b> ⚠️") and text.endswith(f"<i>{RISK_NOTE}</i>")
+    assert _buttons(markup) == ["📄 Свой список", "📇 В контакты", "📨 Рассылка", "📬 Автоответ ›",
+                                "⬅️ Назад"]  # no 🧹
+    assert text.startswith("📁 <b>Green</b> › <b>🎯 База и рассылка</b>\n\n🎯 Базы пока нет — сначала") and \
+        text.endswith(f"<i>{RISK_NOTE}</i>")
 
-    for action, why in (("verify", "У проекта ещё нет файла постов — сначала «▶️ Скрап проекта»."),
-                        ("mail", "У проекта ещё нет базы — сначала «▶️ Скрап проекта», «👥 Участники групп» или "
-                                 "«📄 Загрузить список».")):
+    for action, why in (("verify", "У проекта ещё нет файла постов — сначала «▶️ Скрап»."),
+                        ("mail", "У проекта ещё нет базы — сначала «▶️ Скрап», «👥 Участники групп» или "
+                                 "«📄 Свой список».")):
         tap = _AlertCallback()
         asyncio.run(_press(tap, action, state))
         assert tap.alerts == [(why, True)] and tap.message.answers == []  # a pop-up over the card, nothing run
@@ -1083,7 +854,7 @@ def test_card_mailing_offers_the_project_s_bases_only(tmp_path):
     _two_projects(tmp_path)
     state = _State({"project_name": "Green"})
     callback = _card_action("mail", state)
-    text, markup = callback.message.edits[-1]  # in 📨 База и рассылка's place
+    text, markup = callback.message.edits[-1]  # in 🎯 База и рассылка's place
     assert _buttons(markup) == ["📄 participants · 01.01.2024-31.01.2024 · 2", "📄 assets/targets.txt", "✖️ Отмена"]
     assert state.state == PmMailing.path
 
@@ -1317,17 +1088,6 @@ def test_bot_wont_rename_while_a_scraper_or_analysis_job_runs(tmp_path, slot):
     assert _bases(tmp_path) == before and [p.name for p in projects.load()] == ["Green", "Green_x"]
 
 
-def test_cli_renames_a_project(monkeypatch, tmp_path):
-    from functions import projects as cli
-
-    _green_on_disk(tmp_path)
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))  # [1] Green
-    _answers(monkeypatch, cli, texts=["12", "Blue"])
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert [p.name for p in projects.load()] == ["Blue", "Green_x"]
-    assert (tmp_path / f"Blue_posts_{SPAN}.parquet").exists()
-
-
 def test_every_analysis_output_is_renamed_with_its_project():
     """The analysis names its files with output_path(<posts>, "<suffix>"): a suffix project_entries
     doesn't know would stay behind with the old name."""
@@ -1336,8 +1096,8 @@ def test_every_analysis_output_is_renamed_with_its_project():
     from modules import analysis_tools
 
     suffixes = set(analysis_tools.MULTI_FILE.values())
-    for path in ("modules/analysis_tools.py", "functions/scraper_analysis.py"):
-        suffixes |= set(re.findall(r'output_path\(\w+, "(\w+)"\)', open(path, encoding="utf-8").read()))
+    source = open("modules/analysis_tools.py", encoding="utf-8").read()
+    suffixes |= set(re.findall(r'output_path\(\w+, "(\w+)"\)', source))
     assert suffixes and suffixes <= set(scraped_files.ANALYSIS_SUFFIXES) | {"participants"}
 
 
@@ -1400,19 +1160,18 @@ def test_the_card_lists_the_channels_as_the_accounts_list_does(tmp_path, monkeyp
                                 _info("-1001629147115", "«Цитадель»", None, -1001629147115),
                                 _info("t.me/+join", "«Клуб»", "аккаунт не состоит в чате — вступите")])
     [project] = projects.load()
-    assert projects.card(project, 0) == (
-        f"📁 Green\n\n{NO_WORKERS}\n\n📢 Каналы — 4\n\n"
+    assert projects.collect_text(project) == (
         "1. «Канал А»\n👤 @a · 🆔 -1001\n\n"
         "2. «Цитадель»\n🆔 -1001629147115\n\n"
         "3. «Клуб»\n🔗 t.me/+join\n\n"  # no problem kept: it is the checking account's
-        "4. @new\n❔ название — при «▶️ Скрап проекта»\n\n"
+        "4. @new\n❔ название — при «▶️ Скрап»\n\n"
         "📂 Файлов скрапа пока нет.")
 
 
 def test_a_card_lists_twenty_channels_then_counts_the_rest(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     project = projects.add("Big", [f"@c{i}" for i in range(25)])
-    card = projects.card(project, 0)
+    card = projects.collect_text(project)
     assert "20. @c19\n" in card and "@c20" not in card and "… и ещё 5" in card
 
 
@@ -1431,29 +1190,20 @@ def test_the_bot_s_project_scrape_names_the_channels_on_its_card(monkeypatch, tm
     go = _SCallback()
     asyncio.run(_press(go, "scrape", state, _in(state.data.get("project_name"), _pool(), scrapes=JobManager())))
     assert "1. «Канал А»\n👤 @a · 🆔 <code>-1001</code>" in go.message.answers[-2][0]  # as on the card
-    card = projects.card(projects.load()[0], 0)
+    card = projects.collect_text(projects.load()[0])
     assert "1. «Канал А»\n👤 @a · 🆔 -1001\n\n2. «Канал Б»\n🔗 t.me/b · 🆔 -1002" in card
 
 
-def test_the_cli_s_project_scrape_names_the_channels_on_its_card(monkeypatch):
-    from functions import scraper
-
-    projects.add("Green", ["@a"])
-    monkeypatch.setattr(scraper, "_lookup", lambda account, chats: [_info("@a", "«Канал А»", None, -1001, "a")])
-    monkeypatch.setattr(scraper.console, "print", lambda *a, **k: None)
-    assert scraper._chats_ok(_PICKED, ["@a"], "Green") == (True, ["«Канал А» (@a)"])
-    assert projects.load()[0].chats["@a"]["title"] == "«Канал А»"
-
-
-def test_the_bot_s_card_copies_ids_and_the_terminal_s_has_no_tags(tmp_path, monkeypatch):
+def test_the_bot_s_card_copies_ids_and_its_plain_text_has_no_tags(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     projects.add("A&B", ["-1001629147115", "@new"])
     projects.remember("A&B", [_info("-1001629147115", "«Берлога <1>»", None, -1001629147115)])
     [project] = projects.load()
-    assert projects.card(project, 0, html=True).startswith(
-        f"📁 A&amp;B\n\n{NO_WORKERS}\n\n📢 Каналы — 2\n\n"
+    assert projects.summary(project, 0, html=True).startswith(
+        f"📁 <b>A&amp;B</b>\n\n{NO_WORKERS}\n\n{projects.base_line(project)}\n\n📢 Каналы — 2")
+    assert projects.collect_text(project, html=True).startswith(
         "1. «Берлога &lt;1&gt;»\n🆔 <code>-1001629147115</code>\n\n2. @new\n")
-    assert "<code>" not in projects.card(project, 0) and "&amp;" not in projects.card(project, 0)
+    assert "<code>" not in projects.collect_text(project) and "&amp;" not in projects.summary(project, 0)
 
     class Msg:
         def __init__(self):
@@ -1468,20 +1218,7 @@ def test_the_bot_s_card_copies_ids_and_the_terminal_s_has_no_tags(tmp_path, monk
     assert parse_mode == "HTML" and "🆔 <code>-1001629147115</code>" in text
 
 
-def test_the_cli_s_verify_from_a_card_names_the_project_s_channel(monkeypatch):
-    from functions import scraper
-
-    projects.add("Green", ["@a"])
-    monkeypatch.setattr(scraper, "pick_session", lambda storage, personal=None: _PICKED)
-    monkeypatch.setattr(scraper, "verify_run", lambda creds, params: None)
-    monkeypatch.setattr(scraper, "_lookup", lambda account, chats: [_info("@a", "«Канал А»", None, -1001, "a")])
-    monkeypatch.setattr(scraper.console, "print", lambda *a, **k: None)
-    _answers(monkeypatch, scraper, texts=["posts.parquet", "@a", "01.01.2024", "31.01.2024", "", "0"])
-    scraper.VerifyFunc(FakeStorage(), FakeSettings()).execute(posts=[], project="Green")
-    assert projects.load()[0].chats["@a"] == {"title": "«Канал А»", "id": -1001, "username": "a"}
-
-
-# --- 📄 Загрузить список: the project's list, a base for the mailing -----------------------------
+# --- 📄 Свой список: the project's list, a base for the mailing -----------------------------
 
 def test_a_list_takes_usernames_links_and_numbers_once_each(tmp_path):
     added = projects.add_to_list("Green", ["@Anna_k", "https://t.me/bobby", "+7 (999) 123-45-67", "", "привет", "-",
@@ -1515,16 +1252,17 @@ def test_bot_uploads_a_list_and_the_mailing_offers_it(tmp_path):
 
     pasted = _Msg(text="@anna_k\n@bobby\nне имя")
     asyncio.run(router.project_upload(pasted, state, _in(state.data.get("project_name"))))
-    [(screen, _)] = pasted.answers  # 📥 Сбор, where the list was uploaded from, the result above it
+    [(screen, _)] = pasted.answers  # 🎯 База и рассылка, where the list was uploaded from, the result above it
     assert screen.startswith("✅ В список проекта добавлено: 2, всего в нём: 2. Пропущено строк: 1 — не @username, "
-                             f"не ссылка t.me и не номер.\n\n📁 <b>Clients</b> › <b>{COLLECT}</b>")
+                             f"не ссылка t.me и не номер.\n\n📁 <b>Clients</b> › <b>{BASE}</b>")
+    assert "🎯 База: записей 2 · написали 0 · в контактах 0" in screen and "• list · 2" in screen
     # a list has no IDs: the mailing, not the contacts, which say why
     contacts = _AlertCallback()
     asyncio.run(_press(contacts, "contacts", state))
     assert contacts.alerts[0][0].endswith("Загруженный список для контактов не подходит: в нём нет ID.")
 
     asyncio.run(_press(_SCallback(), "upload", state))
-    sent = _Msg(document=ns(file_name="more.TXT", file_size=20), content="@bobby\n@carlos\n".encode())
+    sent = _Msg(document=ns(file_id="f", file_name="more.TXT", file_size=20), content="@bobby\n@carlos\n".encode())
     asyncio.run(router.project_upload(sent, state, _in(state.data.get("project_name"))))
     assert sent.answers[0][0].startswith("✅ В список проекта добавлено: 1, всего в нём: 3.\n\n")
 
@@ -1546,25 +1284,6 @@ def test_bot_asks_again_for_a_list_with_no_one_in_it():
     asyncio.run(router.project_upload(other, state, _in(state.data.get("project_name"))))
     assert other.answers == [("Нужен .txt файл или список текстом. Пришлите ещё раз:", None)]
     assert not scraped_files.list_path("Clients").exists()
-
-
-def test_cli_uploads_a_list_and_mails_it(monkeypatch, tmp_path):
-    from functions import pmmailing
-
-    projects.add("Clients", [])
-    source = tmp_path / "people.txt"
-    source.write_text("@anna_k\nt.me/bobby\nне имя\n", encoding="utf-8")
-    _, printed = _cli_card(monkeypatch, texts=["3", str(source)])
-    assert "В список проекта добавлено: 2, всего в нём: 2. Пропущено строк: 1 — не @username, не ссылка t.me и не номер." in printed
-
-    offered = []
-
-    async def execute(self, bases):
-        offered.extend(bases)
-
-    monkeypatch.setattr(pmmailing.PmMailingFunc, "execute", execute)
-    _cli_card(monkeypatch, texts=["8"], workers=1)
-    assert offered == [(str(tmp_path / "Clients_participants_list.txt"), "list · 2")]
 
 
 # --- a typed channel that can't be one is caught as it is typed -------------------------------------
@@ -1593,45 +1312,43 @@ def test_bot_asks_again_for_channels_that_can_t_be_ones():
     assert edited.answers[0][0].startswith("Не похоже на канал: «—»") and projects.load()[0].channels == ["@a"]
 
 
-def test_cli_asks_again_for_channels_that_can_t_be_ones(monkeypatch):
-    from functions import projects as cli
-
-    printed = []
-    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))  # [1] ➕ Новый
-    _answers(monkeypatch, cli, texts=["Green", "-", "@a", ""])  # the dash: asked again
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert projects.load() == [projects.Project("Green", ["@a"], id=1)]
-    assert any(line.startswith("Не похоже на канал: «-»") for line in printed)
-
-
-def test_cli_channels_prompt_says_what_enter_does(monkeypatch):
-    from functions import projects as cli
-
-    asked = []
-
-    def ask(prompt, *a, **k):
-        asked.append(prompt)
-        return "11" if len(asked) == 1 else ""
-
-    projects.add("Green", ["@a"])
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))
-    monkeypatch.setattr(cli.console, "print", lambda *a, **k: None)
-    monkeypatch.setattr(cli.Prompt, "ask", ask)
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()  # [11], Enter: its channels dropped
-    assert "Enter — убрать все каналы" in asked[1] and projects.load()[0].channels == []
-
-    asked.clear()
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()  # none left: Enter keeps it so
-    assert "Enter — оставить без каналов" in asked[1]
-
-
 # --- 🧹 Очистить: the bases only ever added to, moved out of the project's way -------------------------
 
 def _members_base(tmp_path, name, rows=2):
     path = tmp_path / f"{name}_participants_members.parquet"
     pd.DataFrame({"ID": range(rows), "Access Hash": range(rows)}).to_parquet(path)
     return path
+
+
+def test_bot_card_sums_up_the_workers_warmup_and_the_base():
+    from pathlib import Path
+
+    project = projects.add("Green", ["@a"])
+    sessions = Path(conftest.home()) / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "w1.session").touch()
+    card = _SCallback()
+    asyncio.run(_router().show_card(card.message, _State(), _in("Green", _pool_of(str(sessions / "w1.session"))),
+                                    project))
+    text = card.message.answers[0][0]
+    assert "🤖 Воркеров: 1 · ✅ Прогрето 0 из 1\n\n🎯 Базы пока нет" in text
+
+
+def test_base_line_counts_the_records_whom_the_mailing_wrote_to_and_the_contacts(tmp_path):
+    from modules import contacts_ledger, json_file
+
+    project = projects.add("Clients", [])
+    assert projects.base_line(project) == ("🎯 Базы пока нет — сначала «▶️ Скрап», «👥 Участники групп» "
+                                           "или «📄 Свой список».")
+    _members_base(tmp_path, "Clients", rows=3)
+    projects.add_to_list("Clients", ["@anna_k", "@bobby"])
+    # written to: a count; one no worker can reach is kept with none (pmmailing.record_gone)
+    json_file.save(f"{projects.home(project)}/pm_mailing.json",
+                   {"1": {"count": 1}, "2": {"count": 2}, "3": {"count": 0, "gone": "2026-01-01"}})
+    contacts_ledger.save(projects.home(project), {"1": 111})
+    assert projects.base_line(project) == "🎯 База: записей 5 · написали 2 · в контактах 1"
+    text = projects.base_text(project, html=True)
+    assert text.startswith("🎯 База: записей 5") and "• participants · members · 3" in text and "• list · 2" in text
 
 
 def test_clear_moves_the_file_to_previous_where_it_can_be_taken_back(tmp_path):
@@ -1651,24 +1368,24 @@ def test_bot_clears_a_list_after_its_confirmation(tmp_path):
     router = _router()
     projects.add("Clients", [])
     state = _State({"project_name": "Clients"})
-    manage = _SCallback()
-    asyncio.run(_press(manage, "manage", state))
-    assert "🧹 Очистить базу" not in _buttons(manage.message.edits[0][1])  # nothing to clear yet
+    base = _SCallback()
+    asyncio.run(_press(base, "base", state))
+    assert "🧹 Очистить базу" not in _buttons(base.message.edits[0][1])  # nothing to clear yet
 
     _members_base(tmp_path, "Clients", rows=3)
     projects.add_to_list("Clients", ["@anna_k", "@bobby"])
     ask = _SCallback()
     asyncio.run(_press(ask, "clear", state))
-    text, offer = ask.message.edits[0]  # in ⚙️'s place
+    text, offer = ask.message.edits[0]  # in 📨's place
     assert "Clients_previous/" in text and _buttons(offer) == ["🧹 Участники групп · 3", "🧹 Список · 2",
-                                                               "↩️ Отмена"]
+                                                               "✖️ Отмена"]
 
     def tap(label):  # a button of the confirmation shown last
         return ChoiceCB.unpack(next(b for row in offer.inline_keyboard for b in row if b.text == label).callback_data)
 
     back = _SCallback()
-    asyncio.run(router.project_clear(back, tap("↩️ Отмена"), state, conftest.Workspaces(scrapes=JobManager())))
-    assert back.message.edits[0][0].startswith("📁 <b>Clients</b> › <b>🛠 Управление</b>")
+    asyncio.run(router.project_clear(back, tap("✖️ Отмена"), state, conftest.Workspaces(scrapes=JobManager())))
+    assert back.message.edits[0][0].startswith("📁 <b>Clients</b> › <b>🎯 База и рассылка</b>")
     assert scraped_files.list_path("Clients").exists()
 
     asyncio.run(_press(ask, "clear", state))
@@ -1678,15 +1395,15 @@ def test_bot_clears_a_list_after_its_confirmation(tmp_path):
     text, markup = done.message.edits[0]
     assert text.startswith("✅ Очищено: список. Файл — в ") and "Clients_previous" in text
     assert not scraped_files.list_path("Clients").exists() and scraped_files.members_base("Clients").exists()
-    assert f"› <b>{MANAGE}</b>" in text  # 🛠 Управление, under the note
+    assert f"› <b>{BASE}</b>" in text  # 🎯 База и рассылка, under the note
 
     stale = _AlertCallback()  # the confirmation's button once another card is shown: nothing cleared
     asyncio.run(router.project_clear(stale, tap("🧹 Участники групп · 3"), state,
                                      conftest.Workspaces(scrapes=JobManager())))
     assert stale.alerts[0][0].startswith("Кнопка устарела") and scraped_files.members_base("Clients").exists()
-    manage = _SCallback()
-    asyncio.run(_press(manage, "manage", state))
-    text, markup = manage.message.edits[0]
+    base = _SCallback()
+    asyncio.run(_press(base, "base", state))
+    text, markup = base.message.edits[0]
     assert "🧹 Очистить базу" in _buttons(markup)  # the members' base is left
     assert "<b>🧹 Очистить базу</b> — участники групп или загруженный список уходят в " \
            "&lt;имя&gt;_previous/, оттуда их можно вернуть" in text
@@ -1709,24 +1426,6 @@ def test_bot_wont_clear_while_members_are_collected(tmp_path):
                             True)]
     assert busy.message.answers == [] and busy.message.edits == []
     assert scraped_files.members_base("Clients").exists()
-
-
-def test_cli_clears_after_its_confirmation(monkeypatch, tmp_path):
-    from functions import projects as cli
-
-    projects.add("Clients", [])
-    _members_base(tmp_path, "Clients")
-    printed = []
-    monkeypatch.setattr(cli.TelethonFunction, "ask_int", staticmethod(lambda *a, **k: 1))  # the project, its base
-    monkeypatch.setattr(cli.console, "print", lambda text="", *a, **k: printed.append(str(text)))
-    _answers(monkeypatch, cli, texts=["13"], bools=[False])  # 🧹, then no
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert scraped_files.members_base("Clients").exists()
-
-    _answers(monkeypatch, cli, texts=["13"], bools=[True])
-    cli.ProjectsFunc(FakeStorage(), FakeSettings()).execute()
-    assert not scraped_files.members_base("Clients").exists()
-    assert any(line.startswith("Очищено: участники групп.") for line in printed)
 
 
 # --- the chats by name everywhere, as on the card ----------------------------------------------------
@@ -1769,3 +1468,30 @@ def test_the_groups_of_members_get_named_on_the_project(monkeypatch):
     monkeypatch.setattr(scraping.members, "_members_ready", ready)
     asyncio.run(scraping.members.members_chats(_SMsg(text="@grp"), state, _pool(), None, None))
     assert went and projects.find("Green").chat("@grp").title == "«Группа»"
+
+
+def test_bot_a_delete_or_clear_confirmation_left_too_long_does_nothing(tmp_path):
+    import datetime
+
+    router = _router()
+    projects.add("Clients", [])
+    _members_base(tmp_path, "Clients")
+    state = _State({"project_name": "Clients"})
+    long_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+
+    confirm = _SCallback()
+    asyncio.run(_press(confirm, "delete", state))
+    late = _AlertCallback()
+    late.message.date = late.message.edit_date = long_ago  # asked an hour ago, in the screen's place
+    asyncio.run(router.project_delete(late, ChoiceCB(scope="prj_del", value=_delete_value(confirm)), state,
+                                      conftest.Workspaces()))
+    assert late.alerts == [("Подтверждение устарело — нажмите «🗑 Удалить» заново.", True)] and projects.load()
+
+    ask = _SCallback()
+    asyncio.run(_press(ask, "clear", state))
+    members = ChoiceCB.unpack(ask.message.edits[0][1].inline_keyboard[0][0].callback_data)
+    late = _AlertCallback()
+    late.message.date = late.message.edit_date = long_ago
+    asyncio.run(router.project_clear(late, members, state, conftest.Workspaces(scrapes=JobManager())))
+    assert late.alerts == [("Подтверждение устарело — нажмите «🧹 Очистить базу» заново.", True)]
+    assert scraped_files.members_base("Clients").exists()

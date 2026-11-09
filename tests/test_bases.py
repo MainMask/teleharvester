@@ -2,19 +2,20 @@
 
 import asyncio
 import conftest
+import html
 import os
 import types
 from pathlib import Path
 
 import pandas as pd
 
-from bot.callbacks import ChoiceCB
+from bot.callbacks import ChoiceCB, NavCB
 from bot.keyboards.common import cancel_kb
 from bot.routers import audience, mailing
 from bot.routers import scraping as scraping_router
 from bot.services import scraping
 from bot.states import Analysis, Verify
-from modules import scraped_files
+from modules import analysis_tools, scraped_files
 
 
 def ns(**kw):
@@ -123,7 +124,7 @@ def test_mailing_without_bases_offers_the_default_list_and_cancel(tmp_path, monk
     asyncio.run(mailing.ask_recipients(callback.message, _State(), []))  # a project with no base yet
     text, markup = callback.message.answers[0]
     assert [b.text for b in _buttons(markup)] == ["📄 assets/targets.txt", "✖️ Отмена"] and text.startswith(
-        "📨 ЛС по базе — выберите базу ниже")  # its default list, a button too
+        "📨 Рассылка — выберите базу ниже")  # its default list, a button too
 
 
 def test_contacts_button_launches_with_the_picked_base(tmp_path, monkeypatch):
@@ -537,7 +538,7 @@ def _checked_storage(monkeypatch, tmp_path, sessions):
 
     monkeypatch.setattr(BaseFunction, "check_workers", conftest.REAL_CHECK_WORKERS)
     (tmp_path / "sessions").mkdir(exist_ok=True)
-    storage = SessionsStorage(str(tmp_path / "sessions"), 1, "x", initialize=False, home=conftest.home())
+    storage = SessionsStorage(str(tmp_path / "sessions"), 1, "x", home=conftest.home())
     for s in sessions:
         open(s.path, "w").write("x")
         storage.full_sessions[s.path] = s
@@ -560,7 +561,7 @@ def test_preflight_excludes_a_permanently_restricted_worker(monkeypatch, tmp_pat
     assert "Пропущено бессрочно ограниченных воркеров: 1" in msgs
     assert any("его контакты (1) ждут решения" in m for m in msgs)
     assert ("Контакты бессрочно ограниченных воркеров ждут решения (1 чел.): "
-            "📁 Проекты → проект → 🤖 Аккаунты → 🛡 Проверка SpamBot") in msgs
+            "📁 Проекты → проект → 🤖 Аккаунты → 📋 Список → 🩺 SpamBot") in msgs
     assert not any(m.startswith("✅") for m in msgs)
 
 
@@ -824,16 +825,14 @@ def test_analysis_menu_is_russian():
     asyncio.run(scraping_router.analysis.analysis_project(msg, state, ns(name="Omni", id=1)))
     text, markup = msg.answers[0]
     labels = [b.text for b in _buttons(markup)]
-    assert labels == ["🔗 Ссылки на другие каналы", "🔎 Поиск постов по словам", "👀 Посмотреть файл", "➕ Ещё",
-                      "⬅️ 📥 Сбор"]
+    # every tool on one screen, then the one way back: to 📥 Сбор, in place
+    assert labels == ["🔗 Ссылки на другие каналы", "🔎 Поиск постов по словам", "👀 Посмотреть файл",
+                      "🧩 Объединить файлы постов", "💬 Комментарии одной таблицей", "📊 Активность по месяцам",
+                      "🎲 Случайная выборка постов", "👥 Пересобрать базу участников", "⬅️ Назад"]
+    assert NavCB.unpack(_buttons(markup)[-1].callback_data) == NavCB(screen="📥 Сбор", project=1)
     assert "Аккаунты не нужны" in text
-
-    more = _Callback()
-    token = state.data["analysis_token"]
-    asyncio.run(scraping_router.analysis.analysis_tool(more, ChoiceCB(scope="an_tool", value=f"more.{token}"), state))
-    assert [b.text for b in _buttons(more.message.answers[0][1])] == [
-        "🧩 Объединить файлы постов", "💬 Комментарии одной таблицей",
-        "📊 Активность по месяцам", "🎲 Случайная выборка постов", "👥 Пересобрать базу участников", "⬅️ Назад"]
+    for label, hint, *_ in analysis_tools.TOOLS.values():  # each tool with what it does, as a screen's
+        assert f"<b>{label}</b> — {html.escape(hint)}" in text
 
 
 def test_output_path_next_to_the_input():

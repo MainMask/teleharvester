@@ -1,4 +1,4 @@
-"""One teleharvester process per folder: the terminal menu and the bot drive the same worker
+"""One teleharvester process per folder: the bot and the session scripts (sessions/) drive the same worker
 sessions (one auth key from two processes) and rewrite the same stats/ files, and a bot start
 sweeps tmp/ (the running one's broadcast media). The OS drops the lock on any exit, a crash too."""
 import os
@@ -22,13 +22,13 @@ def hold():
 
     os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
     # read-only: flock needs no write access, so a file left by another user (`sudo python
-    # main.py` once) doesn't stop the bot's start
+    # sessions/login.py` once) doesn't stop the bot's start
     fd = os.open(LOCK_PATH, os.O_RDONLY | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         os.close(fd)
-        sys.exit("teleharvester уже запущен в этой папке (бот или терминальное меню). "
+        sys.exit("teleharvester уже запущен в этой папке (бот или скрипт из sessions/). "
                  "Сначала остановите его, например `systemctl stop teleharvester-bot`: вместе они "
                  "использовали бы одни и те же сессии воркеров и перезаписывали бы stats/ друг друга.")
     _held = fd

@@ -9,18 +9,15 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.callbacks import FunctionCB, MenuAction, MenuCB, NavCB
-from modules.registry import CARD, MAIN_MENU, SCREENS, by_category, children, in_project, risk_marker
+from modules.registry import CARD, MAIN_MENU, SCREENS, children, entries, in_project
 
 
 def main_menu() -> ReplyKeyboardMarkup:
-    """The main-menu screens two to a row: the projects and the settings on top, 📊 Задачи under them
-    (registry SCREENS order)."""
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=title) for title in MAIN_MENU[i:i + 2]] for i in range(0, len(MAIN_MENU), 2)],
-        resize_keyboard=True,
-    )
+    """The main-menu screens in one row, in registry SCREENS order."""
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=title) for title in MAIN_MENU]], resize_keyboard=True)
 
 
+REFRESH = "🔄 Обновить"  # a live screen anew in its place (registry Screen.refresh)
 SHORT = 16  # two labels this short fit side by side on a phone; a longer one gets its own row
 
 
@@ -34,43 +31,59 @@ def _widths(labels: list[str]) -> list[int]:
     return widths
 
 
-def screen_kb(title: str, project: int = 0, hidden=(), titles: dict | None = None) -> InlineKeyboardMarkup:
-    """A screen's buttons: its actions, its functions (each subheading on new rows) — two short ones in a
-    row —, the screens opened from it two in a row; ⬅️ back to its parent on a row of its own. A project's
-    screen's buttons carry its `project` (bot/callbacks.py); without the `hidden` actions, `titles` in
-    place of some actions' own."""
+def screen_kb(title: str, project: int = 0, hidden=(), titles: dict | None = None,
+              own: list[list[InlineKeyboardButton]] = ()) -> InlineKeyboardMarkup:
+    """A screen's buttons: its actions, then its functions, each on new rows — but those under one subheading
+    together (registry.entries; their ⚠️ in the screen's text only, screens.screen_text) — two short ones in a
+    row —, its view's `own` rows (registry Screen.own_buttons), the screens opened from it two in a row; on the
+    last row 🔄 Обновить (registry Screen.refresh) and ⬅️ back to its parent. A project's screen's buttons carry
+    its `project` (bot/callbacks.py); without the `hidden` actions and functions, `titles` in place of some
+    actions' own."""
     builder = InlineKeyboardBuilder()
     widths = []
 
-    shown = [button for button in SCREENS[title].buttons if button.action not in hidden]
-    actions = [(titles or {}).get(button.action, button.title) for button in shown]
-    for button, label in zip(shown, actions):
-        builder.button(text=label, callback_data=MenuCB(action=MenuAction(button.action), project=project))
-    widths += _widths(actions)
-
-    functions = by_category(title)
-    for _, run in groupby(functions, key=lambda function: function.group):
+    for _, run in groupby(entries(title, hidden, titles), key=lambda entry: entry.group or entry.function):
         labels = []
-        for function in run:
-            labels.append(f"{risk_marker(function, functions)}{function.title}")
-            builder.button(text=labels[-1], callback_data=FunctionCB(key=function.key, project=project))
+        for entry in run:
+            labels.append(entry.label)
+            builder.button(text=entry.label, callback_data=FunctionCB(key=entry.key, project=project)
+                           if entry.function else MenuCB(action=MenuAction(entry.key), project=project))
         widths += _widths(labels)
+
+    for row in own:
+        for item in row:
+            builder.add(item)
+        widths.append(len(row))
 
     opened = children(title)
     for child in opened:
         builder.button(text=f"{child} ›", callback_data=NavCB(screen=child, project=project))
     widths += [2] * (len(opened) // 2) + [1] * (len(opened) % 2)
 
-    if parent := SCREENS[title].parent:
-        builder.button(text="⬅️ Назад", callback_data=NavCB(screen=parent, project=project if in_project(parent) else 0))
-        widths.append(1)
+    last = [nav_button(REFRESH, title, project)] if SCREENS[title].refresh else []
+    if SCREENS[title].parent:
+        last.append(back_button(title, project))
+    for item in last:
+        builder.add(item)
+    if last:
+        widths.append(len(last))
     builder.adjust(*widths)
     return builder.as_markup()
+
+
+def back_button(title: str, project: int = 0) -> InlineKeyboardButton:
+    """⬅️ Назад of a screen: to its parent (registry SCREENS), its project's if the parent is a project's."""
+    parent = SCREENS[title].parent
+    return nav_button("⬅️ Назад", parent, project if in_project(parent) else 0)
+
+
+def nav_button(text: str, screen: str, project: int = 0, fresh: bool = False) -> InlineKeyboardButton:
+    """A button opening a screen (its project's: `project`); `fresh`: as a new message, this one stays."""
+    return InlineKeyboardButton(text=text, callback_data=NavCB(screen=screen, project=project, fresh=fresh).pack())
 
 
 def back_kb(screen: str, project: int = 0, fresh: bool = True) -> InlineKeyboardMarkup:
     """⬅️ to the screen a job or a form was started from, once it is over (its project's: `project`); `fresh`:
     the screen comes as a new message, this one (a report) stays."""
     label = "⬅️ К проекту" if screen == CARD else f"⬅️ {screen}"
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-        text=label, callback_data=NavCB(screen=screen, project=project, fresh=fresh).pack())]])
+    return InlineKeyboardMarkup(inline_keyboard=[[nav_button(label, screen, project, fresh)]])

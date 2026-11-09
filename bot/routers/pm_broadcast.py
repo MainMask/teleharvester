@@ -1,5 +1,3 @@
-import re
-
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -10,6 +8,7 @@ from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, busy_step, r
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PmBroadcast
+from functions.pmbroadcast import is_phone
 from modules import login as sign_in
 from modules.registry import ACTIVITY, title
 
@@ -22,17 +21,15 @@ async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
                      "@username, ссылку t.me или номер телефона:", pool)
 
 
-def is_phone(peer: str) -> bool:
-    """A phone number (+7 999 123-45-67), not a @username or a t.me link: a username never starts with a digit."""
-    return re.fullmatch(r"\+?[\d\s()-]+", peer) is not None and sign_in.normalize_phone(peer) is not None
-
-
 @router.message(PmBroadcast.peer)
 async def got_peer(message: Message, state: FSMContext):
     peer = await require_text(message)
     if peer is None:
         return
-    await state.update_data(peer=peer, by_phone=is_phone(peer))
+    by_phone = is_phone(peer)
+    if by_phone:  # digits only, as the mailing's list keeps a number: no spaces, brackets or dashes for Telegram
+        peer = "+" + sign_in.normalize_phone(peer)
+    await state.update_data(peer=peer, by_phone=by_phone)
     await state.set_state(PmBroadcast.message)
     await message.answer(SEND_MESSAGE_PROMPT, reply_markup=cancel_kb(PmBroadcast.message))
 

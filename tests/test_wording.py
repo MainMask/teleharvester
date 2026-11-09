@@ -54,52 +54,6 @@ def test_bot_report_asks_the_numbers_for_a_chat_link_and_takes_them_typed():
     assert state.data["ids"] == [12, 13] and typed.answers[0][0] == moderation.COMMENT_ASK
 
 
-def test_cli_report_takes_the_post_from_its_link(monkeypatch):
-    from functions import report
-
-    class Stop(Exception):
-        pass
-
-    asked, answers = [], iter(["https://t.me/name/123", ""])  # the link, then Enter: the default
-
-    def ask(prompt, default=None, **kwargs):
-        asked.append(default)
-        return next(answers) or default
-
-    def stop(*args, **kwargs):  # the comment: nothing past it is run here
-        raise Stop
-
-    monkeypatch.setattr(report.Prompt, "ask", ask)
-    monkeypatch.setattr(report.console, "input", stop)
-    func = report.ReportFunc(types.SimpleNamespace(sessions=[object()]), types.SimpleNamespace(delay=[0]))
-    monkeypatch.setattr(func, "ask_int", lambda *args, **kwargs: 1)
-    with pytest.raises(Stop):
-        asyncio.run(func.execute())
-    assert asked == [None, "123"]
-
-
-def test_cli_report_asks_again_when_a_link_has_no_post_and_enter_is_pressed(monkeypatch):
-    from functions import report
-
-    class Stop(Exception):
-        pass
-
-    answers = iter(["@chan", "", "5"])  # a channel's link: no post to default to; Enter; then a number
-
-    def ask(prompt, default=None, **kwargs):  # as rich: Enter gives the default, None here
-        return next(answers) or default
-
-    def stop(*args, **kwargs):
-        raise Stop
-
-    monkeypatch.setattr(report.Prompt, "ask", ask)
-    monkeypatch.setattr(report.console, "input", stop)  # reached only once the posts are taken
-    func = report.ReportFunc(types.SimpleNamespace(sessions=[object()]), types.SimpleNamespace(delay=[0]))
-    monkeypatch.setattr(func, "ask_int", lambda *args, **kwargs: 1)
-    with pytest.raises(Stop):
-        asyncio.run(func.execute())
-
-
 def test_the_mention_buttons_name_as_many_as_are_mentioned():
     from bot.routers.chat_broadcasts import MMODE_OPTIONS
     from functions.broadcast import MENTION_ADMINS, MENTION_USERS
@@ -154,7 +108,7 @@ def test_the_user_is_addressed_formally_everywhere():
     found = []
     for path in sorted(glob.glob("bot/**/*.py", recursive=True) + glob.glob("functions/**/*.py", recursive=True)
                        + glob.glob("modules/**/*.py", recursive=True) + glob.glob("scraper/**/*.py", recursive=True)
-                       + ["main.py"]):
+                       + glob.glob("sessions/*.py")):
         for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and informal.search(node.value):
                 found.append(f"{path}:{node.lineno}: {informal.search(node.value).group()}")

@@ -172,19 +172,6 @@ class TestStatsSaveBatching:
         assert len(data) == 60  # tail flushed: every success persisted
 
 
-def test_recipients_with_rich_markup_are_printed_as_is(monkeypatch):
-    # a .txt line is the operator's text: "[/]" in it must not be a MarkupError
-    from rich.console import Console
-
-    console = Console(width=120)
-    monkeypatch.setattr(pm, "console", console)
-    fn = _fn()
-    fn.stats = {"[/]user": {"count": 1, "last_date": "2026-01-01 00:00:00"}}
-    with console.capture() as capture:
-        fn.print_stats()
-    assert "[/]user" in capture.get()
-
-
 class _Worker:
     """A stub worker: answer(ids) is its users.getRequirementsToContact reply, refuse an
     error its sends raise; `sent` collects whom it wrote to (a user id or a username)."""
@@ -418,17 +405,6 @@ class TestGoneRecipients:
         rows = [{"user_id": 5, "access_hash": 1, "username": "x"}, {"user_id": 6, "access_hash": 1, "username": "bob"}]
 
         assert fn.drop_gone(["@Bob", "@bob", "@ann", *rows]) == ["@ann", rows[1]]  # a base row: by its id
-
-    def test_the_stats_table_marks_the_gone_ones(self, monkeypatch):
-        from rich.console import Console
-
-        console = Console(width=160)
-        monkeypatch.setattr(pm, "console", console)
-        fn = _fn()
-        fn.stats = {"7": {"count": 2, "last_date": "2026-05-01 10:00:00", "gone": "2026-10-01 10:00:00"}}
-        with console.capture() as capture:
-            fn.print_stats()
-        assert "недоступен с 2026-10-01" in capture.get()  # mailed before, gone since: still marked
 
 
 def _premium_only_for(*ids):

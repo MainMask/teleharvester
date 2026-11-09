@@ -16,12 +16,12 @@ DEFAULT_DB = "assets/contacts.parquet"
 
 
 async def ask_base(message: Message, state: FSMContext, bases: list[tuple[str, str]]):
-    """The base to add to contacts, from a project's 📨 База и рассылка (bot/routers/projects/card.py): by button
+    """The base to add to contacts, from a project's 🎯 База и рассылка (bot/routers/projects/card.py): by button
     (`bases`: the project's) or a path."""
     await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(AddContacts.path)
     await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
-    await message.edit_text(  # in 📨 База и рассылка's place, as a choice by button
+    await message.edit_text(  # in 🎯 База и рассылка's place, as a choice by button
         f"{title('addcontacts')} — выберите базу ниже или пришлите путь к .parquet на сервере:",
         reply_markup=cancel_kb(AddContacts.path, choice_kb(
             "contacts_base", [*((f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)),

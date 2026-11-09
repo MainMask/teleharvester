@@ -3,6 +3,7 @@
 import asyncio
 import conftest
 import json
+import os
 import types as pytypes
 from datetime import datetime
 
@@ -83,7 +84,7 @@ class FakeClient:
 
 
 class FakePool:
-    def __init__(self, clients, busy=(), scraping=None):
+    def __init__(self, clients, busy=(), scraping=None, home=None):
         self.workers = list(clients)
         self._paths = {id(c): f"sessions/w{i}.jsession" for i, c in enumerate(clients)}
         self._busy = set(busy)
@@ -91,7 +92,7 @@ class FakePool:
         self.scraping = pytypes.SimpleNamespace(path=scraping) if scraping else None
         self.storage = pytypes.SimpleNamespace(
             get_session_path=lambda c: self._paths[id(c)],
-            usernames={},
+            usernames={}, directory="sessions", home=home or conftest.home(),
         )
 
     def busy(self, path):  # as WorkerPool.busy
@@ -332,8 +333,9 @@ def test_reply_stats():
         "sessions/a.jsession:1": "2026-10-06 11:00:00",
         "sessions/a.jsession:2": "2026-10-03 12:00:00",
         "sessions/b.jsession:3": "2026-09-01 12:00:00",
+        "projects/2/sessions/c.jsession:4": "2026-10-06 11:00:00",  # another project's worker: not counted
     }
-    stats = autoreply.reply_stats(replied, datetime(2026, 10, 6, 12, 0, 0))
+    stats = autoreply.reply_stats(replied, datetime(2026, 10, 6, 12, 0, 0), "sessions")
     assert (stats["total"], stats["day"], stats["week"]) == (3, 1, 2)
     assert stats["per_worker"] == {"sessions/a.jsession": 2, "sessions/b.jsession": 1}
 
@@ -503,14 +505,40 @@ def test_loop_polls_only_while_on(monkeypatch, enabled, text, polled):
     assert rounds == ([TEXT, TEXT] if polled else [])
 
 
+def test_the_loop_answers_with_each_project_s_own_text_and_skips_the_ones_off(monkeypatch, tmp_path):
+    rounds = []
+
+    async def fake_poll(pool, reply_text, replied, notify):
+        rounds.append((pool.storage.home, reply_text))
+
+    async def fake_sleep(seconds):
+        if sleeps:
+            raise asyncio.CancelledError
+        sleeps.append(seconds)
+
+    sleeps = []
+    monkeypatch.setattr(autoreply, "poll_once", fake_poll)
+    monkeypatch.setattr(autoreply.asyncio, "sleep", fake_sleep)
+    own, off, default = (str(tmp_path / name) for name in ("own", "off", "default"))
+    autoreply.save_project_settings(own, True, "свой текст")
+    autoreply.save_project_settings(off, False, "выключен")
+    workspaces = pytypes.SimpleNamespace(all=lambda: [pytypes.SimpleNamespace(pool=FakePool([], home=home))
+                                                      for home in (own, off, default)])
+    settings = pytypes.SimpleNamespace(autoreply_enabled=True, autoreply_text=TEXT, autoreply_interval=900)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(autoreply._loop(FakeBot(), workspaces, settings, {1}))
+    # a project without its own: config.toml's
+    assert rounds == [(own, "свой текст"), (default, TEXT)]
+
+
 # --- config.toml writes and the bot screen -------------------------------------------
 
 import toml  # noqa: E402
 
-from bot.callbacks import NavCB  # noqa: E402
+from bot.callbacks import AutoreplyCB, NavCB  # noqa: E402
 from bot.states import origin  # noqa: E402
 from bot.keyboards.menu import screen_kb  # noqa: E402
-from modules.registry import AUTOREPLY, SETTINGS  # noqa: E402
+from modules.registry import AUTOREPLY, BASE, SETTINGS  # noqa: E402
 from bot.routers import autoreply as screen  # noqa: E402
 
 
@@ -540,36 +568,31 @@ def test_settings_default_on_but_textless(tmp_path, monkeypatch):
     assert settings.autoreply_enabled and settings.autoreply_text == "" and settings.autoreply_interval == 900
 
 
-def test_set_text_adds_the_missing_section_and_keeps_the_rest(tmp_path, monkeypatch):
+def test_a_setting_adds_its_missing_section_and_keeps_the_rest(tmp_path, monkeypatch):
     settings = settings_with(tmp_path, monkeypatch)
-    tricky = 'Спасибо! "Пишите" @MainMask \\ 🙂\nвторая строка\tтаб'
-    settings.set_autoreply_text(tricky)
+    settings.set_daily_cap("per_account_daily", 30)
 
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
-    assert toml.loads(text)["autoreply"]["text"] == tricky and settings.autoreply_text == tricky
+    assert toml.loads(text)["limits"]["per_account_daily"] == 30 and settings.per_account_daily == 30
     assert "admins = [1]  # keep me\n" in text  # only appended: comments survive
     assert text.startswith(CONFIG)
 
 
-def test_set_text_and_toggle_rewrite_only_their_lines(tmp_path, monkeypatch):
-    settings = settings_with(tmp_path, monkeypatch, CONFIG + (
-        "\n[autoreply]\n"
-        "enabled = true  # on/off\n"
-        'text = "old \\"quoted\\""  # the reply\n'
-        "interval = 900\n"
-    ))
-    settings.set_autoreply_text("new")
-    settings.set_autoreply_enabled(False)
+def test_a_tricky_text_rewrites_only_its_line(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, monkeypatch, CONFIG.replace('trigger = ""\n', 'trigger = "old"  # the word\n'))
+    tricky = 'Спасибо! "Пишите" @MainMask \\ 🙂\nвторая строка\tтаб'
+    settings.set_trigger(tricky)
 
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
-    assert 'text = "new"  # the reply\n' in text and "enabled = false  # on/off\n" in text
-    assert "interval = 900\n" in text and not settings.autoreply_enabled
+    assert toml.loads(text)["broadcast"]["trigger"] == tricky and settings.trigger == tricky
+    assert "  # the word\n" in text and "delay = [5, 10]\n" in text
 
 
-def test_set_enabled_adds_the_key_under_an_existing_section(tmp_path, monkeypatch):
-    settings = settings_with(tmp_path, monkeypatch, CONFIG + '\n[autoreply]\ntext = "hi"\n')
-    settings.set_autoreply_enabled(False)
-    assert toml.load(tmp_path / "config.toml")["autoreply"] == {"enabled": False, "text": "hi"}
+def test_a_setting_adds_its_key_under_an_existing_section(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, monkeypatch, CONFIG + "\n[limits]\nprofile_pause = [60, 180]\n")
+    settings.set_daily_cap("invite_per_account_daily", 5)
+    assert toml.load(tmp_path / "config.toml")["limits"] == {"profile_pause": [60, 180],
+                                                              "invite_per_account_daily": 5}
 
 
 def test_set_delay_still_rewrites_its_line(tmp_path, monkeypatch):
@@ -616,61 +639,76 @@ def _workspaces():
     return pytypes.SimpleNamespace(username={"sessions/a.jsession": "worker_a"}.get)
 
 
-def test_the_settings_have_the_autoreply_button_and_it_leads_back_there(tmp_path, monkeypatch):
+PROJECT = pytypes.SimpleNamespace(project_id=3)
+
+
+def _own(home=None) -> dict:
+    """What the project's autoreply.json holds ({} without one)."""
+    path = os.path.join(home or conftest.home(), autoreply.SETTINGS_NAME)
+    return json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+
+
+def _screen(settings, pool=None):
+    callback = _Callback()
+    asyncio.run(screen.autoreply_screen(callback.message, _State(), True, settings, pool or FakePool([]), PROJECT,
+                                        _workspaces()))
+    return callback.message.edits[0]
+
+
+def test_the_autoreply_is_a_screen_of_the_project_s_base_and_leads_back_there(tmp_path, monkeypatch):
     from bot.routers import menu, settings as settings_screen  # noqa: F401 — its view registered
 
-    # a screen of the settings' (its ✖️ of the text comes back to it: bot/states.origin)
-    opened = [NavCB.unpack(b.callback_data).screen for row in screen_kb(SETTINGS).inline_keyboard
+    # a screen of 🎯 База и рассылка (its ✖️ of the text comes back to it: bot/states.origin), not of ⚙️ Настройки
+    opened = [NavCB.unpack(b.callback_data).screen for row in screen_kb(BASE, 3).inline_keyboard
               for b in row if b.callback_data.startswith("nav:")]
     assert AUTOREPLY in opened and origin("SetAutoreplyText:input", {}) == AUTOREPLY
+    assert AUTOREPLY not in [NavCB.unpack(b.callback_data).screen for row in screen_kb(SETTINGS).inline_keyboard
+                             for b in row if b.callback_data.startswith("nav:")]
     settings = settings_with(tmp_path, monkeypatch)
-    callback = _Callback()
-    asyncio.run(screen.autoreply_screen(callback.message, _State(), True, settings, _workspaces()))
-    back = callback.message.edits[0][1].inline_keyboard[-1][0]
-    assert back.text == "⬅️ Назад" and NavCB.unpack(back.callback_data).screen == SETTINGS
+    text, markup = _screen(settings)
+    back = markup.inline_keyboard[-1][-1]
+    assert back.text == "⬅️ Назад" and NavCB.unpack(back.callback_data) == NavCB(screen=BASE, project=3)
+    # its buttons act on their project, whichever the chat is in by then
+    assert {(NavCB if b.callback_data.startswith("nav:") else AutoreplyCB).unpack(b.callback_data).project
+            for row in markup.inline_keyboard for b in row} == {3}
+    # its stats grow as people answer: 🔄 shows the screen anew, in its place
+    refresh = next(b for row in markup.inline_keyboard for b in row if b.text == "🔄 Обновить")
+    assert NavCB.unpack(refresh.callback_data) == NavCB(screen=AUTOREPLY, project=3)
 
-    asyncio.run(menu.open_by_button(callback, NavCB(screen=SETTINGS), _State(), settings=settings))  # in place
-    text, markup = callback.message.edits[1]
-    assert text.startswith("<b>⚙️ Настройки</b>") and "автоответ <b>выключен</b>" in text
-    assert markup == screen_kb(SETTINGS)
+    callback = _Callback()
+    asyncio.run(menu.open_by_button(callback, NavCB(screen=SETTINGS), _State(), settings=settings))
+    assert "автоответ" not in callback.message.edits[0][0]  # each project's own: not a ⚙️ setting
 
 
 def test_a_very_long_text_still_fits_the_screen(tmp_path, monkeypatch):
     settings = settings_with(tmp_path, monkeypatch)
-    settings.set_autoreply_text("&" * 5000)  # config.toml may be edited by hand: no input limit there
-    callback = _Callback()
-    asyncio.run(screen.autoreply_screen(callback.message, _State(), True, settings, _workspaces()))
-
-    text, _ = callback.message.edits[0]
+    autoreply.save_project_settings(conftest.home(), True, "&" * 5000)  # the file may be edited by hand
+    text, _ = _screen(settings)
     assert len(text) <= 4096 and "&amp;…</blockquote>" in text  # escaped after it is cut
 
 
 def test_a_long_save_error_fits_the_alert(tmp_path, monkeypatch):
-    settings = settings_with(tmp_path, monkeypatch)
-    settings.set_autoreply_text("hi")
+    settings = settings_with(tmp_path, monkeypatch, CONFIG + '\n[autoreply]\ntext = "hi"\n')
 
-    def broken(enabled):
+    def broken(home, enabled, text):
         raise OSError("x" * 500)
 
-    monkeypatch.setattr(settings, "set_autoreply_enabled", broken)
+    monkeypatch.setattr(autoreply, "save_project_settings", broken)
     callback = _Callback()
-    asyncio.run(screen.autoreply_toggle(callback, settings, _workspaces()))
+    asyncio.run(screen.autoreply_toggle(callback, settings, FakePool([]), PROJECT, _workspaces()))
     assert len(callback.alerts[0]) <= 200  # Telegram refuses a longer one: the tap would get no answer
 
 
-def test_screen_shows_status_text_and_stats(tmp_path, monkeypatch):
-    settings = settings_with(tmp_path, monkeypatch)
-    settings.set_autoreply_text("пишите <@MainMask>")
-    autoreply.save_replied({"sessions/a.jsession:1": datetime.now().strftime(autoreply.TIME_FORMAT),
-                            "sessions/b.jsession:2": "2020-01-01 00:00:00"})
-    callback = _Callback()
-    asyncio.run(screen.autoreply_screen(callback.message, _State(), True, settings, _workspaces()))
-
-    text, markup = callback.message.edits[0]
-    assert "✅ включён" in text and "раз в 15 мин" in text
-    assert "пишите &lt;@MainMask&gt;" in text
+def test_screen_shows_status_text_and_the_project_s_stats(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, monkeypatch, CONFIG + '\n[autoreply]\ntext = "пишите <@MainMask>"\n')
+    now = datetime.now().strftime(autoreply.TIME_FORMAT)
+    autoreply.save_replied({"sessions/a.jsession:1": now, "sessions/b.jsession:2": "2020-01-01 00:00:00",
+                            "projects/9/sessions/c.jsession:3": now})  # another project's
+    text, markup = _screen(settings)
+    assert "<b>📬 Автоответ</b> — ✅ включён" in text and "раз в 15 мин" in text
+    assert "пишите &lt;@MainMask&gt;" in text  # config.toml's: the project has none of its own
     assert "всего 2 · за сутки 1 · за 7 дней 1" in text
-    assert "@worker_a — 1" in text and "b.jsession — 1" in text
+    assert "@worker_a — 1" in text and "b.jsession — 1" in text and "c.jsession" not in text
     assert markup.inline_keyboard[0][0].text == "⏸ Выключить"
 
 
@@ -687,10 +725,7 @@ def _buttons(markup):
 def test_screen_shows_the_top_workers_and_a_button_for_all(tmp_path, monkeypatch):
     settings = settings_with(tmp_path, monkeypatch)
     autoreply.save_replied(_replied_by(screen.TOP_WORKERS + 3))  # w12 13 answers ... w0 1
-    callback = _Callback()
-    asyncio.run(screen.autoreply_screen(callback.message, _State(), True, settings, _workspaces()))
-
-    text, markup = callback.message.edits[0]
+    text, markup = _screen(settings)
     shown = [line for line in text.splitlines() if line.startswith("• ")]
     assert len(shown) == screen.TOP_WORKERS and shown[0] == "• w12.jsession — 13"
     assert "…и ещё воркеров: 3, ответов у них: 6" in text  # w2, w1, w0: 3 + 2 + 1
@@ -700,10 +735,7 @@ def test_screen_shows_the_top_workers_and_a_button_for_all(tmp_path, monkeypatch
 def test_few_workers_no_button(tmp_path, monkeypatch):
     settings = settings_with(tmp_path, monkeypatch)
     autoreply.save_replied(_replied_by(screen.TOP_WORKERS))
-    callback = _Callback()
-    asyncio.run(screen.autoreply_screen(callback.message, _State(), True, settings, _workspaces()))
-
-    text, markup = callback.message.edits[0]
+    text, markup = _screen(settings)
     assert "и ещё воркеров" not in text and "📋 Все воркеры" not in _buttons(markup)
 
 
@@ -711,7 +743,7 @@ def test_all_workers_button_sends_every_worker_in_chunks(tmp_path, monkeypatch):
     settings_with(tmp_path, monkeypatch)
     autoreply.save_replied(_replied_by(300))  # ~6 000 characters: more than one message
     callback = _Callback()
-    asyncio.run(screen.autoreply_workers(callback, _workspaces()))
+    asyncio.run(screen.autoreply_workers(callback, FakePool([]), PROJECT, _workspaces()))
 
     answers = callback.message.answers
     assert len(answers) > 1 and all(len(chunk) <= 4096 for chunk in answers)
@@ -719,43 +751,44 @@ def test_all_workers_button_sends_every_worker_in_chunks(tmp_path, monkeypatch):
     assert len(lines) == 300 and lines[0] == "• w299.jsession — 300"
 
 
-def test_toggle_off_and_on(tmp_path, monkeypatch):
-    settings = settings_with(tmp_path, monkeypatch)
-    settings.set_autoreply_text("hi")
+def test_toggle_off_and_on_in_the_project_only(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, monkeypatch, CONFIG + '\n[autoreply]\ntext = "hi"\n')
+    config = (tmp_path / "config.toml").read_text(encoding="utf-8")
     callback = _Callback()
 
-    asyncio.run(screen.autoreply_toggle(callback, settings, _workspaces()))
-    assert not settings.autoreply_enabled and "⭕ выключен" in callback.message.edits[-1][0]
-    assert toml.load(tmp_path / "config.toml")["autoreply"]["enabled"] is False
+    asyncio.run(screen.autoreply_toggle(callback, settings, FakePool([]), PROJECT, _workspaces()))
+    assert _own() == {"enabled": False, "text": "hi"} and "⭕ выключен" in callback.message.edits[-1][0]
+    # config.toml: the default of the other projects, untouched
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == config
+    assert autoreply.project_settings(str(tmp_path / "other"), settings) == {"enabled": True, "text": "hi"}
 
-    asyncio.run(screen.autoreply_toggle(callback, settings, _workspaces()))
-    assert settings.autoreply_enabled
+    asyncio.run(screen.autoreply_toggle(callback, settings, FakePool([]), PROJECT, _workspaces()))
+    assert _own()["enabled"] is True
 
 
 def test_cannot_turn_on_without_text(tmp_path, monkeypatch):
-    settings = settings_with(tmp_path, monkeypatch)
-    settings.set_autoreply_enabled(False)
+    settings = settings_with(tmp_path, monkeypatch, CONFIG + "\n[autoreply]\nenabled = false\n")
     callback = _Callback()
 
-    asyncio.run(screen.autoreply_toggle(callback, settings, _workspaces()))
-    assert not settings.autoreply_enabled and "Сначала задайте текст" in callback.alerts[0]
+    asyncio.run(screen.autoreply_toggle(callback, settings, FakePool([]), PROJECT, _workspaces()))
+    assert _own() == {} and "Сначала задайте текст" in callback.alerts[0]
     assert callback.message.edits == []
 
 
-def test_new_text_is_saved(tmp_path, monkeypatch):
+def test_new_text_is_saved_in_the_project(tmp_path, monkeypatch):
     settings = settings_with(tmp_path, monkeypatch)
     state, callback = _State(), _Callback()
     asyncio.run(screen.autoreply_text_start(callback, state))
     assert state.state == screen.SetAutoreplyText.input
 
     empty = _Msg(text=None)  # a sticker / photo
-    asyncio.run(screen.autoreply_text_apply(empty, state, settings, _workspaces()))
-    assert settings.autoreply_text == "" and state.state is not None
+    asyncio.run(screen.autoreply_text_apply(empty, state, settings, FakePool([]), PROJECT, _workspaces()))
+    assert _own() == {} and state.state is not None
 
     msg = _Msg(text="  Пишите @MainMask  ")
-    asyncio.run(screen.autoreply_text_apply(msg, state, settings, _workspaces()))
-    assert settings.autoreply_text == "Пишите @MainMask" and state.state is None
-    assert toml.load(tmp_path / "config.toml")["autoreply"]["text"] == "Пишите @MainMask"
+    asyncio.run(screen.autoreply_text_apply(msg, state, settings, FakePool([]), PROJECT, _workspaces()))
+    assert _own() == {"enabled": True, "text": "Пишите @MainMask"} and state.state is None
+    assert settings.autoreply_text == ""  # config.toml's default unchanged
     # the screen again under the confirmation, with the new text
     assert msg.answers[0].startswith("✅ Текст автоответа сохранён") and "<b>📬 Автоответ</b>" in msg.answers[0]
     assert "<blockquote>Пишите @MainMask</blockquote>" in msg.answers[0]
@@ -767,3 +800,11 @@ def test_the_notification_escapes_what_came_from_telegram_and_fits_after_escapin
     text = autoreply._escaped("<b>" + "&" * 5000, autoreply.NOTIFY_TEXT_LIMIT)
     assert text.startswith("&lt;b&gt;&amp;") and text.endswith("&amp;")  # never cut inside an entity
     assert len(text) <= autoreply.NOTIFY_TEXT_LIMIT
+
+
+def test_a_moved_worker_s_replies_move_in_the_running_loop_s_ledger_too(monkeypatch):
+    """The loop saves its ledger whole each round: a rename of the file alone would be undone by it."""
+    ledger = {"projects/1/sessions/a.jsession:5": "2026-01-01 10:00:00"}
+    monkeypatch.setattr(autoreply, "_replied", ledger)
+    autoreply.rename_worker("projects/1/sessions/a.jsession", "projects/2/sessions/a.jsession")
+    assert ledger == {"projects/2/sessions/a.jsession:5": "2026-01-01 10:00:00"} == autoreply.load_replied()

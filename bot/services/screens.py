@@ -3,8 +3,8 @@ from collections.abc import Awaitable, Callable
 
 from bot.keyboards.menu import screen_kb
 from modules import projects
-from modules.registry import (CARD, PROJECTS, RISK_NOTE, RISKY, SCREENS, by_category, children, in_project,
-                              risk_marker, trail)
+from modules.registry import (CARD, PROJECTS, RISK_NOTE, RISKY, SCREENS, all_risky, by_category, children, entries,
+                              in_project, trail)
 
 # How the bot shows the registry's screens (modules/registry.py): their messages, and how each
 # is opened. bot/routers/menu.py opens every screen through open_screen — from the main menu as a new
@@ -49,9 +49,8 @@ def project_name(project_id: int) -> str:
 
 def title_line(title: str, name: str = "") -> str:
     """A screen's title (HTML): a project's (its `name`) as the path from its card — 📁 GreenBase › 🤖 Аккаунты ›
-    👤 Профиль —; ⚠️ once on it when every function there is risky (registry.risk_marker)."""
-    functions = by_category(title)
-    risky = " ⚠️" if functions and all(function.risk == RISKY for function in functions) else ""
+    👤 Профиль —; ⚠️ once on it when every button there is risky (registry.all_risky)."""
+    risky = " ⚠️" if all_risky(title) else ""
     if not name:
         return f"<b>{html.escape(title)}</b>{risky}"
     below = [part for part in trail(title) if part not in (PROJECTS, CARD)]
@@ -67,29 +66,26 @@ async def show(message, title: str, edit: bool, header: str = "", project: int =
                               reply_markup=screen_kb(title, project, hidden, titles))
 
 
-def _line(title: str, hint: str) -> str:
-    return f"<b>{html.escape(title)}</b> — {html.escape(hint)}"
+def _line(title: str, hint: str, marker: str = "") -> str:
+    return f"<b>{html.escape(title)}</b>{marker} — {html.escape(hint)}"
 
 
-def screen_text(title: str, header: str = "", hidden=(), titles: dict | None = None) -> str:
+def screen_text(title: str, header: str = "", hidden=(), titles: dict | None = None, own=()) -> str:
     """A screen's message (HTML): `header` (its title_line by default), then each of its buttons with
-    what it does — its actions (without the `hidden`, `titles` in place of their own), its functions under
-    their subheadings, the screens opened from it; a blank line before each subheading and after its
-    functions."""
-    functions = by_category(title)
-    blocks = [[header or title_line(title)]]
-    block = [_line((titles or {}).get(button.action, button.title), button.hint)
-             for button in SCREENS[title].buttons if button.action not in hidden]
-    group = ""
-    for function in functions:
-        if function.group != group:
-            group = function.group
-            blocks, block = blocks + [block], [f"<i>{html.escape(group)}</i>"]
-        block.append(f"{risk_marker(function, functions)}{_line(function.title, function.hint)}")
+    what it does — its actions (`titles` in place of their own) and its functions, without the `hidden`, under
+    their subheadings (registry.entries), its view's `own` buttons ((title, hint), as screen_kb's `own`), the
+    screens opened from it; a blank line before each subheading and after the last subheading's buttons."""
+    blocks, block, group = [[header or title_line(title)]], [], ""
+    for entry in entries(title, hidden, titles):
+        if entry.group != group:
+            group = entry.group
+            blocks, block = blocks + [block], [f"<i>{html.escape(group)}</i>"] if group else []
+        block.append(_line(entry.label, entry.hint, entry.marker))
     if group:
         blocks, block = blocks + [block], []
+    block += [_line(label, hint) for label, hint in own]
     block += [_line(child, SCREENS[child].hint) for child in children(title)]
     blocks.append(block)
-    if any(function.risk == RISKY for function in functions):
+    if any(function.risk == RISKY for function in by_category(title)):
         blocks.append([f"<i>{RISK_NOTE}</i>"])
     return "\n\n".join("\n".join(block) for block in blocks if block)

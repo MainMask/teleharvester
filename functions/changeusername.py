@@ -2,36 +2,43 @@ import random
 
 from telethon.errors import UsernameInvalidError, UsernamePurchaseAvailableError
 from telethon.tl.functions.account import UpdateUsernameRequest, CheckUsernameRequest
-from modules.console import console
 
 from functions.base import TelethonFunction
-from functions.base.base import console_report
 
 MAX_ATTEMPTS = 20  # candidates checked per account before giving up
+
+
+async def first_free(session, candidates, used):
+    """The first of `candidates` that is free (also the warmup's, functions/warmup.py); `used` is shared
+    across accounts so they never pick the same one. None if none is."""
+    for candidate in candidates:
+        if candidate in used:
+            continue
+        used.add(candidate)  # before the answer: another account looking at once must not pick it too
+
+        try:
+            if await session(CheckUsernameRequest(candidate)):
+                return candidate
+        # this candidate only: on sale at Fragment, or invalid (e.g. a base under 5 characters
+        # whose suffixed form is fine); an account's own error (a long flood wait) still ends the search
+        except (UsernamePurchaseAvailableError, UsernameInvalidError):
+            continue
+
+    return None
 
 
 class ChangeUsernameFunc(TelethonFunction):
     """Change usernames"""
 
+    # the step after the worker picker, bot/routers/profile.py
+    PROMPT = ("Пришлите основу для username (если занята — добавится случайное число: base24, base3071, …) или "
+              ".txt со списком username, по одному на строку: воркеры получат их по порядку.")
+
     async def generate_username(self, session, base, used):
-        """First free of base, then base + a random 2-4 digit suffix (e.g. CitadelCurator24); `used`
-        is shared across accounts so they never pick the same one (and the suffixes aren't a
-        tell-tale 1,2,3,…)."""
-        candidates = (base, *(f"{base}{random.randrange(10, 10000)}" for _ in range(MAX_ATTEMPTS)))
-        for candidate in candidates:
-            if candidate in used:
-                continue
-
-            try:
-                if await session(CheckUsernameRequest(candidate)):
-                    used.add(candidate)
-                    return candidate
-            # this candidate only: on sale at Fragment, or invalid (e.g. a base under 5 characters
-            # whose suffixed form is fine); an account's own error (a long flood wait) still ends the search
-            except (UsernamePurchaseAvailableError, UsernameInvalidError):
-                continue
-
-        return None
+        """First free of base, then base + a random 2-4 digit suffix (e.g. CitadelCurator24) (and the
+        suffixes aren't a tell-tale 1,2,3,…)."""
+        return await first_free(session, (base, *(f"{base}{random.randrange(10, 10000)}"
+                                                  for _ in range(MAX_ATTEMPTS))), used)
 
     async def change(self, session, report, username=None, base=None, used=None):
         async with self.storage.ainitialize_session(session):
@@ -90,27 +97,3 @@ class ChangeUsernameFunc(TelethonFunction):
                 lambda session, report: self.change(session, report, base=base, used=used),
                 report,
             )
-
-    async def execute(self):
-        self.ask_workers()
-
-        from_file = console.input("[bold red]из файла? (y/n)> ")
-
-        if from_file == "y":
-            try:
-                with open("assets/usernames.txt", encoding="utf-8") as file:
-                    # "@name" as the bot takes it from the same file: the request wants a bare name
-                    usernames = [line.strip().lstrip("@") for line in file if line.strip()]
-            except FileNotFoundError:
-                console.print("[bold red]Файл assets/usernames.txt не найден!")
-                return
-
-            if not usernames:
-                console.print("[bold red]Список username пуст!")
-                return
-
-            await self.run(console_report, usernames=usernames)
-        else:
-            base = console.input("[bold red]основа username> [/]")
-
-            await self.run(console_report, base=base)

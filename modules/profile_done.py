@@ -1,7 +1,7 @@
 """Which profile / security function last changed which worker, in stats/profile_done.json:
   "done":   {"<user id>": {function class name: "YYYY-MM-DD"}}
   "values": {function class name: {"<user id>": the value it set}} — a photo's file name, a bio
-The worker pickers (bot and CLI) tick the workers a function has not run on yet, so the ones done
+The bot's worker pickers tick the workers a function has not run on yet, so the ones done
 earlier are not changed a second time; "values" lets a random pick from a list or a folder avoid
 what other workers have already got. A worker is its Telegram user id, not its session file: a
 re-imported account under another file name is still the same worker. A StringSession worker

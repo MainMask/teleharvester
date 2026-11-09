@@ -100,10 +100,9 @@ class Settings:
         config = load_toml("config.toml")
 
         if not config:
-            # Not interactive here: the terminal menu runs ensure_config() first, so
-            # only non-CLI entry points (the bot) reach this, and they get a clear
-            # message instead of a setup wizard.
-            console.print("[bold red]config.toml не найден. Запустите `python main.py` один раз, чтобы создать его.[/]")
+            # Not interactive here: the session scripts run ensure_config() first, so
+            # only the bot reaches this, and it gets a clear message instead of a setup wizard.
+            console.print("[bold red]config.toml не найден. Скопируйте config.toml.example в config.toml.[/]")
             raise SystemExit(1)
 
         if "sessions" in config:
@@ -123,14 +122,13 @@ class Settings:
         self.api_id: int = int(api_id)
 
         try:
-            self.messages: List[str] = config["broadcast"]["messages"]
             self.messages_count: int = config["broadcast"]["messages_count"]
             self.trigger: str = config["broadcast"]["trigger"]
             self.delay: List[int] = config["broadcast"]["delay"]
         except KeyError as err:
             console.print(
                 f"[bold red]В config.toml нет {err}. "
-                "Удалите его и запустите `python main.py`, чтобы создать заново.[/]"
+                "Возьмите недостающее из config.toml.example.[/]"
             )
             raise SystemExit(1)
 
@@ -144,8 +142,8 @@ class Settings:
         self.invite_per_account_daily: int = limits["invite_per_account_daily"]
         self.contacts_per_account_daily: int = limits["contacts_per_account_daily"]
 
-        # bot only: one reply to people who answer a PM mailing (bot/services/autoreply.py);
-        # off when disabled or the text is empty (or there is no [autoreply] section)
+        # bot only: one reply to people who answer a PM mailing (bot/services/autoreply.py); enabled and text: the
+        # default of a project that has set none of its own; off when disabled or the text is empty
         autoreply = config.get("autoreply", {})
         self.autoreply_enabled: bool = autoreply.get("enabled", True)
         self.autoreply_text: str = autoreply.get("text", "")
@@ -229,21 +227,11 @@ class Settings:
         self._write_setting(path, "limits", "profile_pause", pause)
         self.profile_pause = pause
 
-    def set_autoreply_enabled(self, enabled: bool, path: str = "config.toml"):
-        """Turn the bot's auto-reply on/off, in config.toml and live (the loop reads it)."""
-        self._write_setting(path, "autoreply", "enabled", enabled)
-        self.autoreply_enabled = enabled
-
-    def set_autoreply_text(self, text: str, path: str = "config.toml"):
-        """Change the auto-reply text, in config.toml and live."""
-        self._write_setting(path, "autoreply", "text", text)
-        self.autoreply_text = text
-
     @staticmethod
     def ensure_config(path: str = "config.toml"):
-        """CLI first-run: create config.toml (and the .env API keys) interactively, then exit.
+        """First run of a session script: create config.toml (and the .env API keys) interactively, then exit.
 
-        Called only from the terminal menu; the bot never triggers the wizard.
+        Called only from the session scripts (sessions/); the bot never triggers the wizard.
         """
         if os.path.exists(path):
             return
@@ -253,14 +241,12 @@ class Settings:
 
     @staticmethod
     def save(
-        messages: List[str],
         delay: List[int],
         messages_count: int,
         trigger: str
     ):
         config = dict(
             broadcast=dict(
-                messages=messages,
                 delay=delay,
                 messages_count=messages_count,
                 trigger=trigger
@@ -299,10 +285,9 @@ class Settings:
         )
 
         print()
-        messages, delay, trigger = Settings.setup_broadcast()
+        delay, trigger = Settings.setup_broadcast()
 
         Settings.save(
-            messages,
             delay,
             0,
             trigger
@@ -320,17 +305,7 @@ class Settings:
         return int(api_id), api_hash
 
     @staticmethod
-    def setup_broadcast() -> Tuple[List[str], List[int], str]:
-        console.print("[bold white]Введите сообщения (пустая строка — конец)[/]")
-
-        messages = []
-
-        while (message := console.input("[bold white]>> [/]")) or not messages:
-            if message:  # at least one message: the CLI broadcast picks from this list
-                messages.append(message)
-
-        print()
-
+    def setup_broadcast() -> Tuple[List[int], str]:
         while True:
             parts = console.input("[bold white]Задержка между отправками (например 1-3): [/]").split("-")
             # [sec] or [min, max] only: Settings() rejects any other delay at the next start
@@ -340,6 +315,6 @@ class Settings:
 
         trigger = console.input("[bold white]Триггер — текст, после которого аккаунты начнут рассылку: [/]")
 
-        return messages, delay, trigger
+        return delay, trigger
 
 

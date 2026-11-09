@@ -1,4 +1,4 @@
-"""Sign-in, for the bot (bot/routers/login.py) and the terminal menu (functions/sign_in.py)
+"""Sign-in, for the bot (bot/routers/login.py) and the session scripts (functions/sign_in.py)
 alike: an account's login codes from Telegram, adding an account by phone, removing a personal one.
 
 Login codes: Telegram (777000) sends them to the account's own chats; they are read on request.
@@ -48,7 +48,7 @@ NO_CODES = f"За последние {CODES_WINDOW.seconds // 60} мин код�
 
 
 def ago(sent_at: datetime, now: datetime) -> str:
-    """When a code came, for the code lists (bot and terminal)."""
+    """When a code came, for the code lists (bot and session scripts)."""
     minutes = int((now - sent_at).total_seconds() // 60)
     return "только что" if minutes < 1 else f"{minutes} мин назад"
 

@@ -45,7 +45,7 @@ class TestCallbacks:
         assert (cb.scope, cb.value) == ("pm_mode", "phone")
 
     def test_menu_roundtrip(self):
-        assert MenuCB.unpack(MenuCB(action=MenuAction.LIST).pack()).action == MenuAction.LIST
+        assert MenuCB.unpack(MenuCB(action=MenuAction.PROXY).pack()).action == MenuAction.PROXY
 
     def test_nav_roundtrip(self):
         assert NavCB.unpack(NavCB(screen="🔐 Безопасность").pack()).screen == "🔐 Безопасность"
@@ -211,7 +211,6 @@ class TestBotConfig:
 # --- decoupled function cores: run() routes output through the reporter -----
 
 class _Storage:
-    initialize = False
     sessions = []  # read by TelethonFunction.__init__; tests set fn.sessions after
 
     @contextlib.asynccontextmanager

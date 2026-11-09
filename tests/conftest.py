@@ -128,25 +128,31 @@ def _isolated_profile_done(monkeypatch, tmp_path):
     monkeypatch.setattr(profile_done, "PATH", str(tmp_path / "profile_done.json"))
 
 
-REAL_BOT_LOOKUP = REAL_CLI_LOOKUP = None
+@pytest.fixture(autouse=True)
+def _isolated_warmup(monkeypatch, tmp_path):
+    """No test may read or write the real stats/warmup.json, nor read the real content (assets/content/)."""
+    from modules import content, warmup
+
+    monkeypatch.setattr(warmup, "STATE_PATH", str(tmp_path / "warmup.json"))
+    monkeypatch.setattr(content, "DIR", str(tmp_path / "content"))
+
+
+REAL_BOT_LOOKUP = None
 
 
 @pytest.fixture(autouse=True)
 def _no_chat_lookup(monkeypatch):
     """Stub accounts can't resolve chats: the flows go on with the input as typed, as when a
-    lookup can't be made. Tests of the lookup restore REAL_BOT_LOOKUP / REAL_CLI_LOOKUP."""
-    global REAL_BOT_LOOKUP, REAL_CLI_LOOKUP
+    lookup can't be made. Tests of the lookup restore REAL_BOT_LOOKUP."""
+    global REAL_BOT_LOOKUP
     from bot.routers.scraping import common
-    from functions import scraper
 
     REAL_BOT_LOOKUP = REAL_BOT_LOOKUP or common.lookup
-    REAL_CLI_LOOKUP = REAL_CLI_LOOKUP or scraper._lookup
 
     async def no_lookup(message, pool, personal, path, chats):
         return None
 
     monkeypatch.setattr(common, "lookup", no_lookup)
-    monkeypatch.setattr(scraper, "_lookup", lambda account, chats: None)
 
 
 class Workspaces:
@@ -161,6 +167,7 @@ class Workspaces:
         from bot.services.workspaces import Workspace
 
         pool = pool or WorkerPool(types.SimpleNamespace(sessions=[], jsessions_paths={}, home=home(),
+                                                        directory=f"{home()}/sessions",
                                                         get_session_path=lambda client: None))
         self.workspace = Workspace(1, pool, {}, manager or JobManager(), scrapes or JobManager(),
                                    analyses or JobManager())

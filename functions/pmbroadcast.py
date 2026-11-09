@@ -1,9 +1,15 @@
-from modules.console import console
+import re
+
 
 from functions.base import TelethonFunction
-from functions.base.base import AccountLimited, console_report
+from functions.base.base import AccountLimited
+from modules import login as sign_in
 from modules import rich_message
-from modules.rich_message import RichContent
+
+
+def is_phone(peer: str) -> bool:
+    """A phone number (+7 999 123-45-67), not a @username or a t.me link: a username never starts with a digit."""
+    return re.fullmatch(r"\+?[\d\s()-]+", peer) is not None and sign_in.normalize_phone(peer) is not None
 
 
 class PmBroadcastFunc(TelethonFunction):
@@ -50,25 +56,3 @@ class PmBroadcastFunc(TelethonFunction):
             report,
             pause="delay",
         )
-
-    async def execute(self):
-        console.print()
-        console.print("[bold white][1] По username")
-        console.print("[bold white][2] По номеру телефона")
-        choice = console.input("\n[bold white]>> ")
-        
-        by_phone_number = False
-        
-        if choice == "1":
-            peer = console.input("[bold red]username> [/]")
-        elif choice == "2":
-            by_phone_number = True
-            peer = console.input("[bold red]номер телефона> [/]")
-        else:
-            console.print("[bold red]Неверный выбор!")
-            return
-
-        text = console.input("[bold red]текст> [/]")
-
-        # CLI path sends plain text only; the bot supplies rich content (media/emoji/formatting).
-        await self.run(peer, RichContent(text=text), by_phone_number, console_report)

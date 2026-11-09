@@ -42,20 +42,3 @@ def test_a_lock_file_left_by_another_user_does_not_stop_the_start(lock_path):
 
     instance_lock.hold()
     assert instance_lock._held is not None
-
-
-def test_cli_takes_the_lock_before_the_update_check(monkeypatch):
-    # a `git pull` + `pip install` must not run under a live bot: the lock refuses first
-    import main
-
-    checked = []
-
-    def refuse():
-        raise SystemExit("teleharvester уже запущен")
-
-    monkeypatch.setattr(main.instance_lock, "hold", refuse)
-    monkeypatch.setattr(main.updater, "check_update", lambda: checked.append(1) or {"has_update": False})
-
-    with pytest.raises(SystemExit, match="уже запущен"):
-        main.main()
-    assert checked == []

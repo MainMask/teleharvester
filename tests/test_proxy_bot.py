@@ -2,6 +2,7 @@
 
 import asyncio
 import conftest
+import os
 import types
 
 from bot.routers import accounts
@@ -262,6 +263,7 @@ class _Callback:
 
         self.message = _Msg()
         self.message.date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=age_hours)
+        self.message.edit_date = None  # sent, never edited
         self.alert = None
 
     async def answer(self, text=None, show_alert=False, **kwargs):
@@ -348,3 +350,28 @@ def test_a_broken_list_for_the_restricted_can_be_dropped_too(tmp_path, monkeypat
 
     labels = [b.text for markup in sent if markup for row in markup.inline_keyboard for b in row]
     assert "🗑 Не отделять" in labels
+
+
+def _proxied(proxy):
+    return ns(account=ns(proxy=proxy))
+
+
+def test_the_prompt_says_what_the_project_has_now(tmp_path, monkeypatch):
+    from modules import projects
+
+    storage = _Storage()
+    storage.jsessions_paths = {"a": _proxied(Proxy("socks5", "1.1.1.1", 1080)), "b": _proxied(None)}
+    assert accounts.proxies.proxy_state(storage) == "Сейчас: списка прокси нет · с прокси 1 из 2 аккаунтов."
+
+    os.makedirs(conftest.home(), exist_ok=True)
+
+    with open(projects.proxies_path(conftest.home()), "w") as fileobj:
+        fileobj.write("socks5://1.1.1.1:1080\nhttp://2.2.2.2:3128\n")
+    with open(projects.restricted_proxies_path(conftest.home()), "w") as fileobj:
+        fileobj.write("socks5://3.3.3.3:1080\n")
+    assert accounts.proxies.proxy_state(storage) == \
+        "Сейчас: в списке 2 прокси (+1 для ограниченных) · с прокси 1 из 2 аккаунтов."
+
+    with open(projects.proxies_path(conftest.home()), "w") as fileobj:
+        fileobj.write("не прокси\n")  # edited by hand
+    assert accounts.proxies.proxy_state(storage).startswith("Сейчас: ⚠️ список прокси испорчен")

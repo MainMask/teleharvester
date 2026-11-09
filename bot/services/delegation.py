@@ -5,7 +5,7 @@ from telethon import TelegramClient
 
 from modules.storages.sessions_storage import connect_client, release_client
 
-from modules.registry import RISKY, BotFunction, menu_path
+from modules.registry import ADD, RISKY, BotFunction, menu_path
 
 
 async def borrow(pool, client, path: str, work, timeout: float):
@@ -114,7 +114,7 @@ class WorkerPool:
         if bot_function.risk == RISKY and not workers:
             await report(
                 "⚠️ Единственный воркер занят скрапом — дождитесь его окончания." if scraping else
-                f"⚠️ У проекта нет воркеров. Добавьте: {menu_path('add')}."
+                f"⚠️ У проекта нет воркеров. Добавьте: {menu_path(ADD)}."
             )
             return False
 

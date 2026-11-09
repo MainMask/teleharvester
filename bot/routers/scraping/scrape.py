@@ -254,20 +254,26 @@ async def _ask_go(message: Message, state: FSMContext, deps: dict | None = None)
     )
 
 
-def _settings_kb(data: dict):
+def option_items(options: dict, extend: bool) -> list[tuple[str, str]]:
+    """🎛 Дополнительно's items (label, key) — the bot's buttons — from
+    the run's options so far (each on by default, no keyword, every post); a top-up
+    (`extend`) keeps the previous scrape's keyword (scraper.scrape.run refuses another)."""
     def mark(key):
-        return "✅" if data.get(key, True) else "❌"
-    keyword = data.get("keyword") or "—"
-    limit = data.get("max_messages") or "все"
-    return cancel_kb(Scrape.confirm, choice_kb("scrape_opt", [
+        return "✅" if options.get(key, True) else "❌"
+    keyword = options.get("keyword") or "—"
+    limit = options.get("max_messages") or "все"
+    return [
         (f"🗨 Комментарии {mark('comments')}", "comments"),
         (f"❤️ Реакции (медленно) {mark('reactors')}", "reactors"),
         (f"👥 База участников {mark('participants')}", "participants"),
-        # a top-up keeps the previous scrape's keyword (scraper.scrape.run refuses another)
-        *([] if data.get("extend") else [(f"🔎 Фильтр по слову: {keyword[:24]}", "keyword")]),
+        *([] if extend else [(f"🔎 Фильтр по слову: {keyword[:24]}", "keyword")]),
         (f"🔢 Максимум постов: {limit}", "max"),
-        ("▶️ Запустить", "run"),
-    ]))
+    ]
+
+
+def _settings_kb(data: dict):
+    return cancel_kb(Scrape.confirm, choice_kb("scrape_opt", [*option_items(data, bool(data.get("extend"))),
+                                                              ("▶️ Запустить", "run")]))
 
 
 async def _show_settings(message: Message, state: FSMContext, edit: bool = False):

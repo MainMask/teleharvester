@@ -2,11 +2,9 @@ import os
 
 from telethon import TelegramClient, functions, utils
 
-from modules import profile_done
-from modules.console import console
+from modules import content, profile_done, warmup
 
 from functions.base import TelethonFunction
-from functions.base.base import console_report
 
 
 class ChangeProfilePhotoFunc(TelethonFunction):
@@ -48,12 +46,10 @@ class ChangeProfilePhotoFunc(TelethonFunction):
             )
             return
 
-        path = os.path.join(os.getcwd(), "assets", "photos")
-        # regular, non-hidden files only: macOS drops a .DS_Store into any opened folder
-        photos = [
-            f for f in os.listdir(path)
-            if not f.startswith(".") and os.path.isfile(os.path.join(path, f))
-        ] if os.path.isdir(path) else []
+        # the project's region's photos (modules/content.py)
+        region = warmup.region(self.storage.home)
+        path = content.path(region, "photos")
+        photos = [os.path.basename(photo) for photo in content.files(region, "photos")]
 
         if not photos:
             self.progress_failed()
@@ -71,18 +67,3 @@ class ChangeProfilePhotoFunc(TelethonFunction):
             lambda session, report: self.set_profile_photo(session, pick(), report),
             report,
         )
-
-    async def execute(self):
-        self.ask_workers()
-
-        folder = os.path.join(os.getcwd(), "assets", "photos")
-        while True:
-            photo = console.input(
-                "\n[bold white]путь к одному фото для всех аккаунтов"
-                f"\n(пусто — случайное фото каждому аккаунту из {folder})> [/]"
-            ).strip().strip("'\"")  # a path dragged into the terminal comes quoted
-            if not photo or os.path.isfile(photo):
-                break
-            console.print(f"[bold red]Файл не найден: {photo}[/]")
-
-        await self.run(console_report, photo_path=photo or None)

@@ -36,10 +36,13 @@ class _Msg:
         self.document = document
         self._bytes = file_bytes
         self.replies = []
-        self.bot = ns(download=self._download)
+        self.bot = ns(get_file=self._get_file, download_file=self._download_file)
         self.chat = ns(id=1)
 
-    async def _download(self, document):
+    async def _get_file(self, file_id, request_timeout=None):
+        return ns(file_path="documents/file")
+
+    async def _download_file(self, file_path, timeout=30):
         return io.BytesIO(self._bytes)
 
     async def answer(self, text, **kwargs):
@@ -53,7 +56,7 @@ class _Msg:
 
 def test_txt_document_becomes_recipient_list():
     body = "@alice\n\n+79990001122\n@bob\n"
-    msg = _Msg(document=ns(file_name="list.txt", file_size=len(body)), file_bytes=body.encode())
+    msg = _Msg(document=ns(file_id="f", file_name="list.txt", file_size=len(body)), file_bytes=body.encode())
     state = _State()
     asyncio.run(mailing.mail_path(msg, state))
     assert state.data["recipients"] == ["@alice", "+79990001122", "@bob"]

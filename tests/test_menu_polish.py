@@ -3,6 +3,8 @@ another project, a busy job slot keeps the step, a stale button is said in a pop
 
 import asyncio
 import time
+
+import conftest
 from types import SimpleNamespace as ns
 
 from bot.callbacks import ChoiceCB, NavCB
@@ -75,17 +77,16 @@ def test_the_messages_count_prompt_offers_to_keep_only_a_count_there_is():
 
 
 def test_a_list_button_of_an_emptied_file_says_so(monkeypatch, tmp_path):
-    import dataclasses
+    from types import SimpleNamespace
 
     from bot.routers import profile
 
-    monkeypatch.setitem(profile.TEXT_FIELDS, "name",
-                        dataclasses.replace(profile.TEXT_FIELDS["name"], path=str(tmp_path / "gone.txt")))
-    state = _State({"pick_key": "name"})
+    state = _State({"pick_key": "name"})  # the region's names.txt: none (conftest's empty content folder)
     state.state = ProfileText.text
     manager, runs = _launches()
     callback = _Callback()
-    asyncio.run(profile.text_from_file(callback, state, None, {}, manager))
+    pool = SimpleNamespace(storage=SimpleNamespace(home=conftest.home()))
+    asyncio.run(profile.text_from_file(callback, state, pool, {}, manager))
     assert runs == [] and "пуст или не найден" in callback.alerts[0]
     assert state.state == ProfileText.text  # a text or a .txt can still be sent
 
@@ -149,15 +150,15 @@ def test_an_earlier_report_s_options_never_touch_the_running_one():
     from bot.routers import moderation
 
     stopped = []
-    manager = ns(stop=lambda: stopped.append(True) or asyncio.sleep(0), project_id=7)
-    moderation._FLOWS[1] = (ns(step=None), {"busy": False, "selections": [], "menu": 20}, [ns(option=b"a")])
+    manager = ns(stop=lambda: stopped.append(True) or asyncio.sleep(0), project_id=7, key=0)
+    moderation._FLOWS[(1, 0)] = (ns(step=None), {"busy": False, "selections": [], "menu": 20}, [ns(option=b"a")])
     try:
         for value in (moderation.STOP, "0"):  # ✖️ and an option of the report before
             callback = _Callback()
             callback.message.message_id = 10
             asyncio.run(moderation.rm_choose(callback, ChoiceCB(scope="report_opt", value=value), manager, None))
             assert callback.alerts == [STALE_BUTTON] and callback.message.answers == []
-        assert stopped == [] and moderation._FLOWS[1][1]["selections"] == []
+        assert stopped == [] and moderation._FLOWS[(1, 0)][1]["selections"] == []
     finally:
         moderation._FLOWS.clear()
 
@@ -176,3 +177,14 @@ def test_the_scrape_s_run_button_is_pressed_once():
     # its data gone (a bad value): the run is refused, the ▶️ is gone all the same
     asyncio.run(scrape._start_scrape(callback, _State(), None, None, ns(project_id=7)))
     assert removed == [None]
+
+
+def test_a_long_list_keeps_whole_lines_only_so_an_escaped_name_is_never_cut():
+    from bot.routers._common import MAX_MESSAGE, fit_lines
+
+    lines = [f"• @worker{i} — {'&quot;ошибка&quot; ' * 20}" for i in range(100)]  # each ~330 characters
+    text = fit_lines(lines, more=5)
+    shown = text.split("\n")
+    assert len(text) <= MAX_MESSAGE and all(line in lines for line in shown[:-1])  # none cut midway
+    assert shown[-1] == f"…и ещё {100 - (len(shown) - 1) + 5}"  # the ones left out, those before too
+    assert fit_lines(["a", "b"]) == "a\nb" and fit_lines(["a"], more=3) == "a\n…и ещё 3"
