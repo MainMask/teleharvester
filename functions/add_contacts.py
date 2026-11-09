@@ -76,7 +76,8 @@ class AddContactsFunc(TelethonFunction):
             contacts_ledger.save(self.storage.home, self.ledger)
             self._unsaved = 0
 
-    async def run(self, path, report):
+    async def run(self, source, report):
+        """`source`: a .parquet base's path, or its rows already read (📚 Вся база: modules/project_base)."""
         self._report = report
         self.added = 0
         self.skipped = 0
@@ -90,7 +91,7 @@ class AddContactsFunc(TelethonFunction):
         try:
             # off the event loop: pq.read_table + to_pylist is blocking and a large
             # DB would otherwise stall the bot's polling loop for its whole duration
-            rows = await asyncio.to_thread(parquet_db.load, path)
+            rows = source if isinstance(source, list) else await asyncio.to_thread(parquet_db.load, source)
         except Exception as err:
             self.progress_failed()
             await report(str(err))

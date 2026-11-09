@@ -22,9 +22,9 @@ and contacts ledger, and its card holds everything done with them. The main menu
 
 | Section | Functions |
 |---|---|
-| **📁 Проекты** | The projects. A project's card sums it up and opens its screens: on its files — **📥 Сбор** (channels, scrape, top-up, group members, verification, analysis), **🎯 База и рассылка** (the base's state, list upload, clear, add to contacts, DM mailing, auto-reply), **🛠 Управление** (region, rename, delete) — and on its workers, below; see [Projects](#projects). |
+| **📁 Проекты** | The projects. A project's card sums it up and opens its screens: on its files — **📥 Сбор** (channels, scrape, top-up, group members, verification, analysis), **🎯 База и рассылка** (the base's state, list upload, the whole base as a file, clear, add to contacts, DM mailing, auto-reply), **🛠 Управление** (region, rename, delete) — and on its workers, below; see [Projects](#projects). |
 | **📊 Задачи** | Every project's running jobs in one message: progress, **⏹** for each that can be stopped, **🔄 Обновить** (bot only; same as `/status`). |
-| **⚙️ Настройки** | Under **Паузы** the action delay and the profile pause, under **Дневные лимиты на аккаунт** the per-account daily caps (DMs, invites, contacts), each value on its button — for all projects, written back to `config.toml`. The chat campaign's trigger and messages per worker are asked by **🔔 Чат — по слову** itself and saved there. |
+| **⚙️ Настройки** | Under **Паузы** the action delay and the profile pause, under **Дневные лимиты на аккаунт** the per-account daily caps (DMs, invites, contacts, comments), each value on its button — for all projects, written back to `config.toml`. The chat campaign's trigger and messages per worker are asked by **🔔 Чат — по слову** itself and saved there. |
 
 A project's screens, on its own workers:
 
@@ -36,7 +36,7 @@ A project's screens, on its own workers:
 | **🔥 Прогрев** | Warming the project's accounts up before work, day by day; see [Warmup](#warmup). |
 | **👤 Профиль** | Name, username, bio, photo, remove profile channel — applied one account at a time with `profile_pause`; the lists offered are the project's region's ([Content](#content)). |
 | **🔐 Безопасность** | Set 2FA password, terminate other sessions, hide last seen, clear dialogs. |
-| **💬 Активность** | Every worker of the project on one target: DM to one recipient, post comments, instant and trigger-based chat broadcasts; join chat, reactions, poll vote, inviting members of one chat to another; report a post or a user. |
+| **💬 Активность** | Every worker of the project on one target: DM to one recipient; comments, a pair as the chat's: **🗨 Комментарии — к посту** (every worker under one post) and **🆕 Комментарии — к новым постам** (under the new posts of watched channels: the project's channels or a typed list; N comments a post, each by another worker, a pause of X–Y minutes before each; a job until ⏹ — the project's other jobs wait meanwhile, and a channel whose discussion is for members only needs 🚪 Вступить в чат first; kept in the project's `watch.json`, continued after a bot restart, the posts missed meanwhile commented only if under 3 hours old, the comments still waiting their pause at the stop not written; the comments' message may be a .txt of variants, one a line, both in 🗨 and 🆕: each comment takes one, none twice under a post before every one has); instant and trigger-based chat broadcasts; join chat, reactions, poll vote, inviting members of one chat to another; report a post or a user. |
 
 ## Installation
 
@@ -65,6 +65,7 @@ Key `config.toml` settings:
 | `[limits] account_pause` | `[30, 60]` | Pause when the mailing switches accounts. |
 | `[limits] profile_pause` | `[60, 180]` | Pause between accounts for profile changes. |
 | `[limits] invite_per_account_daily`, `contacts_per_account_daily` | `0` | Daily invite / contact-add caps. Contacts: the next account continues. Invites: each worker gets its own share of the members, and a worker at its cap skips the rest of its share for that run. |
+| `[limits] comments_per_account_daily` | `0` | Daily post-comment cap, 🗨 and 🆕 counted together (`stats/comments_limits.json`). 🗨: a worker at its cap stops; 🆕: it is skipped under the posts until the next day, the next worker comments. A change in ⚙️ applies to the runs started after it, and to a running 🆕 from its next check. |
 | `[autoreply] enabled`, `text`, `interval` | `true`, `""`, `900` | Bot only: replies once to people who answer a mailing and forwards their messages to the admins. `enabled` and `text` are the default of a project that has not set its own (**🎯 База и рассылка → 📬 Автоответ**, `projects/<id>/autoreply.json`); `interval` (≥ 60 s) is shared. Empty text disables it. |
 | `[bot] admins` | `[]` | Telegram user IDs allowed to use the bot (`BOT_ADMINS` overrides). |
 
@@ -188,8 +189,8 @@ shared `stats/pm_mailing.json` and `stats/contacts.json` (so no project writes a
 written to); the shared files stay as they are. The workers from `sessions/` become free accounts and
 are moved into projects by hand. Proxies are not copied: set each project's with 🌐 Прокси.
 
-The card shows the project's workers and their warmup (🔥 warmed of all, ⛔ restricted, 💀 dead), its base (records,
-whom the mailing wrote to, whom the workers added to contacts), channels count, an unfinished scrape or the top-up to
+The card shows the project's workers and their warmup (🔥 warmed of all, ⛔ restricted, 💀 dead), its base (people,
+each once, whom the mailing wrote to, whom the workers added to contacts), channels count, an unfinished scrape or the top-up to
 make, and its files count; **📥 Сбор** lists its channels and the scrape's files, **🎯 База и рассылка** the base's files (members bases, the list).
 
 | Card screen → button | Description |
@@ -201,9 +202,10 @@ make, and its files count; **📥 Сбор** lists its channels and the scrape's
 | **📥 Сбор → 🔍 Верификация** | Checks a scrape against the live channel for missed posts. |
 | **📥 Сбор → 📈 Анализ** | Every tool on one screen, each with what it does: t.me links, keyword search, file view, combine, comments table, monthly activity, sample, rebuilding the members base. Combine merges the project's scrapes into `<name>_posts_combined.parquet`, offered on the card like its other posts files (⏩ still continues the newest scrape). |
 | **🎯 База и рассылка → 📄 Свой список** | Adds usernames/phones to `<name>_participants_list.txt` (mailing only). |
+| **🎯 База и рассылка → 📦 Скачать базу** | **📚 Вся база** as one `.csv` (`user_id, access_hash, owner_id, username, name, phone`). The project's base is its files glued as they are used (`modules/project_base.py`): its scrapes' participants, its groups' members and its list, each person once — by ID across the bases (the row whose access hash a worker of the project owns, else one of no known owner, else the newest file's; a missing username taken from another row), and a list's @username a base already has left out. The files stay its sources: a new scrape is in it at once, no copy lies on disk. 🎯 counts its people. |
 | **🎯 База и рассылка → 🧹 Очистить базу** | Moves the members base or the list to `<name>_previous/`, where it can be taken back from. |
 | **🎯 База и рассылка → 📬 Автоответ** | The project's auto-reply: on/off, its text, how many of its workers' mailing recipients answered (in all, a day, a week, per worker; **🔄 Обновить** for the latest). Each worker answers a person once; what they write is forwarded to the admins. |
-| **🎯 База и рассылка → 📇 В контакты** / **📨 Рассылка** | Add the base to the project's workers' contacts, then mail it. With «skip those already messaged» (asked before each mailing), each person is mailed once within the project. |
+| **🎯 База и рассылка → 📇 В контакты** / **📨 Рассылка** | Add the base to the project's workers' contacts, then mail it: **📚 Вся база** first (the contacts: its people with an ID), or one of its files. With «skip those already messaged» (asked before each mailing), each person is mailed once within the project. |
 | **🛠 Управление** | **🌍 Регион** — the project's content: the warmup's and 👤 Профиль's lists ([Content](#content)), rename (files are renamed too), delete (files are kept; a project with workers is not deleted — move them first). |
 | **🤖 Аккаунты** / **💬 Активность** | The project's accounts with their warmup, and the work of its workers on one target (see [Features](#features), [Warmup](#warmup)). |
 
@@ -211,8 +213,8 @@ make, and its files count; **📥 Сбор** lists its channels and the scrape's
 
 A project's **🤖 Аккаунты → 🔥 Прогрев** warms its accounts up before they work, one day of it per account a day: on the first, the
 profile and its security (a step that fails, e.g. terminating other sessions, which Telegram refuses a new session for
-24 h, is tried again the next day); every day, light activity. An account is ✅ warmed once its days are run (**📅 Дней**:
-1 — a single pass) and every setup step is done; a day where no step went through (a flood limit, the profile not read)
+24 h, is tried again the next day); every day, light activity. An account is ✅ warmed once its days are run (**📅 Дней**,
+typed, any number from 1; 1 — a single pass) and every setup step is done; a day where no step went through (a flood limit, the profile not read)
 is not counted. **▶️ Прогреть** (on top) runs it now; **🔁 Ежедневно** runs it by itself once a day
 at a random time between 10:00 and 21:00 when the project's job slot is free (bot only; one still busy at 21:00, or a
 bot started later, waits for the next day), reporting to the chat that switched it on. **🧵 Потоков** — accounts warmed at once, typed (any number from 1; each next one after the profile

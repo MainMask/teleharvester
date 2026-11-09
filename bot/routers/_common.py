@@ -172,9 +172,13 @@ CONFIRM_TTL = datetime.timedelta(minutes=10)
 
 def confirm_expired(message, ttl: datetime.timedelta = CONFIRM_TTL) -> bool:
     """A confirmation older than `ttl` (inaccessible: too old for the bot to read, its date 0): by its last edit,
-    so one asked in a screen's place (an edit of it) is as old as the question, not as the screen."""
-    return isinstance(message, InaccessibleMessage) or \
-        datetime.datetime.now(datetime.timezone.utc) - (message.edit_date or message.date) > ttl
+    so one asked in a screen's place (an edit of it) is as old as the question, not as the screen
+    (Telegram gives edit_date as a unix time, date as a datetime)."""
+    if isinstance(message, InaccessibleMessage):
+        return True
+    asked = datetime.datetime.fromtimestamp(message.edit_date, datetime.timezone.utc) if message.edit_date \
+        else message.date
+    return datetime.datetime.now(datetime.timezone.utc) - asked > ttl
 
 
 DOWNLOAD_TIMEOUT = 300  # seconds: the Bot API fetches a big file from Telegram first, often past its usual 60

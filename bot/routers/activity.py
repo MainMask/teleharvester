@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -109,8 +110,11 @@ async def poll_link(message: Message, state: FSMContext, pool: WorkerPool, funct
         await message.answer(f"ℹ️ Варианты не прочитаны: {answers.rstrip('.')}.\n{POLL_ASK}",
                              reply_markup=cancel_kb(PollVote.option))
         return
-    await state.update_data(options=len(answers))  # a number typed instead is checked against them
-    options = [(f"{number}. {text[:40]}", str(number - 1)) for number, text in enumerate(answers, 1)]
+    # a number typed instead is checked against them; the buttons carry this poll's token: an older poll's
+    # option must not be voted in this one
+    token = secrets.token_hex(4)
+    await state.update_data(options=len(answers), poll_token=token)
+    options = [(f"{number}. {text[:40]}", f"{number - 1}.{token}") for number, text in enumerate(answers, 1)]
     await message.answer("За какой вариант голосуют воркеры?",
                          reply_markup=cancel_kb(PollVote.option, choice_kb("poll_opt", options)))
 
@@ -118,11 +122,15 @@ async def poll_link(message: Message, state: FSMContext, pool: WorkerPool, funct
 @router.callback_query(PollVote.option, ChoiceCB.filter(F.scope == "poll_opt"))
 async def poll_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, pool: WorkerPool,
                     functions: dict, manager: JobManager):
+    option, _, token = callback_data.value.partition(".")
+    if token != (await state.get_data()).get("poll_token"):  # another poll's options
+        await stale_tap(callback)
+        return
     if await busy_tap(callback, manager):
         return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)  # chosen once: one vote
-    await _vote(callback.message, state, pool, functions, manager, int(callback_data.value))
+    await _vote(callback.message, state, pool, functions, manager, int(option))
 
 
 @router.message(PollVote.option)

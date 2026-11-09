@@ -55,8 +55,8 @@ class SetAutoreplyText(StatesGroup):
     input = State()
 
 
-class SetWarmupThreads(StatesGroup):
-    value = State()
+class SetWarmupNumber(StatesGroup):
+    value = State()  # data: field — 📅 days or 🧵 threads
 
 
 class AddByPhone(StatesGroup):
@@ -95,10 +95,14 @@ class PmMailing(StatesGroup):
 
 
 class ChatPost(StatesGroup):
-    """🗨 Комментарии, ⚡ Чат — сразу, 🔔 Чат — по слову (bot/routers/chat_broadcasts.py); FSM data "flow" says which."""
+    """🗨 Комментарии — к посту, 🆕 — к новым постам, ⚡ Чат — сразу, 🔔 Чат — по слову
+    (bot/routers/chat_broadcasts.py); FSM data "flow" says which."""
     mode = State()  # stays through the mentions' taps
     sticker = State()
     link = State()
+    channels = State()  # 🆕's: the channels watched, the comments under a post, the pause between them
+    per_post = State()
+    gap = State()
     trigger = State()
     count = State()
     message = State()
@@ -152,7 +156,7 @@ _ORIGINS = {
     SECURITY: (SetPassword,),
     PROFILE: (ProfileText, ChangePhoto),
     AUTOREPLY: (SetAutoreplyText,),
-    WARMUP: (SetWarmupThreads,),
+    WARMUP: (SetWarmupNumber,),
     COLLECT: (Scrape, Members, Verify, Analysis),
     BASE: (AddContacts, PmMailing),
     SETTINGS: (SetSetting,),

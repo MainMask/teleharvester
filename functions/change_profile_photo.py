@@ -10,12 +10,15 @@ from functions.base import TelethonFunction
 class ChangeProfilePhotoFunc(TelethonFunction):
     """Change profile photo"""
 
-    async def set_profile_photo(self, session: TelegramClient, photo_path: str, report):
+    async def set_profile_photo(self, session: TelegramClient, pick, report):
+        """pick(): the photo's path, called once the worker is polled (a worker skipped takes no photo from the
+        others)."""
         async with self.storage.ainitialize_session(session):
             me = await self.poll_me(session, report)
             if me is None:
                 return
 
+            photo_path = pick()
             try:
                 result = await session(functions.photos.UploadProfilePhotoRequest(
                     file=await session.upload_file(photo_path),
@@ -41,7 +44,7 @@ class ChangeProfilePhotoFunc(TelethonFunction):
     async def run(self, report, photo_path=None):
         if photo_path is not None:  # one photo for every account (sent through the bot)
             await self.run_sequential(
-                lambda session, report: self.set_profile_photo(session, photo_path, report),
+                lambda session, report: self.set_profile_photo(session, lambda: photo_path, report),
                 report,
             )
             return
@@ -64,6 +67,6 @@ class ChangeProfilePhotoFunc(TelethonFunction):
             return os.path.join(path, photo)
 
         await self.run_sequential(
-            lambda session, report: self.set_profile_photo(session, pick(), report),
+            lambda session, report: self.set_profile_photo(session, pick, report),
             report,
         )

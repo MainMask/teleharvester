@@ -186,7 +186,6 @@ def _removal_blocked(pool: WorkerPool, path: str) -> str | None:
     return None
 
 
-
 @router.callback_query(ChoiceCB.filter(F.scope == "prm_ok"))
 async def personal_remove(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
                           pool: WorkerPool, personal):

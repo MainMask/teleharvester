@@ -6,6 +6,8 @@ import os
 import zipfile
 from types import SimpleNamespace as ns
 
+import pytest
+
 from bot.callbacks import AccountBaseCB, NavCB, WarmupCB
 from bot.routers import warmup as router
 from bot.routers.accounts import base
@@ -92,21 +94,30 @@ IDLE = ns(active=False, label="")
 
 def test_a_setting_s_button_shows_its_next_value_in_place_and_daily_reports_to_its_chat():
     pool, callback = _Pool(_Storage(["a.session"])), _Callback()
-    asyncio.run(router.setting_next(callback, WarmupCB(action="set", value="days", project=3), pool, IDLE,
-                                    ns(project_id=3)))
-    text, markup = callback.message.edits[-1]
-    assert "📅 Дней: 5" in _texts(markup) and "🔥 Прогрев" in text and "✅ Прогрето 0 из 1\n" in text
-    assert "⏸ Прогрев не идёт · 🔁 Автозапуск: выкл" in text and "🔄 Обновить" in _texts(markup)
+    assert "⏸ Прогрев не идёт · 🔁 Автозапуск: выкл" in router._warmup_view(pool, IDLE, 3)[0]
     asyncio.run(router.setting_next(callback, WarmupCB(action="set", value="daily", project=3), pool, IDLE,
                                     ns(project_id=3)))
-    assert warmup.load_settings(conftest.home())["chat"] == 55
-    assert any(f"🔁 Автозапуск: {when}" in callback.message.edits[-1][0] for when in ("сегодня ~", "завтра"))
+    text, markup = callback.message.edits[-1]
+    assert "🔁 Ежедневно: вкл" in _texts(markup) and "🔥 Прогрев" in text and "✅ Прогрето 0 из 1\n" in text
+    assert "🔄 Обновить" in _texts(markup) and warmup.load_settings(conftest.home())["chat"] == 55
+    assert any(f"🔁 Автозапуск: {when}" in text for when in ("сегодня ~", "завтра"))
     # a step's button: the steps' screen again, the step's mode cycled
     asyncio.run(router.setting_next(callback, WarmupCB(action="set", value="bio", project=3), pool, IDLE,
                                     ns(project_id=3)))
     assert "🛡 📝 Bio" in _texts(callback.message.edits[-1][1])
     back = callback.message.edits[-1][1].inline_keyboard[-1][0]
     assert NavCB.unpack(back.callback_data) == NavCB(screen=WARMUP, project=3)
+
+
+def test_an_old_message_s_days_button_says_it_is_stale():
+    # 📅 Дней was a cycling button ("set"); now it is typed ("number"): an older message's tap is said in a pop-up
+    from bot.routers._common import STALE_BUTTON
+
+    pool, callback = _Pool(_Storage(["a.session"])), _Callback()
+    asyncio.run(router.setting_next(callback, WarmupCB(action="set", value="days", project=3), pool, IDLE,
+                                    ns(project_id=3)))
+    assert callback.alerts == [STALE_BUTTON] and callback.message.edits == []
+    assert warmup.load_settings(conftest.home())["days"] == warmup.DEFAULTS["days"]
 
 
 def test_every_step_s_random_button_cycles_its_own_value_and_leaves_the_step_as_it_is():
@@ -281,7 +292,7 @@ def test_a_setting_changed_while_the_daily_run_starts_is_kept(monkeypatch):
         active = False
 
         async def run(self, *args):  # the operator taps 📅 Дней while the run's message is being sent
-            warmup.save_settings(conftest.home(), warmup.cycle(warmup.load_settings(conftest.home()), "days"))
+            warmup.save_settings(conftest.home(), {**warmup.load_settings(conftest.home()), "days": 7})
             return True
 
     workspace = ns(project_id=1, pool=_Pool(storage), manager=_Manager(), functions={"WarmupFunc": lambda: "func"})
@@ -289,7 +300,7 @@ def test_a_setting_changed_while_the_daily_run_starts_is_kept(monkeypatch):
     monkeypatch.setitem(warmup_daily._planned, 1, now.replace(hour=13))
     asyncio.run(warmup_daily.run_due(None, ns(all=lambda: [workspace]), {9}, now))
     saved = warmup.load_settings(conftest.home())
-    assert saved["days"] == warmup.cycle(dict(settings), "days")["days"] and saved["auto_day"] == "2026-01-01"
+    assert saved["days"] == 7 and saved["auto_day"] == "2026-01-01"
 
 
 def test_a_worker_the_scraper_runs_on_is_not_due_for_the_warmup(monkeypatch):
@@ -345,12 +356,14 @@ def test_the_daily_run_past_its_window_waits_for_the_next_day(monkeypatch):
 
 def test_the_reset_and_a_category_s_deletion_are_asked_in_their_screen_s_place():
     storage = _Storage(["a.session"])
+    warmup.update(os.path.join(storage.directory, "a.session"), day=2)
     reset = _Callback()
-    asyncio.run(router.reset_ask(reset, ns(project_id=3)))
+    asyncio.run(router.reset_ask(reset, _Pool(storage), ns(project_id=3)))
     [(text, markup)] = reset.message.edits  # in 🔥's place, no new message
     assert text.startswith("♻️ Сбросить прогрев") and reset.message.answers == []
     assert NavCB.unpack(markup.inline_keyboard[0][1].callback_data) == NavCB(screen=WARMUP, project=3)  # ↩️
 
+    warmup.forget([os.path.join(storage.directory, "a.session")])  # 🆕 again
     delete = _Callback()
     asyncio.run(base.delete_ask(delete, AccountBaseCB(action="del", value=warmup.NEW, project=3), _State(),
                                 _Pool(storage), ns(project_id=3)))
@@ -359,6 +372,37 @@ def test_the_reset_and_a_category_s_deletion_are_asked_in_their_screen_s_place()
     # ↩️ opens the category again in its place
     assert AccountBaseCB.unpack(markup.inline_keyboard[0][1].callback_data) == AccountBaseCB(
         action="cat", value=warmup.NEW, project=3)
+
+
+def test_the_reset_of_accounts_never_warmed_is_not_asked_but_said_in_a_pop_up():
+    reset = _Callback()
+    asyncio.run(router.reset_ask(reset, _Pool(_Storage(["a.session"])), ns(project_id=3)))
+    assert reset.alerts == ["Сбрасывать нечего: аккаунты проекта ещё не прогревались."]
+    assert reset.message.edits == []
+
+
+def test_the_reset_runs_on_a_yes_asked_in_the_screen_s_place():
+    """Telegram gives the edited question's edit_date as a unix time: «Да» compares it, not breaks on it."""
+    from bot.services.jobs import JobManager
+
+    storage = _Storage(["a.session"])
+    path = os.path.join(storage.directory, "a.session")
+    warmup.update(path, day=2)
+    yes = _Callback()
+    yes.message.edit_date = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    asyncio.run(router.reset_run(yes, _Pool(storage), JobManager(), ns(project_id=3)))
+    assert yes.message.edits[0][0] == "✅ Прогрев сброшен: аккаунтов 1 начнут с первого дня."
+    assert path not in warmup.load_state()
+
+
+def test_the_deletion_of_a_category_emptied_meanwhile_is_not_asked_but_said_in_a_pop_up():
+    """Its 🗑 is on a category shown before: its accounts moved to another one since."""
+    storage = _Storage(["a.session"])
+    warmup.update(os.path.join(storage.directory, "a.session"), status=warmup.WARMED)  # 🆕 no more
+    delete = _Callback()
+    asyncio.run(base.delete_ask(delete, AccountBaseCB(action="del", value=warmup.NEW, project=3), _State(),
+                                _Pool(storage), ns(project_id=3)))
+    assert delete.alerts == [base.EMPTY_CATEGORY] and delete.message.edits == []
 
 
 def test_a_category_s_deletion_deletes_only_the_accounts_it_asked_about():
@@ -386,9 +430,9 @@ def test_a_confirmation_asked_in_an_old_screen_s_place_is_as_old_as_its_question
     from bot.routers._common import confirm_expired
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    screen = ns(date=now - datetime.timedelta(hours=2), edit_date=now - datetime.timedelta(seconds=5))
+    screen = ns(date=now - datetime.timedelta(hours=2), edit_date=int(now.timestamp()) - 5)  # Telegram's: a unix time
     assert not confirm_expired(screen)  # the screen is old, the question in its place is not
-    assert confirm_expired(ns(date=screen.date, edit_date=now - datetime.timedelta(hours=1)))
+    assert confirm_expired(ns(date=screen.date, edit_date=int(now.timestamp()) - 3600))
     assert confirm_expired(ns(date=screen.date, edit_date=None))  # never edited: as old as it was sent
 
 
@@ -487,24 +531,25 @@ class _Typed(_Message):
         self.text = text
 
 
-def test_the_threads_are_typed_and_any_number_from_one_is_taken():
+@pytest.mark.parametrize("field, name, current", [("days", "📅 Дней", 3), ("threads", "🧵 Потоков", 1)])
+def test_the_days_and_the_threads_are_typed_and_any_number_from_one_is_taken(field, name, current):
     from bot.services.jobs import JobManager
-    from bot.states import SetWarmupThreads, origin
+    from bot.states import SetWarmupNumber, origin
 
     pool, state, callback = _Pool(_Storage(["a.session"])), _FormState(), _Callback()
-    assert "🧵 Потоков: 1" in _texts(router._warmup_view(pool, JobManager(), 3)[1])
-    asyncio.run(router.threads_ask(callback, state, pool))
+    assert f"{name}: {current}" in _texts(router._warmup_view(pool, JobManager(), 3)[1])
+    asyncio.run(router.number_ask(callback, WarmupCB(action="number", value=field, project=3), state, pool))
     prompt, _ = callback.message.answers[-1]
-    assert prompt.startswith("🧵 Потоков — сейчас <b>1</b>") and state.state == SetWarmupThreads.value
-    assert origin(SetWarmupThreads.value.state, {}) == WARMUP  # its ✖️: back to 🔥 Прогрев
+    assert prompt.startswith(f"{name} — сейчас <b>{current}</b>") and state.state == SetWarmupNumber.value
+    assert origin(SetWarmupNumber.value.state, {}) == WARMUP  # its ✖️: back to 🔥 Прогрев
 
     for wrong in ("0", "-3", "много", "2.5"):
         typed = _Typed(wrong)
-        asyncio.run(router.threads_typed(typed, state, pool, JobManager(), ns(project_id=3)))
+        asyncio.run(router.number_typed(typed, state, pool, JobManager(), ns(project_id=3)))
         assert typed.answers[-1][0] == "Нужно целое число от 1. Пришлите ещё раз:" and state.state is not None
 
     typed = _Typed("150")
-    asyncio.run(router.threads_typed(typed, state, pool, JobManager(), ns(project_id=3)))
+    asyncio.run(router.number_typed(typed, state, pool, JobManager(), ns(project_id=3)))
     text, markup = typed.answers[-1]
-    assert text.startswith("✅ Потоков: 150.") and "🧵 Потоков: 150" in _texts(markup) and state.state is None
-    assert warmup.load_settings(conftest.home())["threads"] == 150
+    assert text.startswith(f"✅ {name}: 150.") and f"{name}: 150" in _texts(markup) and state.state is None
+    assert warmup.load_settings(conftest.home())[field] == 150

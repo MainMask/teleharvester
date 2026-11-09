@@ -14,7 +14,8 @@ from modules.registry import (ACCOUNT_LIST, ACCOUNTS, ACTIVITY, ADD, AUTOREPLY, 
 from bot.services.screens import screen_text
 
 # ⚙️ Настройки' daily caps: 0 is no limit
-CAPS = dict(per_account_daily=40, invite_per_account_daily=0, contacts_per_account_daily=0)
+CAPS = dict(per_account_daily=40, invite_per_account_daily=0, contacts_per_account_daily=0,
+            comments_per_account_daily=0)
 
 
 def ns(**kw):
@@ -86,7 +87,7 @@ def test_every_function_has_one_place_and_the_work_on_a_base_is_a_project_s():
     assert [f.key for f in by_category(COLLECT)] == ["members", "verify", "analysis"]
     assert [f.key for f in by_category(BASE)] == ["addcontacts", "pmmailing"]
     assert by_category(PROJECTS) == []
-    assert [f.key for f in by_category(ACTIVITY)][:4] == ["pm", "comments", "instant", "chat"]  # one target
+    assert [f.key for f in by_category(ACTIVITY)][:5] == ["pm", "comments", "watch", "instant", "chat"]  # one target
     assert "invite" in [f.key for f in by_category(ACTIVITY)]  # chat to chat: no base, no project
     assert by_category(ACCOUNTS) == []  # its actions and screens only: the checks are 📋 Список's
     assert [f.key for f in by_category(ACCOUNT_LIST)] == ["status"]
@@ -124,7 +125,7 @@ def test_hub_screens_pair_only_short_buttons_and_mark_the_submenus():
     assert submenus == [ADD, ACCOUNT_LIST, WARMUP, "👤 Профиль", SECURITY]
     # the delays and the daily caps on one screen (its view: their values on them)
     assert [[b.text for b in row] for row in screen_kb(SETTINGS).inline_keyboard] == [
-        ["⏱ Задержка", "⏳ Пауза профиля"], ["📨 ЛС", "🤝 Инвайты"], ["📇 Контакты"]]
+        ["⏱ Задержка", "⏳ Пауза профиля"], ["📨 ЛС", "🤝 Инвайты"], ["📇 Контакты", "🗨 Комменты"]]
 
 
 def test_the_card_holds_its_screens_two_in_a_row_each_acting_on_its_project():
@@ -330,7 +331,8 @@ def test_back_button_leads_to_the_parent_and_only_off_the_main_menu():
 def test_screen_kb_rows_follow_the_subheadings():
     # two short ones in a row, each subheading on a new row
     rows = [[b.text for b in row] for row in screen_kb(ACTIVITY).inline_keyboard]
-    assert rows == [["✉️ ЛС человеку", "🗨 Комментарии"], ["⚡ Чат — сразу", "🔔 Чат — по слову"],
+    assert rows == [["✉️ ЛС человеку"], ["🗨 Комментарии — к посту"], ["🆕 Комментарии — к новым постам"],
+                    ["⚡ Чат — сразу", "🔔 Чат — по слову"],
                     ["🚪 Вступить в чат", "❤️ Реакции"], ["🗳 Голосовать", "🤝 Инвайтинг"],
                     ["🚩 Жалоба на пост"], ["🚫 Жалоба на пользователя"], ["⬅️ Назад"]]
     rows = [[b.text for b in row] for row in screen_kb(SECURITY).inline_keyboard]
@@ -524,7 +526,8 @@ def test_settings_screen_shows_the_values_on_its_buttons_and_explains_them():
     msg = _Msg(SETTINGS)
     asyncio.run(screen.settings_screen(msg, _State(), False, settings))
     text, markup = msg.answers[0]
-    values = ["⏱ Задержка: 2–5 с", "⏳ Пауза профиля: 60–180 с", "📨 ЛС: 40", "🤝 Инвайты: ♾", "📇 Контакты: ♾"]
+    values = ["⏱ Задержка: 2–5 с", "⏳ Пауза профиля: 60–180 с", "📨 ЛС: 40", "🤝 Инвайты: ♾", "📇 Контакты: ♾",
+              "🗨 Комменты: ♾"]
     assert [b.text for b in _buttons(markup)] == values
     for button, shown in zip(SCREENS[SETTINGS].buttons, values):
         assert f"<b>{shown}</b> — {html.escape(button.hint)}" in text

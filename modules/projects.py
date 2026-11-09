@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
-from modules import atomic_file, contacts_ledger, json_file, restricted_workers, scraped_files
+from modules import atomic_file, contacts_ledger, json_file, project_base, restricted_workers, scraped_files
 from modules.registry import ACCOUNTS, ADD, ADD_CHANNELS, COLLECT, title
 from modules.storages.sessions_storage import SessionsStorage
 from scraper.datafiles import read_attrs
@@ -267,7 +267,7 @@ NO_CHANNELS_TEXT = f"У проекта нет каналов — добавьт�
 
 
 # the card's buttons that need the project's data (missing): the bot's card checks them first
-MISSING_CHECKED = ("scrape", "topup", "addcontacts", "pmmailing", "verify", "analysis")
+MISSING_CHECKED = ("scrape", "topup", "addcontacts", "pmmailing", "exportbase", "verify", "analysis")
 
 
 def missing(project: Project, what: str) -> str | None:
@@ -283,7 +283,7 @@ def missing(project: Project, what: str) -> str | None:
     if what == "addcontacts" and "participants" not in kinds:
         return (f"У проекта ещё нет базы участников — {FIRST_COLLECT}. Загруженный список для контактов не "
                 "подходит: в нём нет ID.")
-    if what == "pmmailing" and not kinds & {"participants", "list"}:
+    if what in ("pmmailing", "exportbase") and not kinds & {"participants", "list"}:
         return f"У проекта ещё нет базы — {FIRST_BASE}."
     if what in ("verify", "analysis") and "posts" not in kinds:
         return f"У проекта ещё нет файла постов — сначала «{title('scrape')}»."
@@ -476,13 +476,18 @@ def account_label(path: str) -> str:
 def move_account(path: str, target_dir: str) -> str:
     """Move a worker's session file to another project's sessions/ (or FREE_DIR), its restrictions
     (restricted_workers, keyed by the file's path) with it; returns its new path. ValueError, nothing
-    moved, if a scrape on it is left to continue (its checkpoint names the old path) or the target
-    has a file of that name. The caller takes it out of its live pool first, and checks it is not busy."""
+    moved, if a scrape on it is left to continue (its checkpoint names the old path), or the target
+    has a file of that name or the same account in another file (it would not load: SessionsStorage skips a
+    second one). The caller takes it out of its live pool first, and checks it is not busy."""
     if scraped_files.unfinished_scrape(path):
         raise ValueError("на аккаунте незавершённый скрап — сначала завершите его")
     target = os.path.join(target_dir, os.path.basename(path))
     if os.path.exists(target):
         raise ValueError(f"там уже есть {os.path.basename(path)}")
+    user_id = (read_account(path) or {}).get("user_id")
+    if user_id is not None and (twin := next((other for other in account_files(target_dir)
+                                              if (read_account(other) or {}).get("user_id") == user_id), None)):
+        raise ValueError(f"этот аккаунт там уже есть: {os.path.basename(twin)}")
     os.makedirs(target_dir, exist_ok=True)
     os.replace(path, target)
     restricted_workers.rename(path, target)
@@ -549,21 +554,18 @@ def _files(project: Project) -> list[tuple[str, str]]:
 
 def _base_files(project: Project) -> list[tuple[str, str]]:
     """The files the mailing takes: the participants' bases and the uploaded list."""
-    return scraped_files.project_files(project.name, kinds=("participants", "list"))
+    return project_base.sources(project.name)
 
 
 def base_line(project: Project, files: list[tuple[str, str]] | None = None) -> str:
-    """🎯 База и рассылка in a line: the base's records (its files' rows and the list's lines: a person in two of
-    them counted twice), whom the mailing wrote to, whom the workers added to contacts. Reads the files' footers
-    and the project's ledgers, so off the bot's event loop."""
+    """🎯 База и рассылка in a line: the base's people, each once (📚 Вся база: project_base), whom the mailing wrote
+    to, whom the workers added to contacts. Reads the files and the project's ledgers, so off the bot's event loop."""
     files = _base_files(project) if files is None else files
     if not files:
         return f"🎯 Базы пока нет — {FIRST_BASE}."
-    records = sum(len(scraped_files.read_list(path)) if path.endswith(".txt") else scraped_files.row_count(path)
-                  for path, _ in files)
     stats = json_file.load(os.path.join(home(project), "pm_mailing.json"), {})
     mailed = sum(1 for entry in stats.values() if entry.get("count"))
-    return (f"🎯 База: записей {records} · написали {mailed} · "
+    return (f"🎯 База: людей {project_base.people(project.name)} (без повторов) · написали {mailed} · "
             f"в контактах {len(contacts_ledger.load(home(project)))}")
 
 

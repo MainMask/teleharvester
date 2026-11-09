@@ -86,8 +86,9 @@ async def analysis_tool(callback: CallbackQuery, callback_data: ChoiceCB, state:
 @router.callback_query(Analysis.file, ChoiceCB.filter(F.scope == "an_file"))
 async def analysis_file_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
                              analyses: JobManager):
-    files = (await state.get_data()).get("files", [])
-    if callback_data.value == "all":
+    data = await state.get_data()
+    files = data.get("files", [])
+    if callback_data.value == "all" and data.get("tool") == "combine":  # 🧩's own: another tool takes one file
         path = files
     elif (path := pick_from(files, callback_data.value)) is None:
         await stale_tap(callback)

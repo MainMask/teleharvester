@@ -124,10 +124,10 @@ class TestRuns:
     def test_broadcast_comments(self):
         from functions.broadcast_comments import CommentsBroadcastFunc
         from modules.rich_message import RichContent
-        fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=1))
+        fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=1, comments_per_account_daily=0))
         fn.sessions = [_Session()]
         msgs, report = collect()
-        asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), report))
+        asyncio.run(fn.run("t.me/chan/5", [RichContent(text="hi")], report))
         assert any("отправлено" in m for m in msgs)
 
     def test_broadcast_comments_says_why_it_stopped(self):
@@ -139,10 +139,10 @@ class TestRuns:
             async def send_message(self, *a, **k):
                 raise RuntimeError("CHAT_WRITE_FORBIDDEN")
 
-        fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=0))
+        fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=0, comments_per_account_daily=0))
         fn.sessions = [_Failing()]
         msgs, report = collect()
-        asyncio.run(fn.run("t.me/chan/5", RichContent(text="hi"), report))
+        asyncio.run(fn.run("t.me/chan/5", [RichContent(text="hi")], report))
         assert msgs[-1] == "[A] 5 ошибок подряд, остановка."
 
 
@@ -1453,8 +1453,8 @@ class TestChangePhotoFromChat:
         fn = ChangeProfilePhotoFunc(storage, ns(delay=[1], profile_pause=[0]))
         used = []
 
-        async def fake_set(session, photo_path, report):
-            used.append((session.name, photo_path))
+        async def fake_set(session, pick, report):
+            used.append((session.name, pick()))
 
         fn.set_profile_photo = fake_set
         msgs, report = collect()

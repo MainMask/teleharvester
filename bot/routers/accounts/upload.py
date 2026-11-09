@@ -16,7 +16,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import MAX_MESSAGE, back_answer, busy_step, busy_tap, delete_quietly, download, fit_lines
+from bot.routers._common import MAX_MESSAGE, busy_step, busy_tap, delete_quietly, download, fit_lines
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager, busy
 from bot.states import ImportFiles
@@ -31,11 +31,9 @@ SUFFIXES = (".zip", ".session", ".json")
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.FILES))
 async def files_start(callback: CallbackQuery, state: FSMContext, manager: JobManager):
-    await callback.answer()
-
-    if manager.active:
-        await back_answer(callback.message, busy(manager.label), ADD, manager.project_id)
+    if await busy_tap(callback, manager):
         return
+    await callback.answer()
 
     await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(ImportFiles.files)

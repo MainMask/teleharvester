@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.callbacks import ChoiceCB, FunctionCB, ReleaseCB
 from bot.keyboards.common import choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import confirm_expired, ensure_workers, resolve
+from bot.routers._common import busy_tap, confirm_expired, ensure_workers, resolve
 from bot.routers.accounts.proxies import proxies_busy, rehome_now
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -63,7 +63,7 @@ async def offer_rehome(bot, chat_id, workspace):
 @router.callback_query(FunctionCB.filter(F.key == "status"))
 async def run_status(callback: CallbackQuery, pool: WorkerPool, functions: dict, manager: JobManager,
                      workspace: Workspace):
-    if not await ensure_workers(callback, pool):
+    if await busy_tap(callback, manager) or not await ensure_workers(callback, pool):
         return
 
     async def status(func, report):

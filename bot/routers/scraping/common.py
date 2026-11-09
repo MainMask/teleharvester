@@ -106,6 +106,9 @@ PERSONAL_SCRAPING = ("⛔ На этом личном аккаунте идёт �
                      "дождитесь его окончания.")
 
 
+NO_ACCOUNTS = f"У проекта нет аккаунтов: добавьте воркера или личный аккаунт — {menu_path(ADD)}."
+
+
 def _accounts(pool: WorkerPool, personal) -> list:
     return scrape_accounts(pool.storage, personal)
 
@@ -116,9 +119,7 @@ async def choose_account(message: Message, state: FSMContext, flow: str, **deps)
     accounts = _accounts(deps["pool"], deps["personal"])
     if not accounts:
         await state.clear()
-        await to_collect(message, f"У проекта нет аккаунтов: добавьте воркера или личный аккаунт — "
-                                  f"{menu_path(ADD)}.",
-                         deps["scrapes"])
+        await to_collect(message, NO_ACCOUNTS, deps["scrapes"])
         return
     if len(accounts) == 1:  # in 📥 Сбор's place, as after a pick: its buttons gone, the account said
         only = accounts[0]

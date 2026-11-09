@@ -82,6 +82,19 @@ def test_an_account_with_a_scrape_to_continue_is_not_moved():
     assert os.path.exists(path)
 
 
+def test_an_account_already_there_in_another_file_is_not_moved():
+    # a copy by hand: the same account under another name would be skipped by the project's pool
+    green = _project("Green")
+    os.makedirs(projects.FREE_DIR)
+    _write_jsession(Path(projects.sessions_dir(green)), "111", "w1")
+    _write_jsession(Path(projects.FREE_DIR), "111", "w1")
+    copy = os.path.join(projects.FREE_DIR, "copy.jsession")
+    os.replace(os.path.join(projects.FREE_DIR, "111.jsession"), copy)
+    with pytest.raises(ValueError, match="этот аккаунт там уже есть: 111.jsession"):
+        projects.move_account(copy, projects.sessions_dir(green))
+    assert os.path.exists(copy) and len(projects.account_files(projects.sessions_dir(green))) == 1
+
+
 def test_free_accounts_are_found_and_moved_into_a_project():
     os.makedirs(projects.FREE_DIR)
     _write_jsession(Path(projects.FREE_DIR), "222", "free1")

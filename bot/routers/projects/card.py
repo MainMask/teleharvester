@@ -1,21 +1,27 @@
 """A project's card's screens on its files (registry.PROJECT_FILES: 📥 Сбор, 🎯 База и рассылка, 🛠 Управление):
 their buttons and functions, on the project's files and workers, its own settings (manage.py)."""
 import asyncio
+import os
+import tempfile
 from dataclasses import dataclass
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from bot.callbacks import FunctionCB, MenuAction, MenuCB
 from bot.routers import audience, mailing, scraping
 from bot.routers.projects import manage, views
 from bot.services import screens
 from bot.services.workspaces import Workspace, Workspaces
-from modules import projects, scraped_files, warmup
+from modules import project_base, projects, scraped_files, warmup
 from modules.registry import BOT_FUNCTIONS, MANAGE, NO_WORKERS, ON_WORKERS, PROJECT_FILES, SCREENS
+from modules.scraper_creds import scrape_accounts
 
 router = Router()
+
+ON_ACCOUNT = ("scrape", "topup", "members", "verify")  # the card's functions run on one account, a worker or personal
 
 
 @dataclass
@@ -54,8 +60,24 @@ async def _region(tap: Tap):
 
 
 async def _base(tap: Tap, kinds: tuple[str, ...], ask):
-    """The mailing or the contacts, on the project's bases only: the base is still picked by button."""
-    await ask(tap.message, tap.state, scraped_files.project_files(tap.project.name, kinds=kinds))
+    """The mailing or the contacts, on the project's bases only, picked by button: 📚 Вся база first, with its people
+    (each once; the contacts' only those with an id, not the list's lines), then each file."""
+    name = tap.project.name
+    whole = await asyncio.to_thread(project_base.people, name, "list" not in kinds)
+    await ask(tap.message, tap.state, name, whole, scraped_files.project_files(name, kinds=kinds))
+
+
+async def _export(tap: Tap):
+    """📦 Скачать базу: 📚 Вся база as a .csv document under 🎯 (the screen stays, as an accounts' ZIP)."""
+    name = tap.project.name
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, f"{name}_base.csv")
+        count = await asyncio.to_thread(project_base.export, name, path)
+        try:
+            await tap.message.answer_document(FSInputFile(path),
+                                              caption=f"📦 База проекта «{name}»: людей {count}, без повторов.")
+        except TelegramAPIError as err:  # e.g. past the Bot API's 50 MB
+            await tap.message.answer(f"⚠️ Не удалось отправить базу: {err}")
 
 
 # every button of the card's screens on the project's files, by its action or function key (checked at the
@@ -72,6 +94,7 @@ ACTIONS = {
     "clearbase": lambda tap: manage.offer_clear(tap.message, tap.state, tap.project),
     "addcontacts": lambda tap: _base(tap, ("participants",), audience.ask_base),
     "pmmailing": lambda tap: _base(tap, ("participants", "list"), mailing.ask_recipients),
+    "exportbase": _export,
     # 🛠 Управление
     "channels": lambda tap: manage.ask_channels(tap.message, tap.state, tap.project),
     "region": _region,
@@ -93,6 +116,8 @@ async def _press(callback: CallbackQuery, key: str, state: FSMContext, workspace
     why = await asyncio.to_thread(projects.missing, project, key) if key in projects.MISSING_CHECKED else None
     if not why and key in ON_WORKERS and workspace.pool.count() == 0:
         why = NO_WORKERS
+    if not why and key in ON_ACCOUNT and not scrape_accounts(workspace.pool.storage, personal):
+        why = scraping.common.NO_ACCOUNTS
     await callback.answer(why, show_alert=bool(why))
     if not why:
         await ACTIONS[key](Tap(callback, state, project, workspace, workspaces, personal))

@@ -32,8 +32,8 @@ class _State:
 
 
 class _Msg:
-    def __init__(self, text=None):
-        self.text = text
+    def __init__(self, text=None, document=None):
+        self.text, self.document = text, document
         self.answers = []
         self.chat = ns(id=1)
         self.bot = object()

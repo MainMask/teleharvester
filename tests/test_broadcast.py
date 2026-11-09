@@ -112,7 +112,7 @@ class TestDelayBetweenSendsOnly:
 
     def test_comments_no_delay_after_the_last_message(self, monkeypatch):
         from functions import broadcast_comments
-        from functions.broadcast_comments import CommentsBroadcastFunc
+        from functions.broadcast_comments import CommentsBroadcastFunc, variants
 
         sends, delays = [], []
 
@@ -123,13 +123,14 @@ class TestDelayBetweenSendsOnly:
             delays.append(1)
 
         monkeypatch.setattr(broadcast_comments.rich_message, "send", send)
-        fn = CommentsBroadcastFunc(_storage([_Session()]), types.SimpleNamespace(delay=[0], messages_count=2))
+        fn = CommentsBroadcastFunc(_storage([_Session()]),
+                                   types.SimpleNamespace(delay=[0], messages_count=2, comments_per_account_daily=0))
         fn.delay = delay
 
         async def report(text):
             pass
 
-        asyncio.run(fn.broadcast(_Session(), "chan", 5, RichContent(text="hi"), report))
+        asyncio.run(fn.broadcast(_Session(), "chan", 5, variants([RichContent(text="hi")]), report))
 
         assert len(sends) == 2 and len(delays) == 1
 

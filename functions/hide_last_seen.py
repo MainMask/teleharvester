@@ -12,7 +12,7 @@ class HideLastSeenFunc(TelethonFunction):
 
     async def hide(self, session, report):
         if await self.request_each(
-                session, report, HIDE,
+                session, report, lambda: HIDE,
                 "последний визит скрыт", "не удалось скрыть"):
             self.mark_done(session)
 

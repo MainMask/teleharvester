@@ -256,6 +256,7 @@ def _settings(tmp_path, monkeypatch):
     (MenuAction.CAP_PM, "-1", "40", "limits", "per_account_daily", 40),
     (MenuAction.CAP_INVITE, "x", "0", "limits", "invite_per_account_daily", 0),
     (MenuAction.CAP_CONTACTS, "", "15", "limits", "contacts_per_account_daily", 15),
+    (MenuAction.CAP_COMMENTS, "два", "20", "limits", "comments_per_account_daily", 20),
 ])
 def test_a_setting_is_set_from_its_screen(tmp_path, monkeypatch, action, bad, typed, section, key, saved):
     from bot.routers import settings as screen
@@ -281,6 +282,23 @@ def test_a_setting_is_set_from_its_screen(tmp_path, monkeypatch, action, bad, ty
     assert shown in [b.text for row in markup.inline_keyboard for b in row] and f"<b>{shown}</b>" in text
 
 
+@pytest.mark.parametrize("action, applies", [
+    (MenuAction.DELAY, "Действует сразу."),  # read before each pause
+    (MenuAction.CAP_PM, "Действует для задач, запущенных после этого."),  # a run reads its cap as it starts
+    (MenuAction.CAP_COMMENTS, "«🆕 Комментарии — к новым постам» — уже со следующей проверки."),  # read each round
+])
+def test_a_changed_setting_says_when_it_applies(tmp_path, monkeypatch, action, applies):
+    from bot.routers import settings as screen
+
+    settings = _settings(tmp_path, monkeypatch)
+    state = _State()
+    asyncio.run(screen.setting_start(_Callback(), MenuCB(action=action), state, settings))
+    done = _Msg("7")
+    asyncio.run(screen.setting_typed(done, state, settings))
+    assert applies in done.answers[0][0]
+    assert ("Действует сразу" in done.answers[0][0]) == (action == MenuAction.DELAY)
+
+
 def test_a_cap_is_made_unlimited_by_its_button(tmp_path, monkeypatch):
     from bot.routers import settings as screen
     from bot.states import SetSetting
@@ -291,16 +309,34 @@ def test_a_cap_is_made_unlimited_by_its_button(tmp_path, monkeypatch):
     labels = [b.text for row in callback.message.answers[0][1].inline_keyboard for b in row]
     assert labels == [screen.UNLIMITED, "✖️ Отмена"]
 
+    unlimited = ChoiceCB.unpack(callback.message.answers[0][1].inline_keyboard[0][0].callback_data)
     tap = _Callback()
-    asyncio.run(screen.setting_unlimited(tap, state, settings))
+    asyncio.run(screen.setting_unlimited(tap, unlimited, state, settings))
     assert settings.per_account_daily == 0 and state.state is None
     assert tap.message.answers[0][0].startswith("✅ ")
 
     stale = _Callback()  # the step left: the button does nothing
     state.state = None
-    asyncio.run(screen.setting_unlimited(stale, state, settings))
+    asyncio.run(screen.setting_unlimited(stale, unlimited, state, settings))
     assert settings.per_account_daily == 0 and not stale.message.answers
     assert SetSetting.value  # (the step it belongs to)
+
+
+def test_a_cap_s_unlimited_button_under_another_setting_s_prompt_is_stale(tmp_path, monkeypatch):
+    # 📨 ЛС's prompt left unanswered, ⏱ Задержка's asked: the older ♾ must not make the delay 0
+    from bot.routers import settings as screen
+    from bot.routers._common import STALE_BUTTON
+
+    settings = _settings(tmp_path, monkeypatch)
+    cap, delay, state = _Callback(), _Callback(), _State()
+    asyncio.run(screen.setting_start(cap, MenuCB(action=MenuAction.CAP_PM), state, settings))
+    asyncio.run(screen.setting_start(delay, MenuCB(action=MenuAction.DELAY), state, settings))
+    unlimited = ChoiceCB.unpack(cap.message.answers[0][1].inline_keyboard[0][0].callback_data)
+
+    tap = _Callback()
+    asyncio.run(screen.setting_unlimited(tap, unlimited, state, settings))
+    assert tap.alerts == [STALE_BUTTON] and not tap.message.answers and state.state is not None
+    assert settings.delay == [5, 10] and toml.load(tmp_path / "config.toml")["broadcast"]["delay"] == [5, 10]
 
 
 def test_the_chat_campaign_s_values_are_not_settings_buttons():
@@ -405,6 +441,34 @@ def test_the_poll_s_options_are_offered_as_buttons(monkeypatch):
     pick = ChoiceCB.unpack(markup.inline_keyboard[1][0].callback_data)
     asyncio.run(activity.poll_pick(callback, pick, state, _poll_pool(), {"PollVoteFunc": object}, _Manager()))
     assert runs == [("https://t.me/chan/5", 1)] and callback.message.markups == [None]  # «Нет», chosen once
+
+
+def test_an_older_poll_s_option_is_not_voted_in_another_poll(monkeypatch):
+    from bot.routers import activity
+    from bot.routers._common import STALE_BUTTON
+
+    async def borrow(pool, client, path, work, timeout):
+        return await work()
+
+    class _Poll:
+        async def answers(self, session, link):
+            return ["Да", "Нет", "Может быть"]
+
+    monkeypatch.setattr(activity, "borrow", borrow)
+    old, state = _Msg("https://t.me/chan/5"), _State()
+    asyncio.run(activity.poll_link(old, state, _poll_pool(), {"PollVoteFunc": _Poll}))
+    stale = ChoiceCB.unpack(old.answers[0][1].inline_keyboard[2][0].callback_data)  # «Может быть» of post 5
+    asyncio.run(activity.poll_link(_Msg("https://t.me/chan/9"), state, _poll_pool(), {"PollVoteFunc": _Poll}))
+
+    class _Manager:
+        active = False
+
+        async def run(self, *args):
+            raise AssertionError("no vote from another poll's button")
+
+    callback = _Callback()
+    asyncio.run(activity.poll_pick(callback, stale, state, _poll_pool(), {"PollVoteFunc": object}, _Manager()))
+    assert callback.alerts == [STALE_BUTTON] and callback.message.markups == []
 
 
 def test_a_poll_that_can_t_be_read_asks_the_option_s_number():

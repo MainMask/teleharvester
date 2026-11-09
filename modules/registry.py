@@ -81,6 +81,7 @@ SCREENS = {screen.title: screen for screen in (
     # the base: what it holds (its view: bot/routers/projects/views.py), its list, its clearing, then the work on it
     Screen(BASE, "люди для рассылки: свой список, очистка, контакты воркеров, ЛС, автоответ", CARD, buttons=(
         Button("upload", "📄 Свой список", "@username, ссылки t.me или номера: список для рассылки"),
+        Button("exportbase", "📦 Скачать базу", "вся база проекта одним файлом .csv — каждый человек один раз"),
         Button("clearbase", "🧹 Очистить базу", "участники групп или загруженный список уходят в <имя>_previous/, "
                "оттуда их можно вернуть"),
     )),
@@ -130,6 +131,8 @@ SCREENS = {screen.title: screen for screen in (
         Button("cap_pm", "📨 ЛС", "личных сообщений рассылки", CAPS_GROUP),
         Button("cap_invite", "🤝 Инвайты", "приглашений в чат", CAPS_GROUP),
         Button("cap_contacts", "📇 Контакты", "добавлений в контакты", CAPS_GROUP),
+        Button("cap_comments", "🗨 Комменты", "комментариев под постами — к посту и к новым постам вместе",
+               CAPS_GROUP),
     )),
 )}
 MAIN_MENU = tuple(title for title, screen in SCREENS.items() if not screen.parent)  # the reply keyboard
@@ -184,8 +187,10 @@ BOT_FUNCTIONS = [
     # 💬 Активность: every worker writes to one target, then the actions in chats, then the reports
     BotFunction("pm", "PmBroadcastFunc", "✉️ ЛС человеку", RISKY, ACTIVITY,
                 "все воркеры пишут одному человеку (по username или номеру)", ONE_TARGET),
-    BotFunction("comments", "CommentsBroadcastFunc", "🗨 Комментарии", RISKY, ACTIVITY,
+    BotFunction("comments", "CommentsBroadcastFunc", "🗨 Комментарии — к посту", RISKY, ACTIVITY,
                 "воркеры пишут комментарии под постом канала", ONE_TARGET),
+    BotFunction("watch", "CommentsWatchFunc", "🆕 Комментарии — к новым постам", RISKY, ACTIVITY,
+                "воркеры следят за каналами и по очереди комментируют каждый новый пост — до ⏹", ONE_TARGET),
     BotFunction("instant", "InstantBroadcastFunc", "⚡ Чат — сразу", RISKY, ACTIVITY,
                 "воркеры сразу отправляют сообщения в чат или группу", ONE_TARGET),
     BotFunction("chat", "BroadcastChatFunc", "🔔 Чат — по слову", RISKY, ACTIVITY,

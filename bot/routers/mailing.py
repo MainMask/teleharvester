@@ -15,6 +15,7 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.states import PmMailing
 from functions.pmmailing import GONE_SKIPPED, SKIP_ASK, PmMailingFunc
+from modules import project_base
 from modules.registry import BASE, title
 from modules.settings import Settings
 
@@ -25,25 +26,32 @@ MAX_RECIPIENTS_FILE_SIZE = 5 * 1024 * 1024  # a recipients list is text; cap at 
 LIMIT_ASK = "Сколько получателей? Пришлите число или нажмите «♾ Все»:"
 
 
-async def ask_recipients(message: Message, state: FSMContext, bases: list[tuple[str, str]]):
-    """The mailing's first step, from a project's 🎯 База и рассылка (bot/routers/projects/card.py): a base by button
-    (`bases`: the project's), a .txt, a pasted list or a path."""
+async def ask_recipients(message: Message, state: FSMContext, project: str, whole: int, bases: list[tuple[str, str]]):
+    """The mailing's first step, from a project's 🎯 База и рассылка (bot/routers/projects/card.py): 📚 its whole
+    base (`whole` people, each once: project_base) or one of its files (`bases`) by button, a .txt, a pasted list or
+    a path."""
     await state.clear()  # an abandoned run's `recipients` would otherwise override a new path
     await state.set_state(PmMailing.path)
-    await state.update_data(bases=[path for path, _ in bases])  # buttons carry an index into this
+    await state.update_data(bases=[path for path, _ in bases], project=project)  # buttons carry an index into this
     await message.edit_text(  # in 🎯 База и рассылка's place, as a choice by button
         f"{title('pmmailing')} — выберите базу ниже, пришлите .txt файлом или вставьте список — по одному "
         "@username, ссылке t.me или номеру на строку (или путь к .parquet/.txt на сервере):",
         reply_markup=cancel_kb(PmMailing.path, choice_kb(
-            "mail_base", [*((f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)),
+            "mail_base", [*([(f"📚 Вся база · {whole}", project_base.WHOLE)] if bases else []),
+                          *((f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)),
                           (f"📄 {DEFAULT_TARGETS}", "default")])),
     )
 
 
 @router.callback_query(PmMailing.path, ChoiceCB.filter(F.scope == "mail_base"))
 async def mail_base(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext):
-    path = DEFAULT_TARGETS if callback_data.value == "default" else \
-        pick_from((await state.get_data()).get("bases", []), callback_data.value)
+    data = await state.get_data()
+    if callback_data.value == project_base.WHOLE:  # 📚: the project's base, read when the run starts
+        path = project_base.WHOLE if data.get("project") else None
+    elif callback_data.value == "default":
+        path = DEFAULT_TARGETS
+    else:
+        path = pick_from(data.get("bases", []), callback_data.value)
     if path is None:  # a button of an older list of the bases
         await stale_tap(callback)
         return
@@ -142,6 +150,13 @@ async def mail_run(
 
     if data.get("recipients"):  # list supplied inline or via an uploaded .txt
         recipients = list(data["recipients"])
+    elif data["path"] == project_base.WHOLE:  # 📚: the project's files glued, each person once
+        try:
+            recipients = await asyncio.to_thread(project_base.merged, data["project"],
+                                                 project_base.worker_ids(pool.storage))
+        except Exception as err:
+            await end(f"⚠️ База не прочитана: {err}")
+            return
     else:
         try:
             # off the event loop: a .parquet recipients DB can be large and load_recipients

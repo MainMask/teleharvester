@@ -12,6 +12,7 @@ class MenuAction(str, Enum):
     REGION = "region"          # the project's region: its content's (modules/content.py), cycled
     RENAME = "rename"          # the project's name, its files renamed with it
     CLEAR_BASE = "clearbase"   # its group members' base or its list, to <name>_previous/
+    EXPORT_BASE = "exportbase"  # 📚 its whole base, each person once, as a file
     DELETE = "delete"          # the project, its files kept
     # the project's accounts'
     PROXY = "proxy"            # open proxy setup on the workers screen
@@ -27,7 +28,8 @@ class MenuAction(str, Enum):
     PROFILE_PAUSE = "ppause"   # set the pause between accounts for profile changes (config.toml)
     CAP_PM = "cap_pm"              # the per-account daily caps (config.toml [limits]): PM mailing,
     CAP_INVITE = "cap_invite"      # inviting,
-    CAP_CONTACTS = "cap_contacts"  # adding to contacts
+    CAP_CONTACTS = "cap_contacts"  # adding to contacts,
+    CAP_COMMENTS = "cap_comments"  # post comments
 
 
 # A project's screen's button carries its project (`project`, its id): it acts on that project, whichever the
@@ -56,7 +58,7 @@ class ChoiceCB(CallbackData, prefix="ch"):
 
 class WarmupCB(CallbackData, prefix="wu"):
     """🔥 Прогрев's own buttons (bot/routers/warmup.py): a setting's next value, the reset of the warmup."""
-    action: str  # "set" (value: a setting or a step), "threads", "reset", "resetok"
+    action: str  # "set" (value: a setting or a step), "number" (value: "days" or "threads"), "reset", "resetok"
     value: str = ""  # the setting or the step (modules/warmup.py)
     project: int = 0
 

@@ -134,6 +134,19 @@ async def set_commands(bot, admins):
             logging.warning("bot commands for %s: %s", admin, err)
 
 
+JOBS_STOP_GRACE = 3  # seconds the workers' jobs get to post their last word; the scrapes' wait follows (systemd: 30)
+
+
+async def stop_jobs(workspaces):
+    """Bot shutdown: the workers' jobs (a mailing, 🔔, 🆕) stopped while the bot's session is still open — left to
+    asyncio.run's cancellation, their last message would open a new one nobody closes."""
+    stopping = [workspace.manager for workspace in workspaces.all() if await workspace.manager.stop()]
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + JOBS_STOP_GRACE
+    while any(manager.active for manager in stopping) and loop.time() < deadline:
+        await asyncio.sleep(0.1)
+
+
 async def mark_stopped():
     """Bot shutdown (a clean stop): the next start is not after a crash."""
     try:
@@ -213,6 +226,9 @@ async def run_bot():
     dp.startup.register(announce_start)  # first: before "continuing the scrape"
     dp.startup.register(set_commands)
     dp.startup.register(scraping.resume_after_restart)
+    dp.startup.register(chat_broadcasts.resume_watches)
+    dp.shutdown.register(chat_broadcasts.stop_watches)  # before stop_jobs: a watch stopped now is continued
+    dp.shutdown.register(stop_jobs)  # before the scrapes' wait: theirs is the longest
     dp.shutdown.register(scraping.stop_for_shutdown)
     dp.startup.register(autoreply.start)
     dp.shutdown.register(autoreply.stop)

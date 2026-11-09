@@ -289,3 +289,12 @@ def test_a_worker_s_file_picks_its_project_unasked(monkeypatch):
     monkeypatch.setattr(cli, "console", _Console([]))  # nothing typed: asking would fail
     path = f"{projects.sessions_dir(found[1])}/79990000000.jsession"
     assert cli.pick_project(path).name == "B"
+
+
+def test_a_personal_account_s_file_asks_no_project(monkeypatch):
+    from modules import projects, scraper_creds
+
+    found = [projects.Project("A", [], id=1), projects.Project("B", [], id=2)]
+    monkeypatch.setattr(projects, "load", lambda: found)
+    monkeypatch.setattr(cli, "console", _Console([]))  # nothing typed: asking would fail
+    assert cli.pick_project(f"{scraper_creds.PERSONAL_DIR}/79990000000.jsession") is not None

@@ -49,7 +49,6 @@ KEEPABLE = ("username", "photo", "bio", "music")  # the fields that may be empty
 # a setting's values, its button cycling through them
 CYCLES = {
     "region": list(content.REGIONS),
-    "days": [1, 3, 5, 7, 14],
     "daily": [False, True],
     "avatars": ["1", "1-3"],
     "music_chance": [0, 30, 50, 70, 100],

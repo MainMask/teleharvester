@@ -363,7 +363,7 @@ class _SMsg(_Msg):
 
     async def edit_text(self, text, **kwargs):
         self.edits.append((text, kwargs.get("reply_markup")))
-        self.edit_date = datetime.datetime.now(datetime.timezone.utc)
+        self.edit_date = int(datetime.datetime.now(datetime.timezone.utc).timestamp())  # as Telegram's: a unix time
 
 
 class _SCallback:
@@ -1424,7 +1424,8 @@ def test_a_flow_starts_without_another_flow_s_leftovers(module, handler, key):
     router = importlib.import_module(f"bot.routers.{module}")
     state = _State({"trigger": "go!", "link": "https://t.me/old/1"})  # a trigger flow left midway
     args = (FunctionCB(key=key),) if key else ()
-    asyncio.run(getattr(router, handler)(_Callback(), *args, state, _pool()))
+    extra = {"workspaces": conftest.Workspaces()} if module == "chat_broadcasts" else {}
+    asyncio.run(getattr(router, handler)(_Callback(), *args, state, _pool(), **extra))
     # the comments run would write that trigger to config.toml (_save_options)
     assert not {"trigger", "link"} & state.data.keys()
 
@@ -1435,7 +1436,7 @@ def test_the_contacts_and_profile_flows_start_without_leftovers(tmp_path, monkey
     monkeypatch.chdir(tmp_path)  # the profile picker reads stats/ (empty here)
     leftovers = {"trigger": "go!", "path": "assets/databases/G_posts.parquet"}
     state = _State(dict(leftovers))
-    asyncio.run(audience.ask_base(_Msg(), state, []))
+    asyncio.run(audience.ask_base(_Msg(), state, "G", 0, []))
     assert not leftovers.keys() & state.data.keys()
 
     state = _State(dict(leftovers))

@@ -8,10 +8,10 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import screen_kb
-from bot.routers._common import STALE_STEP, back_answer, left_flow
+from bot.routers._common import STALE_STEP, back_answer, left_flow, stale_tap
 from bot.services import screens
 from bot.states import SetSetting
-from modules.registry import SCREENS, SETTINGS
+from modules.registry import SCREENS, SETTINGS, title
 from modules.settings import Settings, count_text, parse_seconds, seconds_text
 
 router = Router()
@@ -30,14 +30,19 @@ class _Setting:
     retry: str
     save: Callable[[Settings, object], None]
     unlimited: bool = False  # 0 means no limit: a button says so
+    applies: str = "Действует сразу."  # when the new value applies, said once it is saved
 
 
 # the per-account daily caps, [limits] in config.toml
 DAILY_CAPS = {MenuAction.CAP_PM: "per_account_daily", MenuAction.CAP_INVITE: "invite_per_account_daily",
-              MenuAction.CAP_CONTACTS: "contacts_per_account_daily"}
+              MenuAction.CAP_CONTACTS: "contacts_per_account_daily",
+              MenuAction.CAP_COMMENTS: "comments_per_account_daily"}
 
 
 UNLIMITED = "♾ Без лимита"
+# a run reads its cap as it starts; 🆕 Комментарии — к новым постам, which runs until ⏹, at each round
+CAP_APPLIES = "Действует для задач, запущенных после этого."
+WATCH_APPLIES = f" «{title('watch')}» — уже со следующей проверки."
 
 
 def _count(raw: str) -> int | None:
@@ -59,7 +64,8 @@ VALUES = {
         count_text, lambda settings, key=key: getattr(settings, key),
         f"Пришлите число на аккаунт в сутки или нажмите «{UNLIMITED}»:",
         _count, f"Нужно целое число или «{UNLIMITED}». Пришлите ещё раз:",
-        lambda settings, value, key=key: settings.set_daily_cap(key, value), unlimited=True)
+        lambda settings, value, key=key: settings.set_daily_cap(key, value), unlimited=True,
+        applies=CAP_APPLIES + (WATCH_APPLIES if key == "comments_per_account_daily" else ""))
        for action, key in DAILY_CAPS.items()},
 }
 _BUTTONS = {button.action: button for button in SCREENS[SETTINGS].buttons}
@@ -92,7 +98,8 @@ async def setting_start(callback: CallbackQuery, callback_data: MenuCB, state: F
     await state.clear()
     await state.set_state(SetSetting.value)
     await state.update_data(setting=callback_data.action.value)
-    markup = choice_kb("set_unlim", [(UNLIMITED, "0")]) if setting.unlimited else None
+    # the button names its setting: under another setting's prompt (the same step) it is stale
+    markup = choice_kb("set_unlim", [(UNLIMITED, callback_data.action.value)]) if setting.unlimited else None
     await callback.message.answer(
         f"{button.title} — сейчас <b>{setting.shown(setting.current(settings))}</b> ({button.hint}).\n\n{setting.ask}",
         parse_mode="HTML", reply_markup=cancel_kb(SetSetting.value, markup),
@@ -105,9 +112,12 @@ async def setting_typed(message: Message, state: FSMContext, settings: Settings)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "set_unlim"))
-async def setting_unlimited(callback: CallbackQuery, state: FSMContext, settings: Settings):
-    """♾ Без лимита under a cap's prompt: as a typed 0, only while the chat is still at its step."""
+async def setting_unlimited(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext, settings: Settings):
+    """♾ Без лимита under a cap's prompt: as a typed 0, only while the chat is still at its step for its cap."""
     if await left_flow(callback, state, SetSetting.value):
+        return
+    if (await state.get_data()).get("setting") != callback_data.value:  # an older cap's prompt: 0 is no delay
+        await stale_tap(callback)
         return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)  # chosen once
@@ -133,8 +143,8 @@ async def _apply(message: Message, state: FSMContext, settings: Settings, raw: s
         return
     await state.clear()
     # the settings screen again, with the new value: the one above still shows the old
-    title = _BUTTONS[action].title.split(" ", 1)[1]
+    name = _BUTTONS[action].title.split(" ", 1)[1]
     titles = _titles(settings)
-    await message.answer(f"✅ {title}: {setting.shown(value)}. Действует сразу.\n\n"
+    await message.answer(f"✅ {name}: {setting.shown(value)}. {setting.applies}\n\n"
                          f"{screens.screen_text(SETTINGS, HEADER, titles=titles)}",
                          parse_mode="HTML", reply_markup=screen_kb(SETTINGS, titles=titles))

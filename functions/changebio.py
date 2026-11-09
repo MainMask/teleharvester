@@ -11,10 +11,14 @@ class ChangeBioFunc(TelethonFunction):
               "каждый воркер получит случайный.")
 
     async def change_bio(self, session, report, bio=None, bios=None, taken=None):
-        if bios is not None:
-            bio = profile_done.pick_fresh(bios, taken)  # one no other worker has, while there is one
-            taken.append(bio)
-        if await self.request_each(session, report, UpdateProfileRequest(about=bio), "bio изменено", "bio не изменено"):
+        def request():
+            nonlocal bio
+            if bios is not None:  # picked once it is polled: a worker skipped takes no bio from the others
+                bio = profile_done.pick_fresh(bios, taken)  # one no other worker has, while there is one
+                taken.append(bio)
+            return UpdateProfileRequest(about=bio)
+
+        if await self.request_each(session, report, request, "bio изменено", "bio не изменено"):
             self.mark_done(session, bio)
 
     async def run(self, report, bio=None, bios=None):

@@ -112,8 +112,8 @@ def test_bio_marks_the_changed_workers_only():
 def test_request_each_tells_success():
     ok, failing = _Session(), _Session(error=RuntimeError("boom"))
     fn = TelethonFunction(_storage([]), ns())
-    assert asyncio.run(fn.request_each(ok, _quiet, object(), "done", "failed")) is True
-    assert asyncio.run(fn.request_each(failing, _quiet, object(), "done", "failed")) is False
+    assert asyncio.run(fn.request_each(ok, _quiet, object, "done", "failed")) is True
+    assert asyncio.run(fn.request_each(failing, _quiet, object, "done", "failed")) is False
 
 
 def test_request_each_counts_for_the_job_summary():
@@ -123,7 +123,7 @@ def test_request_each_counts_for_the_job_summary():
     fn = TelethonFunction(_storage([]), ns())
     fn.progress = Progress()
     for session in (ok, ok, failing):
-        asyncio.run(fn.request_each(session, _quiet, object(), "done", "failed"))
+        asyncio.run(fn.request_each(session, _quiet, object, "done", "failed"))
     assert (fn.progress.ok, fn.progress.failed) == (2, 1)
 
 
@@ -164,6 +164,45 @@ def test_a_worker_that_can_t_be_polled_takes_no_name_from_the_list():
     assert ok.requests[0].first_name == "Анна"  # not left to the one skipped
 
 
+class _Gone(_Session):
+    async def get_me(self):
+        raise ConnectionError("dead proxy")
+
+
+def _first_free(monkeypatch):
+    """profile_done.pick_fresh as the first option nobody has: which worker takes which is then certain."""
+    monkeypatch.setattr(profile_done, "pick_fresh", lambda options, taken: next(o for o in options if o not in taken))
+
+
+def test_a_worker_that_can_t_be_polled_takes_no_bio_from_the_list(monkeypatch):
+    from functions.changebio import ChangeBioFunc
+
+    _first_free(monkeypatch)
+    gone, ok = _Gone(), _Session()
+    fn = ChangeBioFunc(_storage([gone, ok], {id(gone): "gone", id(ok): "ok"}), ns(profile_pause=[0]))
+    asyncio.run(fn.run(_quiet, bios=["one", "two"]))
+    assert ok.requests[0].about == "one" and profile_done.used("ChangeBioFunc") == ["one"]
+
+
+def test_a_worker_that_can_t_be_polled_takes_no_photo_from_the_folder(monkeypatch):
+    from functions.change_profile_photo import ChangeProfilePhotoFunc
+
+    os.makedirs(content.path("ru", "photos"))
+    for name in ("a.jpg", "b.jpg"):
+        with open(os.path.join(content.path("ru", "photos"), name), "wb") as fileobj:
+            fileobj.write(b"x")
+    _first_free(monkeypatch)
+
+    class _GonePhoto(_PhotoSession):
+        async def get_me(self):
+            raise ConnectionError("dead proxy")
+
+    gone, ok = _GonePhoto([]), _PhotoSession([])
+    fn = ChangeProfilePhotoFunc(_storage([gone, ok], {id(gone): "gone", id(ok): "ok"}), ns(profile_pause=[0]))
+    asyncio.run(fn.run(_quiet))
+    assert gone.requests == [] and profile_done.used("ChangeProfilePhotoFunc") == ["a.jpg"]
+
+
 def test_photos_from_the_folder_skip_the_ones_other_workers_have(tmp_path, monkeypatch):
     from functions.change_profile_photo import ChangeProfilePhotoFunc
 
@@ -175,8 +214,8 @@ def test_photos_from_the_folder_skip_the_ones_other_workers_have(tmp_path, monke
 
     set_to = []
 
-    async def fake_set(session, photo_path, report):
-        set_to.append(photo_path.rsplit("/", 1)[-1])
+    async def fake_set(session, pick, report):
+        set_to.append(pick().rsplit("/", 1)[-1])
 
     fn = ChangeProfilePhotoFunc(_storage([object(), object()]), ns(profile_pause=[0]))
     fn.set_profile_photo = fake_set

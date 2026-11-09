@@ -74,7 +74,7 @@ class TestSessionsStorage:
 
 class TestCommentsErrorReset:
     def test_success_resets_counter(self, monkeypatch):
-        from functions.broadcast_comments import CommentsBroadcastFunc
+        from functions.broadcast_comments import CommentsBroadcastFunc, variants
 
         outcomes = iter([ValueError("x")] * 4 + [None] + [ValueError("x")] * 4 + [None])
         sends = []
@@ -91,10 +91,10 @@ class TestCommentsErrorReset:
             async def get_me(self):
                 return ns(first_name="A")
 
-        fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=2))
+        fn = CommentsBroadcastFunc(_Storage(), ns(delay=[0], messages_count=2, comments_per_account_daily=0))
         fn.delay = _no_sleep
         _, report = collect()
-        asyncio.run(fn.broadcast(_S(), "chan", 1, None, report))
+        asyncio.run(fn.broadcast(_S(), "chan", 1, variants([None]), report))
 
         assert len(sends) == 10  # 4 errors never reach the 5-error stop once reset
 
@@ -970,8 +970,8 @@ class TestProfilePhotoSkipsHiddenFiles:
         fn = ChangeProfilePhotoFunc(_Storage([object()] * 5), ns(delay=[0], profile_pause=[0]))
         picked = []
 
-        async def set_profile_photo(session, path, report):
-            picked.append(path)
+        async def set_profile_photo(session, pick, report):
+            picked.append(pick())
 
         fn.set_profile_photo = set_profile_photo
         _, report = collect()
@@ -2248,8 +2248,8 @@ class TestDeadWorkerIsSkipped:
 
         dead, alive, msgs = self._run(
             CommentsBroadcastFunc,
-            lambda f, r: f.run("https://t.me/name/5", RichContent(text="hi"), r),
-            ns(messages_count=1),
+            lambda f, r: f.run("https://t.me/name/5", [RichContent(text="hi")], r),
+            ns(messages_count=1, comments_per_account_daily=0),
         )
         assert not dead.requests and len(alive.requests) == 1
 

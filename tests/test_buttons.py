@@ -214,7 +214,7 @@ def test_every_screen_of_the_main_menu_starts_with_an_emoji(monkeypatch, tmp_pat
     deps = dict(pool=types.SimpleNamespace(count=lambda: 1, storage=types.SimpleNamespace(directory=str(tmp_path))),
                 personal=None, settings=types.SimpleNamespace(
         delay=[2, 5], profile_pause=[60, 180], trigger="go", messages_count=0, per_account_daily=40,
-        invite_per_account_daily=0, contacts_per_account_daily=0,
+        invite_per_account_daily=0, contacts_per_account_daily=0, comments_per_account_daily=0,
                   autoreply_enabled=False, autoreply_text=""),
         workspace=types.SimpleNamespace(project_id=0))  # a project opened: its screens
 

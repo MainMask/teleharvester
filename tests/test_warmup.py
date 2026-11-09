@@ -42,7 +42,6 @@ def test_settings_start_from_the_defaults_and_each_button_cycles_its_value():
     assert [warmup.cycle(settings, "bio")["steps"]["bio"] for _ in range(3)] == [warmup.KEEP, warmup.OFF, warmup.ON]
     assert [warmup.cycle(settings, "name")["steps"]["name"] for _ in range(2)] == [warmup.OFF, warmup.ON]
     assert [warmup.cycle(settings, "2fa")["steps"]["2fa"] for _ in range(2)] == [warmup.OFF, warmup.ON]
-    assert [warmup.cycle(settings, "days")["days"] for _ in range(4)] == [5, 7, 14, 1]
     settings["steps"]["name"] = warmup.KEEP  # kept by an older version: taken as on
     warmup.save_settings(conftest.home(), settings)
     assert warmup.load_settings(conftest.home())["steps"]["name"] == warmup.ON

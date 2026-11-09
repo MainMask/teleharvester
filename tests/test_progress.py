@@ -232,7 +232,8 @@ def _comments(sessions, messages_count, fail_on):
     from functions.base.base import AccountLimited
     from functions.broadcast_comments import CommentsBroadcastFunc
 
-    fn = CommentsBroadcastFunc(_storage(sessions), types.SimpleNamespace(delay=[0], messages_count=messages_count))
+    fn = CommentsBroadcastFunc(_storage(sessions), types.SimpleNamespace(delay=[0], messages_count=messages_count,
+                                                                         comments_per_account_daily=0))
     fn.progress = Progress()
     sent = {}
 
@@ -249,7 +250,7 @@ def _comments(sessions, messages_count, fail_on):
 
     fn.delay = no_delay
     with patch("functions.broadcast_comments.rich_message.send", send):
-        asyncio.run(fn.run("https://t.me/chan/5", None, report))
+        asyncio.run(fn.run("https://t.me/chan/5", [None], report))
     return fn.progress
 
 

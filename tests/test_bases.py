@@ -107,9 +107,10 @@ def test_mailing_offers_bases_and_takes_the_picked_one(tmp_path, monkeypatch):
     old, new = _bases_dir(tmp_path, monkeypatch)
     state, callback = _State(), _Callback()
 
-    asyncio.run(mailing.ask_recipients(callback.message, state, [(new, "OmniBase"), (old, "Old")]))
+    asyncio.run(mailing.ask_recipients(callback.message, state, "OmniBase", 1234, [(new, "OmniBase"), (old, "Old")]))
     _, markup = callback.message.answers[0]
-    assert [b.text for b in _buttons(markup)][0].startswith("📄 OmniBase")
+    texts = [b.text for b in _buttons(markup)]
+    assert texts[0] == "📚 Вся база · 1234" and texts[1].startswith("📄 OmniBase")
     assert state.data["bases"] == [new, old]
 
     pick = _Callback()
@@ -121,7 +122,7 @@ def test_mailing_offers_bases_and_takes_the_picked_one(tmp_path, monkeypatch):
 def test_mailing_without_bases_offers_the_default_list_and_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     callback = _Callback()
-    asyncio.run(mailing.ask_recipients(callback.message, _State(), []))  # a project with no base yet
+    asyncio.run(mailing.ask_recipients(callback.message, _State(), "OmniBase", 0, []))  # a project with no base yet
     text, markup = callback.message.answers[0]
     assert [b.text for b in _buttons(markup)] == ["📄 assets/targets.txt", "✖️ Отмена"] and text.startswith(
         "📨 Рассылка — выберите базу ниже")  # its default list, a button too
@@ -961,6 +962,17 @@ def test_analysis_combine_all_posts_files(tmp_path, monkeypatch):
     asyncio.run(scraping_router.analysis.analysis_file_pick(
         _Callback(), ChoiceCB(scope="an_file", value="all"), state, manager))
     assert seen == [([b, a], str(tmp_path / "P_posts_combined"))]  # the project's own file, on its card
+
+    # 🧩's «🗂 Все файлы постов» tapped under another tool's prompt: stale, not a list of files for it
+    from bot.routers._common import STALE_BUTTON
+
+    asyncio.run(scraping_router.analysis.analysis_tool(_Callback(), ChoiceCB(scope="an_tool", value=f"summary.{token}"),
+                                                       state))
+    alerts, stale = [], _Callback()
+    stale.answer = lambda text=None, **kwargs: alerts.append((text, kwargs.get("show_alert"))) or asyncio.sleep(0)
+    asyncio.run(scraping_router.analysis.analysis_file_pick(stale, ChoiceCB(scope="an_file", value="all"), state,
+                                                            manager))
+    assert alerts == [(STALE_BUTTON, True)] and stale.message.answers == [] and len(seen) == 1
 
 
 def test_analysis_without_posts_files_explains(tmp_path, monkeypatch):

@@ -764,10 +764,11 @@ def _pool_of(*paths):
 
 
 def _scraped_files(tmp_path):
-    """Green has a base and a posts file; Other's files sit in the same folder."""
-    for stem in ("Green_participants_01.01.2024-31.01.2024", "Green_posts_01.01.2024-31.01.2024",
-                 "Other_participants_01.01.2024-31.01.2024", "Other_posts_01.01.2024-31.01.2024"):
+    """Green has a base (2 people) and a posts file; Other's files sit in the same folder."""
+    for stem in ("Green_posts_01.01.2024-31.01.2024", "Other_posts_01.01.2024-31.01.2024"):
         _write_parquet(tmp_path / f"{stem}.parquet")
+    for stem in ("Green_participants_01.01.2024-31.01.2024", "Other_participants_01.01.2024-31.01.2024"):
+        pd.DataFrame({"ID": [1, 2], "Access Hash": [10, 20]}).to_parquet(tmp_path / f"{stem}.parquet")
 
 
 def _two_projects(tmp_path):
@@ -828,14 +829,14 @@ def test_card_shows_every_function_and_says_what_to_collect_first(tmp_path):
     assert RISK_NOTE not in collect.message.edits[0][0]
     asyncio.run(_press(base, "base", state))
     text, markup = base.message.edits[0]
-    assert _buttons(markup) == ["📄 Свой список", "📇 В контакты", "📨 Рассылка", "📬 Автоответ ›",
-                                "⬅️ Назад"]  # no 🧹
+    assert _buttons(markup) == ["📄 Свой список", "📦 Скачать базу", "📇 В контакты", "📨 Рассылка",
+                                "📬 Автоответ ›", "⬅️ Назад"]  # no 🧹
     assert text.startswith("📁 <b>Green</b> › <b>🎯 База и рассылка</b>\n\n🎯 Базы пока нет — сначала") and \
         text.endswith(f"<i>{RISK_NOTE}</i>")
 
-    for action, why in (("verify", "У проекта ещё нет файла постов — сначала «▶️ Скрап»."),
-                        ("mail", "У проекта ещё нет базы — сначала «▶️ Скрап», «👥 Участники групп» или "
-                                 "«📄 Свой список».")):
+    no_base = "У проекта ещё нет базы — сначала «▶️ Скрап», «👥 Участники групп» или «📄 Свой список»."
+    for action, why in (("verify", "У проекта ещё нет файла постов — сначала «▶️ Скрап»."), ("mail", no_base),
+                        ("exportbase", no_base)):
         tap = _AlertCallback()
         asyncio.run(_press(tap, action, state))
         assert tap.alerts == [(why, True)] and tap.message.answers == []  # a pop-up over the card, nothing run
@@ -847,6 +848,20 @@ def test_card_shows_every_function_and_says_what_to_collect_first(tmp_path):
     assert tap.alerts == [(None, False)] and tap.message.answers
 
 
+def test_the_scraper_s_functions_of_a_project_without_accounts_say_so_in_a_pop_up(tmp_path, monkeypatch):
+    """Neither a worker nor a personal account: as the card's other checks, nothing asked, nothing run."""
+    from bot.routers import scraping
+
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    projects.add("Green", ["@a"])
+    _scraped_files(tmp_path)  # a posts file: the verify has what to check
+    state = _State({"project_name": "Green"})
+    for action in ("scrape", "members", "verify"):
+        tap = _card_action(action, state, _pool_of())
+        assert tap.alerts == [(scraping.common.NO_ACCOUNTS, True)], action
+        assert tap.message.answers == [] and tap.message.edits == [] and state.state is None, action
+
+
 def test_card_mailing_offers_the_project_s_bases_only(tmp_path):
     from bot.routers import mailing
     from bot.states import PmMailing
@@ -855,7 +870,8 @@ def test_card_mailing_offers_the_project_s_bases_only(tmp_path):
     state = _State({"project_name": "Green"})
     callback = _card_action("mail", state)
     text, markup = callback.message.edits[-1]  # in 🎯 База и рассылка's place
-    assert _buttons(markup) == ["📄 participants · 01.01.2024-31.01.2024 · 2", "📄 assets/targets.txt", "✖️ Отмена"]
+    assert _buttons(markup) == ["📚 Вся база · 2", "📄 participants · 01.01.2024-31.01.2024 · 2",
+                                "📄 assets/targets.txt", "✖️ Отмена"]
     assert state.state == PmMailing.path
 
     pick = _SCallback()
@@ -880,7 +896,7 @@ def test_card_contacts_offer_the_project_s_bases_only_and_need_workers(tmp_path,
     monkeypatch.setattr(audience, "_launch", launch)
     state = _State({"project_name": "Green"})
     callback = _card_action("contacts", state)
-    assert _buttons(callback.message.edits[-1][1]) == ["📄 participants · 01.01.2024-31.01.2024 · 2",
+    assert _buttons(callback.message.edits[-1][1]) == ["📚 Вся база · 2", "📄 participants · 01.01.2024-31.01.2024 · 2",
                                                        "📄 assets/contacts.parquet", "✖️ Отмена"]
     asyncio.run(audience.run_base(_SCallback(), ChoiceCB(scope="contacts_base", value="0"), state, _pool(),
                                   {}, ns(active=False)))
@@ -1255,7 +1271,7 @@ def test_bot_uploads_a_list_and_the_mailing_offers_it(tmp_path):
     [(screen, _)] = pasted.answers  # 🎯 База и рассылка, where the list was uploaded from, the result above it
     assert screen.startswith("✅ В список проекта добавлено: 2, всего в нём: 2. Пропущено строк: 1 — не @username, "
                              f"не ссылка t.me и не номер.\n\n📁 <b>Clients</b> › <b>{BASE}</b>")
-    assert "🎯 База: записей 2 · написали 0 · в контактах 0" in screen and "• list · 2" in screen
+    assert "🎯 База: людей 2 (без повторов) · написали 0 · в контактах 0" in screen and "• list · 2" in screen
     # a list has no IDs: the mailing, not the contacts, which say why
     contacts = _AlertCallback()
     asyncio.run(_press(contacts, "contacts", state))
@@ -1268,7 +1284,8 @@ def test_bot_uploads_a_list_and_the_mailing_offers_it(tmp_path):
 
     mail = _SCallback()
     asyncio.run(_press(mail, "mail", state))
-    assert _buttons(mail.message.edits[-1][1]) == ["📄 list · 3", "📄 assets/targets.txt", "✖️ Отмена"]
+    assert _buttons(mail.message.edits[-1][1]) == ["📚 Вся база · 3", "📄 list · 3", "📄 assets/targets.txt",
+                                                   "✖️ Отмена"]
     asyncio.run(mailing.mail_base(_SCallback(), ChoiceCB(scope="mail_base", value="0"), state))
     assert state.data["path"] == str(tmp_path / "Clients_participants_list.txt")
 
@@ -1334,7 +1351,7 @@ def test_bot_card_sums_up_the_workers_warmup_and_the_base():
     assert "🤖 Воркеров: 1 · ✅ Прогрето 0 из 1\n\n🎯 Базы пока нет" in text
 
 
-def test_base_line_counts_the_records_whom_the_mailing_wrote_to_and_the_contacts(tmp_path):
+def test_base_line_counts_the_people_whom_the_mailing_wrote_to_and_the_contacts(tmp_path):
     from modules import contacts_ledger, json_file
 
     project = projects.add("Clients", [])
@@ -1346,9 +1363,9 @@ def test_base_line_counts_the_records_whom_the_mailing_wrote_to_and_the_contacts
     json_file.save(f"{projects.home(project)}/pm_mailing.json",
                    {"1": {"count": 1}, "2": {"count": 2}, "3": {"count": 0, "gone": "2026-01-01"}})
     contacts_ledger.save(projects.home(project), {"1": 111})
-    assert projects.base_line(project) == "🎯 База: записей 5 · написали 2 · в контактах 1"
+    assert projects.base_line(project) == "🎯 База: людей 5 (без повторов) · написали 2 · в контактах 1"
     text = projects.base_text(project, html=True)
-    assert text.startswith("🎯 База: записей 5") and "• participants · members · 3" in text and "• list · 2" in text
+    assert text.startswith("🎯 База: людей 5") and "• participants · members · 3" in text and "• list · 2" in text
 
 
 def test_clear_moves_the_file_to_previous_where_it_can_be_taken_back(tmp_path):
@@ -1482,7 +1499,8 @@ def test_bot_a_delete_or_clear_confirmation_left_too_long_does_nothing(tmp_path)
     confirm = _SCallback()
     asyncio.run(_press(confirm, "delete", state))
     late = _AlertCallback()
-    late.message.date = late.message.edit_date = long_ago  # asked an hour ago, in the screen's place
+    # asked an hour ago, in the screen's place (Telegram's edit_date: a unix time)
+    late.message.date, late.message.edit_date = long_ago, int(long_ago.timestamp())
     asyncio.run(router.project_delete(late, ChoiceCB(scope="prj_del", value=_delete_value(confirm)), state,
                                       conftest.Workspaces()))
     assert late.alerts == [("Подтверждение устарело — нажмите «🗑 Удалить» заново.", True)] and projects.load()
@@ -1491,7 +1509,7 @@ def test_bot_a_delete_or_clear_confirmation_left_too_long_does_nothing(tmp_path)
     asyncio.run(_press(ask, "clear", state))
     members = ChoiceCB.unpack(ask.message.edits[0][1].inline_keyboard[0][0].callback_data)
     late = _AlertCallback()
-    late.message.date = late.message.edit_date = long_ago
+    late.message.date, late.message.edit_date = long_ago, int(long_ago.timestamp())
     asyncio.run(router.project_clear(late, members, state, conftest.Workspaces(scrapes=JobManager())))
     assert late.alerts == [("Подтверждение устарело — нажмите «🧹 Очистить базу» заново.", True)]
     assert scraped_files.members_base("Clients").exists()

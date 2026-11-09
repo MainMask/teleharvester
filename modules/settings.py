@@ -63,6 +63,7 @@ LIMIT_DEFAULTS = dict(
     profile_pause=[60, 180],
     invite_per_account_daily=0,
     contacts_per_account_daily=0,
+    comments_per_account_daily=0,
 )
 
 MIN_AUTOREPLY_INTERVAL = 60  # seconds: each check connects every worker
@@ -138,9 +139,10 @@ class Settings:
         # pause between accounts for profile-wide changes (name/bio/username/2FA/photo/…):
         # bigger than account_pause so identical edits don't land on every account at once
         self.profile_pause: List[int] = limits["profile_pause"]
-        # per-account daily caps (0 = unlimited): invites / contact adds a worker makes per day
+        # per-account daily caps (0 = unlimited): invites / contact adds / post comments a worker makes per day
         self.invite_per_account_daily: int = limits["invite_per_account_daily"]
         self.contacts_per_account_daily: int = limits["contacts_per_account_daily"]
+        self.comments_per_account_daily: int = limits["comments_per_account_daily"]
 
         # bot only: one reply to people who answer a PM mailing (bot/services/autoreply.py); enabled and text: the
         # default of a project that has set none of its own; off when disabled or the text is empty
@@ -160,7 +162,8 @@ class Settings:
         for name, cap in (("[broadcast] messages_count", self.messages_count),
                           ("[limits] per_account_daily", self.per_account_daily),
                           ("[limits] invite_per_account_daily", self.invite_per_account_daily),
-                          ("[limits] contacts_per_account_daily", self.contacts_per_account_daily)):
+                          ("[limits] contacts_per_account_daily", self.contacts_per_account_daily),
+                          ("[limits] comments_per_account_daily", self.comments_per_account_daily)):
             if not _is_int(cap) or cap < 0:
                 console.print(f"[bold red]config.toml {name}: нужно целое число, 0 — без лимита, "
                               f"а не {cap!r}.[/]")
@@ -217,8 +220,8 @@ class Settings:
         self.messages_count = count
 
     def set_daily_cap(self, key: str, count: int, path: str = "config.toml"):
-        """Change a per-account daily cap ([limits] per_account_daily, invite_per_account_daily or
-        contacts_per_account_daily; 0 = unlimited), in config.toml and live."""
+        """Change a per-account daily cap ([limits] per_account_daily, invite_per_account_daily,
+        contacts_per_account_daily or comments_per_account_daily; 0 = unlimited), in config.toml and live."""
         self._write_setting(path, "limits", key, count)
         setattr(self, key, count)
 

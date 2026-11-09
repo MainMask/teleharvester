@@ -31,6 +31,7 @@ router = Router()
 SHOWN_ACCOUNTS = 50  # a category's accounts listed in its message
 PERSONAL = "personal"  # the personal accounts' button: theirs are cards only, they are no project's files
 PERSONAL_TITLE = "👤 Личные"
+EMPTY_CATEGORY = "В этой категории нет аккаунтов."
 WHOLE_BASE = "📦 Все аккаунты"
 # 📋 Список's own buttons, each with what it does (screens.screen_text's `own`); the categories: the two not named
 # by the warmup
@@ -113,7 +114,7 @@ async def category_open(callback: CallbackQuery, callback_data: AccountBaseCB, s
         return
     paths = _paths(pool, name)
     if name not in warmup.CATEGORIES or not paths:
-        await callback.answer("В этой категории нет аккаунтов.", show_alert=True)
+        await callback.answer(EMPTY_CATEGORY, show_alert=True)
         return
     await callback.answer()
     errors = warmup.load_state() if name == warmup.FAILED else {}
@@ -197,12 +198,12 @@ async def category_zip(callback: CallbackQuery, callback_data: AccountBaseCB, po
 async def delete_ask(callback: CallbackQuery, callback_data: AccountBaseCB, state: FSMContext, pool: WorkerPool,
                      workspace: Workspace):
     name, project = callback_data.value, workspace.project_id
-    if name not in warmup.CATEGORIES:
-        await callback.answer()
-        return
-    await callback.answer()
     # the accounts asked about: the confirmation deletes these only (a warmup may move others into it meanwhile)
     paths = _paths(pool, name)
+    if name not in warmup.CATEGORIES or not paths:  # emptied since the category was shown
+        await callback.answer(EMPTY_CATEGORY, show_alert=True)
+        return
+    await callback.answer()
     await state.update_data(base_delete={"name": name, "paths": paths})
     await callback.message.edit_text(  # in the category's place: ✖️ brings it back
         f"🗑 Удалить файлы сессий категории {warmup.CATEGORIES[name]} ({len(paths)})? "

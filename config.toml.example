@@ -14,6 +14,7 @@ account_pause = [30, 60]
 profile_pause = [60, 180]   # pause (sec) between accounts for profile changes (name/bio/username/2FA/photo)
 invite_per_account_daily = 0    # max invites per account per day (0 = unlimited)
 contacts_per_account_daily = 0  # max contact-adds per account per day (0 = unlimited)
+comments_per_account_daily = 0  # max post comments per account per day, 🗨 and 🆕 together (0 = unlimited)
 
 [autoreply]
 # Bot only: answer once anyone who replies to a PM mailing, and forward their messages to the admins.

@@ -194,7 +194,7 @@ def test_mail_start_drops_stale_recipients_from_an_abandoned_run():
 
     state = _ClearingState({"recipients": ["@old"]})
 
-    asyncio.run(mailing.ask_recipients(_Msg(), state, []))  # a project's card's 📨
+    asyncio.run(mailing.ask_recipients(_Msg(), state, "P", 0, []))  # a project's card's 📨
     asyncio.run(mailing.mail_path(_Msg(text="-"), state))
 
     assert state.data.get("recipients") is None

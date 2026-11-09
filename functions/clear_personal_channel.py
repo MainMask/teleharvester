@@ -9,7 +9,7 @@ class ClearPersonalChannelFunc(TelethonFunction):
     """Clear personal channel"""
 
     async def clear(self, session, report):
-        if await self.request_each(session, report, UpdatePersonalChannelRequest(InputChannelEmpty()),
+        if await self.request_each(session, report, lambda: UpdatePersonalChannelRequest(InputChannelEmpty()),
                                    "канал убран из профиля", "не удалось убрать канал"):
             self.mark_done(session)
 

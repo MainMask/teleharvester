@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import back_answer, download, ensure_workers
+from bot.routers._common import back_answer, busy_tap, download, ensure_workers
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager, busy
 from bot.states import SetProxy
@@ -76,11 +76,7 @@ async def rehome_now(message, pool) -> str | None:
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.PROXY))
 async def proxy_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, manager: JobManager):
-    if not await ensure_workers(callback, pool):
-        return
-
-    if manager.active:
-        await back_answer(callback.message, busy(manager.label), ACCOUNTS, manager.project_id)
+    if await busy_tap(callback, manager) or not await ensure_workers(callback, pool):
         return
 
     await state.clear()  # an abandoned flow's data must not reach this one

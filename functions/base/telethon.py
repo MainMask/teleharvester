@@ -73,8 +73,9 @@ class TelethonFunction(BaseFunction):
             raise ValueError("у канала нет чата обсуждения")
         return chat, comment
 
-    async def request_each(self, session, report, request, done: str, failed: str) -> bool:
-        """One request on one worker, reported under its name: `done`, or `failed: <error>`;
+    async def request_each(self, session, report, make_request, done: str, failed: str) -> bool:
+        """One request on one worker — make_request(), called once the worker is polled (a worker skipped
+        takes no value picked from a list) —, reported under its name: `done`, or `failed: <error>`;
         True if it went through."""
         async with self.storage.ainitialize_session(session):
             me = await self.poll_me(session, report)
@@ -82,7 +83,7 @@ class TelethonFunction(BaseFunction):
                 return False
 
             try:
-                await session(request)
+                await session(make_request())
             except Exception as err:
                 self.progress_failed()
                 await report(f"[{me.first_name}] {failed}: {err}")

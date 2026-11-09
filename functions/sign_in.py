@@ -26,7 +26,8 @@ def say(text: str):
 
 def pick_project(path: str | None = None) -> "projects.Project | None":
     """The project to work in, asked by number (the only one without asking; with `path`, a worker's file, its
-    own); None without any, or if the projects' file can't be read (said why)."""
+    own; a personal account's: any, it is every project's); None without any, or if the projects' file can't be
+    read (said why)."""
     try:
         found = projects.load()
     except ValueError as err:
@@ -39,6 +40,8 @@ def pick_project(path: str | None = None) -> "projects.Project | None":
     if own := next((project for project in found if os.path.normpath(projects.sessions_dir(project)) == folder),
                    None):
         return own
+    if folder == os.path.normpath(scraper_creds.PERSONAL_DIR):
+        return found[0]
     if len(found) == 1:
         return found[0]
     for index, project in enumerate(found, 1):
@@ -196,7 +199,6 @@ class AddByPhoneFunc(TelethonFunction):
             return
         say(sign_in.added_text(login, me, role, len(self.storage)))
 
-
     async def take_free(self):
         """Free accounts (no project's) become the project's workers, as the bot's 📦 Из свободных."""
         free = [path for path in projects.account_files(projects.FREE_DIR) if path.endswith(".jsession")]
@@ -217,7 +219,6 @@ class AddByPhoneFunc(TelethonFunction):
             added += 1
         if added:
             say(f"✅ Добавлено в проект: {added}. Воркеров: {len(self.storage)}.")
-
 
     async def import_files(self):
         """As the bot's 📥 Из файлов: the tdata_import/ folders and the .session (+ .json) files in

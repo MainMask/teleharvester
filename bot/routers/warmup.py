@@ -9,15 +9,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.callbacks import FunctionCB, WarmupCB
-from bot.keyboards.common import button
+from bot.keyboards.common import button, cancel_kb
 from bot.keyboards.menu import back_kb, nav_button, screen_kb
-from bot.keyboards.common import cancel_kb
-from bot.routers._common import busy_tap, confirm_expired, ensure_workers, require_text, resolve
+from bot.routers._common import STALE_BUTTON, busy_tap, confirm_expired, ensure_workers, require_text, resolve
 from bot.services import screens, warmup_daily
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace
-from bot.states import SetWarmupThreads
+from bot.states import SetWarmupNumber
 from modules import content, projects, warmup
 from modules.registry import MANAGE, WARMUP, WARMUP_STEPS, title
 
@@ -25,9 +24,12 @@ router = Router()
 
 NOTHING_DUE = "Некого прогревать сегодня: все аккаунты прогреты, уже прогревались сегодня или ограничены."
 MODES = {warmup.OFF: "⬜", warmup.ON: "✅", warmup.KEEP: "🛡"}
+# 📅 and 🧵: typed, any whole number from 1 — the button's title, what the prompt asks for
+NUMBERS = {"days": ("📅 Дней", "сколько дней греть аккаунт"),
+           "threads": ("🧵 Потоков", "сколько аккаунтов греть одновременно")}
 # 🔥 Прогрев's own buttons, each with what it does (screens.screen_text's `own`)
-OWN_BUTTONS = (("📅 Дней", "сколько дней греть аккаунт, раз в день; прогрет — когда пройдены все"),
-               ("🧵 Потоков", "сколько аккаунтов греются одновременно — с одного прокси всегда по одному"),
+OWN_BUTTONS = ((NUMBERS["days"][0], "сколько дней греть аккаунт, раз в день; прогрет — когда пройдены все"),
+               (NUMBERS["threads"][0], "сколько аккаунтов греются одновременно — с одного прокси всегда по одному"),
                ("🔁 Ежедневно", "автозапуск раз в день в случайное время"),
                ("♻️ Сбросить прогрев", "все аккаунты проекта начнут прогрев с первого дня"))
 
@@ -73,8 +75,7 @@ def _warmup_view(pool: WorkerPool, manager: JobManager, project: int) -> tuple[s
     ])
     # its settings under ▶️ Прогреть, before 🧩 Шаги › (screen_kb's `own`)
     own = [
-        [_button(f"📅 Дней: {settings['days']}", "set", "days", project),
-         _button(f"🧵 Потоков: {settings['threads']}", "threads", "", project)],
+        [_button(f"{name}: {settings[field]}", "number", field, project) for field, (name, _) in NUMBERS.items()],
         [_button(f"🔁 Ежедневно: {'вкл' if settings['daily'] else 'выкл'}", "set", "daily", project)],
         [_button("♻️ Сбросить прогрев", "reset", "", project)],
     ]
@@ -95,6 +96,8 @@ async def warmup_run(callback: CallbackQuery, pool: WorkerPool, functions: dict,
     if pool.count() and not warmup.due(pool.storage, paths):
         await callback.answer(NOTHING_DUE, show_alert=True)
         return
+    if await busy_tap(callback, manager):
+        return
     if not await ensure_workers(callback, pool):
         return
     instance, bot_function = resolve(functions, "warmup")
@@ -102,41 +105,50 @@ async def warmup_run(callback: CallbackQuery, pool: WorkerPool, functions: dict,
                       lambda f, r: f.run(r), "Прогрев…")
 
 
-@router.callback_query(WarmupCB.filter(F.action == "threads"))
-async def threads_ask(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    """🧵: the number typed, a prompt as a new message (🔥's screen stays)."""
+@router.callback_query(WarmupCB.filter(F.action == "number"))
+async def number_ask(callback: CallbackQuery, callback_data: WarmupCB, state: FSMContext, pool: WorkerPool):
+    """📅 and 🧵: the number typed, a prompt as a new message (🔥's screen stays)."""
     await callback.answer()
     await state.clear()  # an abandoned flow's data must not reach this one
-    await state.set_state(SetWarmupThreads.value)
-    threads = warmup.load_settings(pool.storage.home)["threads"]
-    await callback.message.answer(
-        f"🧵 Потоков — сейчас <b>{threads}</b>. Пришлите, сколько аккаунтов греть одновременно (целое число от 1).\n\n"
-        "С одного прокси аккаунты всегда греются по одному, так что одновременно греется не больше, чем прокси у "
-        f"аккаунтов проекта (сейчас <b>{warmup.proxy_count(pool.storage)}</b>): больше потоков не ускорит прогрев.",
-        parse_mode="HTML", reply_markup=cancel_kb(SetWarmupThreads.value))
+    await state.set_state(SetWarmupNumber.value)
+    field = callback_data.value
+    await state.update_data(field=field)
+    name, ask = NUMBERS[field]
+    prompt = (f"{name} — сейчас <b>{warmup.load_settings(pool.storage.home)[field]}</b>. "
+              f"Пришлите, {ask} (целое число от 1).")
+    if field == "threads":
+        prompt += ("\n\nС одного прокси аккаунты всегда греются по одному, так что одновременно греется не больше, "
+                   f"чем прокси у аккаунтов проекта (сейчас <b>{warmup.proxy_count(pool.storage)}</b>): больше "
+                   "потоков не ускорит прогрев.")
+    await callback.message.answer(prompt, parse_mode="HTML", reply_markup=cancel_kb(SetWarmupNumber.value))
 
 
-@router.message(SetWarmupThreads.value)
-async def threads_typed(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager,
-                        workspace: Workspace):
+@router.message(SetWarmupNumber.value)
+async def number_typed(message: Message, state: FSMContext, pool: WorkerPool, manager: JobManager,
+                       workspace: Workspace):
     raw = await require_text(message)
     if raw is None:
         return
     if not raw.isdecimal() or int(raw) < 1:
         await message.answer("Нужно целое число от 1. Пришлите ещё раз:")
         return
+    field = (await state.get_data())["field"]
     settings = warmup.load_settings(pool.storage.home)
-    settings["threads"] = int(raw)
+    settings[field] = int(raw)
     warmup.save_settings(pool.storage.home, settings)
     await state.clear()
     # 🔥 Прогрев again, with the new value: the one above still shows the old
     text, markup = _warmup_view(pool, manager, workspace.project_id)
-    await message.answer(f"✅ Потоков: {int(raw)}. Действует со следующего запуска прогрева.\n\n{text}",
+    await message.answer(f"✅ {NUMBERS[field][0]}: {int(raw)}. Действует со следующего запуска прогрева.\n\n{text}",
                          parse_mode="HTML", reply_markup=markup)
 
 
 @router.callback_query(WarmupCB.filter(F.action == "reset"))
-async def reset_ask(callback: CallbackQuery, workspace: Workspace):
+async def reset_ask(callback: CallbackQuery, pool: WorkerPool, workspace: Workspace):
+    state = warmup.load_state()
+    if not any(warmup.key(pool.storage, path) in state for path in projects.account_files(pool.storage.directory)):
+        await callback.answer("Сбрасывать нечего: аккаунты проекта ещё не прогревались.", show_alert=True)
+        return
     await callback.answer()
     project = workspace.project_id
     await callback.message.edit_text(  # in 🔥's place: ✖️ brings it back
@@ -202,8 +214,8 @@ async def steps_screen(message: Message, state: FSMContext, edit: bool, pool: Wo
 async def setting_next(callback: CallbackQuery, callback_data: WarmupCB, pool: WorkerPool, manager: JobManager,
                        workspace: Workspace):
     field = callback_data.value
-    if field not in warmup.STEPS and field not in warmup.CYCLES:
-        await callback.answer()
+    if field not in warmup.STEPS and field not in warmup.CYCLES:  # an older message's (📅 Дней cycled once)
+        await callback.answer(STALE_BUTTON, show_alert=True)
         return
     settings = warmup.cycle(warmup.load_settings(pool.storage.home), field)
     if field == "daily" and settings["daily"]:
