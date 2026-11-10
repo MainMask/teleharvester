@@ -202,7 +202,7 @@ BOT_FUNCTIONS = [
     BotFunction("join", "JoinerFunc", "🚪 Вступить в чат", RISKY, ACTIVITY,
                 "воркеры вступают в канал/группу, умеют проходить капчу", IN_CHATS),
     BotFunction("reactions", "ReactionsFunc", "❤️ Реакции", RISKY, ACTIVITY,
-                "каждый воркер ставит реакцию на сообщение или пост", IN_CHATS),
+                "каждый воркер ставит реакцию на сообщение или пост — или убирает свою", IN_CHATS),
     BotFunction("poll", "PollVoteFunc", "🗳 Голосовать", RISKY, ACTIVITY,
                 "воркеры голосуют за выбранный вариант", IN_CHATS),
     BotFunction("invite", "InvitingFunc", "🤝 Инвайтинг", RISKY, ACTIVITY,

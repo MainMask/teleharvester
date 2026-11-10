@@ -112,6 +112,28 @@ class TestRuns:
         asyncio.run(fn.run("t.me/chan/5", "🔥", report))
         assert any("реакция" in m for m in msgs)
 
+    def test_a_reaction_set_or_taken_off(self):
+        from functions.reactions import ReactionsFunc
+
+        fn = ReactionsFunc(_Storage(), ns(delay=[0]))
+        fn.sessions = [_Session("A")]
+        msgs, report = collect()
+        asyncio.run(fn.run("t.me/chan/5", "🔥", report))
+        asyncio.run(fn.run("t.me/chan/5", ReactionsFunc.REMOVE, report))
+        put, taken = (request.reaction for request in fn.sessions[0].requests)
+        assert [r.emoticon for r in put] == ["🔥"] and not taken  # none: Telegram takes this account's off
+        assert msgs == ["[A] реакция «🔥» поставлена", "[A] реакция убрана"]
+
+    def test_the_picker_offers_to_take_them_off(self):
+        from bot.callbacks import ChoiceCB
+        from bot.routers import activity
+        from functions.reactions import ReactionsFunc
+
+        rows = activity._reactions_kb().inline_keyboard
+        assert [len(row) for row in rows] == [4, 4, 4, 4, 1, 1]  # the emoji 4 a row, then 🎲 and 🚫 alone
+        assert (rows[-1][0].text, ChoiceCB.unpack(rows[-1][0].callback_data).value) == \
+            (activity.REMOVE, ReactionsFunc.REMOVE)
+
     def test_report_user(self):
         from functions.report_user import ReportUserFunc
         fn = ReportUserFunc(_Storage(), ns(delay=[0]))

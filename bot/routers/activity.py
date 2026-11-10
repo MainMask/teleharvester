@@ -18,10 +18,13 @@ from scraper.scrape import CHAT_LOOKUP_TIMEOUT
 
 router = Router()
 
+REMOVE = "🚫 Убрать реакцию"
+
 
 def _reactions_kb():
     return choice_kb("reaction", [*((emoji, emoji) for emoji in ReactionsFunc.reactions),
-                                  ("🎲 Случайная у каждого", "random")], widths=(4,))
+                                  ("🎲 Случайная у каждого", "random"), (REMOVE, ReactionsFunc.REMOVE)],
+                     widths=(4,) * (len(ReactionsFunc.reactions) // 4) + (1,))  # the emoji 4 a row, the rest alone
 
 
 # --- reactions ---
@@ -38,7 +41,8 @@ async def reactions_link(message: Message, state: FSMContext):
     if link is None:
         return
     await state.update_data(link=link)
-    await message.answer("Какую реакцию ставят воркеры?", reply_markup=cancel_kb(Reactions.link, _reactions_kb()))
+    await message.answer(f"Какую реакцию ставят воркеры? «{REMOVE}» — каждый воркер снимет свою.",
+                         reply_markup=cancel_kb(Reactions.link, _reactions_kb()))
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "reaction"))

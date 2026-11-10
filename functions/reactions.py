@@ -5,11 +5,13 @@ from functions.base import TelethonFunction
 
 
 class ReactionsFunc(TelethonFunction):
-    """Set reactions to message/post"""
+    """Set or remove reactions on a message/post"""
 
     reactions = ['👍', '❤️', '🔥', '🥰', '👏', '😁', '🎉', '🤩', '👎', '🤯', '😱', '🤬', '😢', '🤮', '💩', '🙏']
+    REMOVE = "remove"  # in place of a reaction: each worker takes its own off the message
 
     async def set_reaction(self, session, peer, message_id, report, reaction=None, comment=None):
+        remove = reaction == self.REMOVE
         if not reaction:
             reaction = random.choice(self.reactions)
         # Telegram's reaction emoticons carry no variation selector: "❤️" is REACTION_INVALID
@@ -28,14 +30,16 @@ class ReactionsFunc(TelethonFunction):
                 await self.call(session, functions.messages.SendReactionRequest(
                     peer=peer,
                     msg_id=int(message_id),
-                    reaction=[types.ReactionEmoji(emoticon=reaction)]
+                    # none: Telegram takes off this account's reactions (one that has none changes nothing)
+                    reaction=None if remove else [types.ReactionEmoji(emoticon=reaction)]
                 ))
             except Exception as err:
                 self.progress_failed()
                 await report(f"[{me.first_name}] ошибка: {err}")
             else:
                 self.progress_ok()
-                await report(f"[{me.first_name}] реакция «{reaction}» поставлена")
+                await report(f"[{me.first_name}] реакция убрана" if remove else
+                             f"[{me.first_name}] реакция «{reaction}» поставлена")
 
     async def run(self, link, reaction, report):
         peer, message_id = self.parse_message_link(link)
