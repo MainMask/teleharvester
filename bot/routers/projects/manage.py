@@ -1,4 +1,4 @@
-"""A project's own settings, from its card's screens (card.py): 📝 its channels, 🏷 its name, 📄 its list,
+"""A project's own settings, from its card's screens (card.py): 📢 its channels, 🏷 its name, 📄 its list,
 🧹 clearing its base, 🗑 deleting it; their steps act on the chat's current project (the one whose button
 started them: ProjectMiddleware)."""
 import asyncio
@@ -16,6 +16,7 @@ from bot.routers._common import (back_answer, busy_step, confirm_expired, read_t
                                  typed_channels)
 from bot.routers.projects import views
 from bot.services.jobs import busy
+from bot.services.screens import head
 from bot.services.workspaces import Workspaces
 from bot.states import Projects
 from modules import projects, scraped_files
@@ -33,28 +34,30 @@ async def ask_channels(message: Message, state: FSMContext, project: projects.Pr
     if project.channels:  # by name, as on the card; then the list to copy, and the way to drop it all
         named = projects.chat_list(project, project.channels, html=True, budget=projects.MAX_CHANNELS_TEXT)
         current = html.escape(", ".join(project.channels)[:projects.MAX_CHANNELS_TEXT])
-        text = (f"{html.escape(title('channels'))} — сейчас:\n\n{named}\n\n"
+        text = (f"{head(title('channels'))} — сейчас:\n\n{named}\n\n"
                 f"Списком (нажмите, чтобы скопировать): <code>{current}</code>\n\n"
                 f"Новый список заменит текущий. {views.CHANNELS_ASK}")
         markup = views.channels_kb("edit")
     else:
-        text, markup = (f"{ADD_CHANNELS} — у проекта нет каналов, без них скрап не запустить. {views.CHANNELS_ASK}",
-                        cancel_kb(Projects.edit))
+        text, markup = (f"{head(ADD_CHANNELS)} — у проекта нет каналов, без них скрап не запустить. "
+                        f"{views.CHANNELS_ASK}", cancel_kb(Projects.edit))
     await message.answer(text, parse_mode="HTML", reply_markup=markup)
 
 
 async def ask_rename(message: Message, state: FSMContext, project: projects.Project):
     await state.set_state(Projects.rename)
-    await message.answer(f"{title('rename')} — пришлите новое имя проекта «{project.name}», его файлы "
-                         "переименуются вместе с ним:", reply_markup=cancel_kb(Projects.rename))
+    await message.answer(f"{head(title('rename'))} — пришлите новое имя проекта «{html.escape(project.name)}», его "
+                         "файлы переименуются вместе с ним:", parse_mode="HTML",
+                         reply_markup=cancel_kb(Projects.rename))
 
 
 async def ask_upload(message: Message, state: FSMContext, project: projects.Project):
     await state.set_state(Projects.upload)
     await message.answer(
-        f"{title('upload')} — для проекта «{project.name}»: пришлите .txt файлом или вставьте — по одному "
-        "@username, ссылке t.me или номеру на строку. Он добавится к списку проекта, повторы не дублируются; "
-        f"рассылка «{title('pmmailing')}» предложит его кнопкой.", reply_markup=cancel_kb(Projects.upload))
+        f"{head(title('upload'))} — для проекта «{html.escape(project.name)}»: пришлите .txt файлом или вставьте — по "
+        "одному @username, ссылке t.me или номеру на строку. Он добавится к списку проекта, повторы не дублируются; "
+        f"рассылка «{title('pmmailing')}» предложит его кнопкой.", parse_mode="HTML",
+        reply_markup=cancel_kb(Projects.upload))
 
 
 async def confirm_delete(message: Message, state: FSMContext, project: projects.Project):
@@ -63,9 +66,11 @@ async def confirm_delete(message: Message, state: FSMContext, project: projects.
     token = secrets.token_hex(4)
     await state.update_data(delete_name=project.name, delete_token=token)
     await message.edit_text(  # in 🛠's place: ✖️ brings it back
-        f"{title('delete')} проект «{project.name}»? Файлы скрапа останутся в {scraped_files.BASES_DIR}. Проект с "
-        f"аккаунтами не удаляется — сначала перенесите их ({menu_path('move')}).",
-        reply_markup=choice_kb("prj_del", [("🗑 Да, удалить", f"y{token}"), ("✖️ Отмена", "no")], widths=(2,)))
+        f"{head(title('delete'))} проект «{html.escape(project.name)}»? Файлы скрапа останутся в "
+        f"{scraped_files.BASES_DIR}. Проект с аккаунтами не удаляется — сначала перенесите их ({menu_path('move')}).",
+        parse_mode="HTML",
+        reply_markup=choice_kb("prj_del", [("🗑 Да, удалить", f"y{token}"), ("✖️ Отмена", f"n{token}")],
+                                widths=(2,)))
 
 
 async def offer_clear(message: Message, state: FSMContext, project: projects.Project):
@@ -81,9 +86,10 @@ async def offer_clear(message: Message, state: FSMContext, project: projects.Pro
     token = secrets.token_hex(4)
     await state.update_data(clear_name=project.name, clear_token=token)
     await message.edit_text(
-        f"{title('clearbase')} в проекте «{project.name}»? Файл уйдёт в "
-        f"{scraped_files.BASES_DIR}/{project.name}_previous/ — оттуда его можно вернуть (до следующего "
+        f"{head(title('clearbase'))} в проекте «{html.escape(project.name)}»? Файл уйдёт в "
+        f"{scraped_files.BASES_DIR}/{html.escape(project.name)}_previous/ — оттуда его можно вернуть (до следующего "
         f"«{title('topup')}»). «{title('pmmailing')}» и «{title('addcontacts')}» его больше не увидят.",
+        parse_mode="HTML",
         reply_markup=choice_kb("prj_clr", [*((f"🧹 {CLEAR_LABELS[what]} · {counts[what]}", f"{what}.{token}")
                                              for what in present), ("✖️ Отмена", f"no.{token}")]))
 
@@ -209,19 +215,20 @@ async def project_clear(callback: CallbackQuery, callback_data: ChoiceCB, state:
 async def project_delete(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
                          workspaces: Workspaces):
     data = await state.get_data()
-    current = callback_data.value in ("no", f"y{data.get('delete_token')}")
+    answer, token = callback_data.value[:1], callback_data.value[1:]
+    current = answer in ("y", "n") and token == data.get("delete_token")
     project = await views.find(callback, state, data.get("delete_name") if current else None)
     if project is None:
         return
-    if callback_data.value != "no" and confirm_expired(callback.message):
+    if answer == "y" and confirm_expired(callback.message):
         await callback.answer(f"Подтверждение устарело — нажмите «{title('delete')}» заново.", show_alert=True)
         return
-    workspace = workspaces.get(project.id) if callback_data.value != "no" else None
+    workspace = workspaces.get(project.id) if answer == "y" else None
     if workspace is not None and (running := next((slot for slot in workspace.slots if slot.active), None)):
         await callback.answer(busy(running.label), show_alert=True)
         return
     await callback.answer()
-    if callback_data.value == "no":
+    if answer == "n":
         await views.show_screen(callback.message, project, MANAGE)
         return
     try:

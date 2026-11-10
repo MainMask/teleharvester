@@ -14,6 +14,7 @@ from bot.routers._common import (back_answer, left_flow, menu_answer, pick_from,
                                  typed_channels)
 from bot.routers.projects import manage, views
 from bot.services import screens
+from bot.services.screens import head
 from bot.services.workspaces import Workspaces
 from bot.states import Projects
 from modules import projects, scraped_files
@@ -45,9 +46,9 @@ async def project_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
     await callback.answer()
     if callback_data.value == "new":
         await state.set_state(Projects.name)
-        await callback.message.answer(f"{views.NEW_PROJECT} — пришлите имя проекта, оно же имя его файлов скрапа "
-                                      "(например, GreenBase). Готовые файлы с этим именем сразу окажутся в проекте:",
-                                      reply_markup=cancel_kb(Projects.name))
+        await callback.message.answer(f"{head(views.NEW_PROJECT)} — пришлите имя проекта, оно же имя его файлов "
+                                      "скрапа (например, GreenBase). Готовые файлы с этим именем сразу окажутся в "
+                                      "проекте:", parse_mode="HTML", reply_markup=cancel_kb(Projects.name))
         return
     if callback_data.value == "import":
         await _offer_import(callback.message, state)
@@ -64,15 +65,15 @@ async def _offer_import(message: Message, state: FSMContext):
         await menu_answer(message, f"⚠️ {err}")
         return
     if not found:
-        await message.edit_text(f"{views.FROM_SCRAPE} — не из чего сделать проект: у готовых скрапов уже есть "
+        await message.edit_text(f"{head(views.FROM_SCRAPE)} — не из чего сделать проект: у готовых скрапов уже есть "
                                 "проекты, или в их файлах не записаны каналы (такой проект создайте через "
-                                f"«{views.NEW_PROJECT}»).",
+                                f"«{views.NEW_PROJECT}»).", parse_mode="HTML",
                                 reply_markup=choice_kb("prj_imp", [("⬅️ Назад", "back")]))
         return
     await state.update_data(import_items=found)  # buttons carry an index into this
     await message.edit_text(  # in the list's place, as a card
-        f"{views.FROM_SCRAPE} — готовые скрапы из {scraped_files.BASES_DIR}: проект получит имя и каналы скрапа, "
-        "его файлы — сразу в проекте.",
+        f"{head(views.FROM_SCRAPE)} — готовые скрапы из {scraped_files.BASES_DIR}: проект получит имя и каналы "
+        "скрапа, его файлы — сразу в проекте.", parse_mode="HTML",
         reply_markup=choice_kb("prj_imp", [*[(projects.label(projects.Project(name, channels)), str(i))
                                              for i, (name, channels) in enumerate(found)],
                                            ("⬅️ Назад", "back")]))
@@ -139,7 +140,7 @@ async def _create(message: Message, state: FSMContext, workspaces: Workspaces, c
 @router.callback_query(ChoiceCB.filter(F.scope == "prj_none"))
 async def project_without_channels(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
                                    workspaces: Workspaces):
-    """📭 under the channels' prompt (a new project's, or 📝 Каналы'): only while the chat is still at its step."""
+    """📭 under the channels' prompt (a new project's, or 📢 Каналы'): only while the chat is still at its step."""
     if callback_data.value not in views.NO_CHANNELS:
         await stale_tap(callback)
         return

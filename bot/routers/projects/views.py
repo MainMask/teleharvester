@@ -74,11 +74,11 @@ async def show_list(message: Message, state: FSMContext, note: str = "", edit: b
     await state.clear()
     await state.update_data(project_names=[p.name for p in items])  # buttons carry an index into this
     if items:
-        text = ("📁 <b>Проекты</b> — у каждого свои аккаунты, прокси и база. В карточке проекта — "
+        text = (f"{screens.title_line(PROJECTS)} — у каждого свои аккаунты, прокси и база. В карточке проекта — "
                 f"{html.escape(SCREENS[CARD].hint)}. ⏸ — есть незавершённый скрап.")
     else:
-        text = ("📁 <b>Проекты</b> — пока ни одного. У проекта свои аккаунты и прокси и своя аудитория: каналы "
-                "для скрапа, участники групп или список. Готовые файлы скрапа станут проектом через "
+        text = (f"{screens.title_line(PROJECTS)} — пока ни одного. У проекта свои аккаунты и прокси и своя "
+                "аудитория: каналы для скрапа, участники групп или список. Готовые файлы скрапа станут проектом через "
                 f"«{FROM_SCRAPE}».")
     listed = paged_kb("prj", [(projects.label(p), str(i)) for i, p in enumerate(items)], page)
     actions = [(NEW_PROJECT, "new")]

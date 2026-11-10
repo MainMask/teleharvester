@@ -5,6 +5,7 @@ from bot.callbacks import ChoiceCB, FunctionCB
 from bot.keyboards.common import choice_kb
 from bot.routers._common import busy_tap, confirm_expired, ensure_workers, resolve, stale_tap
 from bot.services import screens
+from bot.services.screens import head
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace
@@ -20,7 +21,8 @@ async def clear_start(callback: CallbackQuery, pool: WorkerPool, workspace: Work
         return
     project = workspace.project_id  # the question names its project: see clear_run
     await callback.message.edit_text(  # in 🔐's place: ✖️ brings it back
-        f"{title('clear')} — ⚠️ очистить ВСЕ диалоги на воркерах (и выйти из каналов)? Это необратимо.",
+        f"{head(title('clear'))} — ⚠️ очистить ВСЕ диалоги на воркерах (и выйти из каналов)? Это необратимо.",
+        parse_mode="HTML",
         reply_markup=choice_kb("clear_confirm", [("🧹 Да, очистить", f"yes.{project}"),
                                                  ("✖️ Отмена", f"no.{project}")], widths=(2,)),
     )

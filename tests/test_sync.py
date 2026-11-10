@@ -418,7 +418,7 @@ def test_scrape_asks_before_starting_then_runs_in_its_own_slot(monkeypatch):
     assert params.keyword == "" and params.with_reactors and params.with_comments and params.resume is False
     assert params.account == _ACC
     assert seen == [(True, False)]  # the scraper's slot is taken, the bot's task slot stays free
-    assert not scrapes.active and any("▶️ Скрап — запущено на аккаунте" in t for t in _sent(go.bot))
+    assert not scrapes.active and any("<b>▶️ Скрап</b> — запущено на аккаунте" in t for t in _sent(go.bot))
 
 
 def test_scrape_options_toggle_in_place_and_reach_the_run(monkeypatch):
@@ -1041,7 +1041,7 @@ class _PickCallback:
         self.alerts = []
         self.message.edits = []
 
-        async def edit_text(text, reply_markup=None):
+        async def edit_text(text, reply_markup=None, **kwargs):
             self.message.edits.append((text, reply_markup))
         self.message.edit_text = edit_text
 
@@ -1088,16 +1088,17 @@ def test_picker_ticks_the_new_workers_and_toggles():
     pool, state, callback = _jpool(_A, _B), _State(), _Callback()
     asyncio.run(profile.picker_start(callback, FunctionCB(key="name"), state, pool))
     text, markup = callback.message.answers[0]  # in the screen's place (_Msg keeps an edit as an answer)
-    assert state.state == PickWorkers.marks and text.startswith("✏️ Имя — на каких воркерах? Отмечено: 1 из 2")
+    assert state.state == PickWorkers.marks and text.startswith("<b>✏️ Имя</b> — на каких воркерах? Отмечено: 1 из 2")
     assert _buttons(markup)[:2] == ["⬜ @a ✓ 01.10", "✅ @b"]
     assert "стр 1/1" not in _buttons(markup)  # one page: no paging
 
     edited = _pick("0", state, pool).message.edits[0]
     assert "Отмечено: 2 из 2" in edited[0] and _buttons(edited[1])[:2] == ["✅ @a ✓ 01.10", "✅ @b"]
-    assert _pick("none", state, pool).message.edits[0][0].startswith("✏️ Имя — на каких воркерах? Отмечено: 0 из 2")
+    ASKED = "<b>✏️ Имя</b> — на каких воркерах? Отмечено:"
+    assert _pick("none", state, pool).message.edits[0][0].startswith(f"{ASKED} 0 из 2")
     assert _pick("go", state, pool).alerts == ["Отметьте хотя бы одного воркера"]
-    assert _pick("new", state, pool).message.edits[0][0].startswith("✏️ Имя — на каких воркерах? Отмечено: 1 из 2")
-    assert _pick("all", state, pool).message.edits[0][0].startswith("✏️ Имя — на каких воркерах? Отмечено: 2 из 2")
+    assert _pick("new", state, pool).message.edits[0][0].startswith(f"{ASKED} 1 из 2")
+    assert _pick("all", state, pool).message.edits[0][0].startswith(f"{ASKED} 2 из 2")
 
 
 def test_first_picker_marks_every_current_worker_done():

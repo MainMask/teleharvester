@@ -253,7 +253,7 @@ def test_bot_with_no_projects_offers_a_new_one():
     start = _SCallback()
     asyncio.run(router.projects_screen(start.message, _State(), False))
     text, markup = start.message.answers[0]
-    assert text.startswith("📁 <b>Проекты</b> — пока ни одного") and "Без проекта" not in text
+    assert text.startswith("<b>📁 Проекты</b> — пока ни одного") and "Без проекта" not in text
     assert _buttons(markup) == ["➕ Новый проект"]  # all the work is a project's
 
 
@@ -357,7 +357,7 @@ def test_bot_makes_a_project_from_a_finished_scrape(tmp_path):
 
     back = _SCallback()
     asyncio.run(router.project_import(back, ChoiceCB(scope="prj_imp", value="back"), state, conftest.Workspaces()))
-    assert back.message.edits[0][0].startswith("📁 <b>Проекты</b>") and projects.load() == []
+    assert back.message.edits[0][0].startswith("<b>📁 Проекты</b>") and projects.load() == []
 
     # again
     asyncio.run(router.project_pick(_SCallback(), ChoiceCB(scope="prj", value="import"), state, conftest.Workspaces()))
@@ -373,7 +373,7 @@ def test_bot_makes_a_project_from_a_finished_scrape(tmp_path):
     nothing = _SCallback()  # Green has its project now
     asyncio.run(router.project_pick(nothing, ChoiceCB(scope="prj", value="import"), state, conftest.Workspaces()))
     # in the list's place, with ⬅️
-    assert nothing.message.edits[0][0].startswith("📥 Из готового скрапа — не из чего сделать проект")
+    assert nothing.message.edits[0][0].startswith("<b>📥 Из готового скрапа</b> — не из чего сделать проект")
     assert _buttons(nothing.message.edits[0][1]) == ["⬅️ Назад"]
 
 
@@ -428,7 +428,7 @@ def test_bot_drops_all_the_channels_by_its_button():
     ask = _SCallback()  # none left: nothing to drop, only to add
     asyncio.run(_press(ask, "channels", state))
     text, markup = ask.message.answers[0]
-    assert text.startswith("➕ Добавить каналы — у проекта нет каналов") and _buttons(markup) == ["✖️ Отмена"]
+    assert text.startswith("<b>➕ Добавить каналы</b> — у проекта нет каналов") and _buttons(markup) == ["✖️ Отмена"]
 
 
 def test_a_project_s_label_says_it_has_no_channels():
@@ -453,9 +453,10 @@ def test_bot_edits_channels_and_deletes_a_project_keeping_its_files(tmp_path, mo
     asyncio.run(_press(collect, "collect", state))
     assert "\n\n1. @x\n" in collect.message.edits[0][0]
 
-    asyncio.run(_press(_SCallback(), "delete", state))
+    asked = _SCallback()
+    asyncio.run(_press(asked, "delete", state))
     keep = _SCallback()
-    asyncio.run(router.project_delete(keep, ChoiceCB(scope="prj_del", value="no"), state, _in("A")))
+    asyncio.run(router.project_delete(keep, ChoiceCB(scope="prj_del", value=_cancel_value(asked)), state, _in("A")))
     assert projects.load() and keep.message.edits[0][0].startswith("📁 <b>A</b> › <b>🛠 Управление</b>")  # back
 
     confirm = _SCallback()
@@ -521,6 +522,31 @@ def test_bot_card_s_manage_screen_takes_its_place_and_goes_back_to_it():
 def _delete_value(confirm):
     """The «🗑 Удалить» button's value on the confirmation that took the card's place."""
     return ChoiceCB.unpack(confirm.message.edits[-1][1].inline_keyboard[0][0].callback_data).value
+
+
+def _cancel_value(confirm):
+    """The «✖️ Отмена» button's value on the confirmation that took the card's place."""
+    return ChoiceCB.unpack(confirm.message.edits[-1][1].inline_keyboard[0][1].callback_data).value
+
+
+def test_bot_an_old_delete_confirmation_s_cancel_never_opens_another_project():
+    """✖️ under A's old confirmation, B's asked since: stale, as its 🗑 — not B's 🛠 Управление in A's message."""
+    router = _router()
+    projects.add("A", ["@a"])
+    projects.add("B", ["@b"])
+    state = _State()
+    asyncio.run(router.projects_screen(_SMsg(), state, False))
+    asyncio.run(router.project_pick(_SCallback(), ChoiceCB(scope="prj", value="0"), state, conftest.Workspaces()))
+    confirm_a = _SCallback()
+    asyncio.run(_press(confirm_a, "delete", state))
+    asyncio.run(router.project_pick(_SCallback(), ChoiceCB(scope="prj", value="1"), state, conftest.Workspaces()))
+    asyncio.run(_press(_SCallback(), "delete", state))  # «Удалить проект «B»?»
+
+    old = _AlertCallback()
+    asyncio.run(router.project_delete(old, ChoiceCB(scope="prj_del", value=_cancel_value(confirm_a)), state,
+                                      conftest.Workspaces()))
+    assert old.alerts == [("Кнопка устарела — откройте 📁 Проекты заново.", True)]
+    assert not old.message.edits and not old.message.answers
 
 
 def test_bot_an_old_delete_confirmation_does_not_delete_the_project_opened_since():
@@ -723,7 +749,8 @@ def test_bot_top_up_goes_from_the_card_to_the_summary_and_runs_on_the_files_data
     go = _SCallback()
     asyncio.run(_press(go, "topup", state, _in(state.data.get("project_name"), _pool(), scrapes=JobManager())))
     text, markup = go.message.answers[-1]
-    assert state.state == Scrape.confirm and text.startswith("⏩ Дособрать — каналы:\n\n1. @a\n\nПериод: 24.01.2024")
+    assert state.state == Scrape.confirm
+    assert text.startswith("<b>⏩ Дособрать</b> — каналы:\n\n1. @a\n\nПериод: 24.01.2024")
     assert f"Дособор к {path.name}" in text and _buttons(markup) == ["▶️ Запустить", "🎛 Дополнительно", "✖️ Отмена"]
 
     more = _SCallback()
@@ -869,7 +896,9 @@ def test_card_mailing_offers_the_project_s_bases_only(tmp_path):
     _two_projects(tmp_path)
     state = _State({"project_name": "Green"})
     callback = _card_action("mail", state)
-    text, markup = callback.message.edits[-1]  # in 🎯 База и рассылка's place
+    # it waits for a list or a path too: a new message, 🎯 База и рассылка stays above it
+    text, markup = callback.message.answers[-1]
+    assert not callback.message.edits
     assert _buttons(markup) == ["📚 Вся база · 2", "📄 participants · 01.01.2024-31.01.2024 · 2",
                                 "📄 assets/targets.txt", "✖️ Отмена"]
     assert state.state == PmMailing.path
@@ -896,8 +925,8 @@ def test_card_contacts_offer_the_project_s_bases_only_and_need_workers(tmp_path,
     monkeypatch.setattr(audience, "_launch", launch)
     state = _State({"project_name": "Green"})
     callback = _card_action("contacts", state)
-    assert _buttons(callback.message.edits[-1][1]) == ["📚 Вся база · 2", "📄 participants · 01.01.2024-31.01.2024 · 2",
-                                                       "📄 assets/contacts.parquet", "✖️ Отмена"]
+    assert _buttons(callback.message.answers[-1][1]) == [  # a new message: it waits for a path too
+        "📚 Вся база · 2", "📄 participants · 01.01.2024-31.01.2024 · 2", "📄 assets/contacts.parquet", "✖️ Отмена"]
     asyncio.run(audience.run_base(_SCallback(), ChoiceCB(scope="contacts_base", value="0"), state, _pool(),
                                   {}, ns(active=False)))
     assert launched == [str(tmp_path / "Green_participants_01.01.2024-31.01.2024.parquet")]
@@ -1284,7 +1313,7 @@ def test_bot_uploads_a_list_and_the_mailing_offers_it(tmp_path):
 
     mail = _SCallback()
     asyncio.run(_press(mail, "mail", state))
-    assert _buttons(mail.message.edits[-1][1]) == ["📚 Вся база · 3", "📄 list · 3", "📄 assets/targets.txt",
+    assert _buttons(mail.message.answers[-1][1]) == ["📚 Вся база · 3", "📄 list · 3", "📄 assets/targets.txt",
                                                    "✖️ Отмена"]
     asyncio.run(mailing.mail_base(_SCallback(), ChoiceCB(scope="mail_base", value="0"), state))
     assert state.data["path"] == str(tmp_path / "Clients_participants_list.txt")
@@ -1366,6 +1395,22 @@ def test_base_line_counts_the_people_whom_the_mailing_wrote_to_and_the_contacts(
     assert projects.base_line(project) == "🎯 База: людей 5 (без повторов) · написали 2 · в контактах 1"
     text = projects.base_text(project, html=True)
     assert text.startswith("🎯 База: людей 5") and "• participants · members · 3" in text and "• list · 2" in text
+
+
+def test_a_ledger_broken_by_hand_leaves_the_card_open_and_says_which(tmp_path):
+    """The mailing's stats or the contacts ledger edited by hand into bad JSON: the card still opens (its tap must
+    not do nothing), the base line says what can't be read."""
+    project = projects.add("Clients", [])
+    _members_base(tmp_path, "Clients", rows=3)
+    os.makedirs(projects.home(project))
+    for name in ("pm_mailing.json", "contacts.json"):
+        path = f"{projects.home(project)}/{name}"
+        with open(path, "w", encoding="utf-8") as file:
+            file.write("{broken")
+        line = projects.base_line(project)
+        assert line.startswith("🎯 База: людей 3 (без повторов) · ") and f"⚠️ {name} не читается" in line
+        assert line in projects.summary(project, 0)
+        os.remove(path)
 
 
 def test_clear_moves_the_file_to_previous_where_it_can_be_taken_back(tmp_path):
@@ -1454,7 +1499,7 @@ def test_the_channels_prompt_shows_them_by_name_and_as_a_list_to_copy():
     ask = _SCallback()
     asyncio.run(_press(ask, "channels", state))
     text = ask.message.answers[0][0]
-    assert text.startswith("📢 Каналы — сейчас:\n\n1. «Берлога»\n🆔 <code>-1001629147115</code>\n\n2. @b\n\n")
+    assert text.startswith("<b>📢 Каналы</b> — сейчас:\n\n1. «Берлога»\n🆔 <code>-1001629147115</code>\n\n2. @b\n\n")
     assert "Списком (нажмите, чтобы скопировать): <code>-1001629147115, @b</code>" in text
 
 

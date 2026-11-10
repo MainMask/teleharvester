@@ -17,6 +17,7 @@ from bot.routers.scraping import common
 from bot.services import scraping, screens
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import Scrape
 from modules import json_file, projects, scraped_files
 from modules.registry import COLLECT, title
@@ -28,6 +29,9 @@ from scraper.scrape import (
 router = Router()
 
 SCRAPE = title("scrape")
+MORE = "🎛 Дополнительно"  # the summary's button: the run's options
+KEYWORD = "🔎 Фильтр по слову"
+MAX_POSTS = "🔢 Максимум постов"
 
 
 # A bot scrape in progress (scraped_files.SCRAPE_MARKER), continued automatically after a bot
@@ -96,7 +100,7 @@ async def _scrape_named(message: Message, state: FSMContext, deps: dict, flow: s
         fresh = bool(parse_channels(data["channels"]))
         await state.set_state(Scrape.resume)
         await message.edit_text(  # in 📥 Сбор's place, as the account's question
-            f"{SCRAPE} — есть незавершённый скрап «{html.escape(meta['name'])}».\n\n"
+            f"{head(SCRAPE)} — есть незавершённый скрап «{html.escape(meta['name'])}».\n\n"
             f"Каналы:\n\n{projects.chat_list(projects.find(data['name']), meta['channels'], html=True)}\n\n"
             f"Период: {meta['date_min'][:10]} – {meta['date_max'][:10]}\n"
             f"Уже собрано постов: {meta.get('t_index', 0)}"
@@ -239,18 +243,18 @@ async def _ask_go(message: Message, state: FSMContext, deps: dict | None = None)
     if data.get("extend"):  # its keyword is the previous scrape's: no filter to set
         files = (f"Дособор к {html.escape(os.path.basename(data['extend']))}: новое вольётся в файлы проекта, "
                  f"заменённые уйдут в {folder}_previous/\n\n"
-                 "«🎛 Дополнительно» — комментарии, реакции, база участников, лимит постов.")
+                 f"«{MORE}» — комментарии, реакции, база участников, лимит постов.")
     else:
         files = (f"Файлы: {folder}_…\n\n"
-                 "«🎛 Дополнительно» — комментарии, реакции, база участников, фильтр по слову, лимит постов.")
+                 f"«{MORE}» — комментарии, реакции, база участников, фильтр по слову, лимит постов.")
     await message.answer(
-        f"{html.escape(title('topup') if data.get('extend') else SCRAPE)} — каналы:\n\n"
+        f"{head(title('topup') if data.get('extend') else SCRAPE)} — каналы:\n\n"
         f"{projects.chat_list(projects.find(data['name']), parse_channels(data['channels']), html=True)}"
         "\n\n"
         f"Период: {html.escape(data['date_min'])} – {html.escape(data['date_max'])}\n" + files,
         parse_mode="HTML",
         reply_markup=cancel_kb(Scrape.confirm, choice_kb("scrape_go", [("▶️ Запустить", "run"),
-                                                                      ("🎛 Дополнительно", "more")], widths=(2,))),
+                                                                      (MORE, "more")], widths=(2,))),
     )
 
 
@@ -266,8 +270,8 @@ def option_items(options: dict, extend: bool) -> list[tuple[str, str]]:
         (f"🗨 Комментарии {mark('comments')}", "comments"),
         (f"❤️ Реакции (медленно) {mark('reactors')}", "reactors"),
         (f"👥 База участников {mark('participants')}", "participants"),
-        *([] if extend else [(f"🔎 Фильтр по слову: {keyword[:24]}", "keyword")]),
-        (f"🔢 Максимум постов: {limit}", "max"),
+        *([] if extend else [(f"{KEYWORD}: {keyword[:24]}", "keyword")]),
+        (f"{MAX_POSTS}: {limit}", "max"),
     ]
 
 
@@ -279,7 +283,7 @@ def _settings_kb(data: dict):
 async def _show_settings(message: Message, state: FSMContext, edit: bool = False):
     """🎛 Дополнительно: in the summary's place (`edit`), or after a typed value as a new message."""
     await state.set_state(Scrape.confirm)
-    await screens.send(message, edit)("🎛 Дополнительно — нажмите, чтобы изменить:",
+    await screens.send(message, edit)(f"{head(MORE)} — нажмите, чтобы изменить:", parse_mode="HTML",
                                       reply_markup=_settings_kb(await state.get_data()))
 
 
@@ -305,13 +309,14 @@ async def scrape_option(callback: CallbackQuery, callback_data: ChoiceCB, state:
         await callback.message.edit_reply_markup(reply_markup=_settings_kb(await state.get_data()))
     elif option == "keyword":
         await state.set_state(Scrape.keyword)
-        await callback.message.edit_text("🔎 Фильтр по слову — только посты с ним. Пришлите слово или нажмите "
-                                         "«⏭ Без фильтра»:", reply_markup=cancel_kb(Scrape.keyword, choice_kb(
+        await callback.message.edit_text(f"{head(KEYWORD)} — только посты с ним. Пришлите слово или нажмите "
+                                         "«⏭ Без фильтра»:", parse_mode="HTML",
+                                         reply_markup=cancel_kb(Scrape.keyword, choice_kb(
                                              "scrape_any", [("⏭ Без фильтра", "keyword")])))
     elif option == "max":
         await state.set_state(Scrape.max_messages)
-        await callback.message.edit_text("🔢 Максимум постов — пришлите число или нажмите «♾ Все»:",
-                                         reply_markup=cancel_kb(Scrape.max_messages, choice_kb(
+        await callback.message.edit_text(f"{head(MAX_POSTS)} — пришлите число или нажмите «♾ Все»:",
+                                         parse_mode="HTML", reply_markup=cancel_kb(Scrape.max_messages, choice_kb(
                                              "scrape_any", [("♾ Все", "max_messages")])))
     elif option == "run":
         await _start_scrape(callback, state, pool, personal, scrapes)
@@ -390,9 +395,9 @@ async def _run_scrape(bot, chat_id: int, scrapes: JobManager, pool: WorkerPool, 
         _write_marker(pool.storage.home, {"out_dir": out_dir, "name": params.name, "account": params.account,
                                           "chat_id": chat_id, **(resumes or {})})
         status = await bot.send_message(
-            chat_id, f"{common.started(SCRAPE, account.label)}\n"
+            chat_id, f"{common.started(head(SCRAPE), html.escape(account.label))}\n"
                      f"Остальные функции бота доступны{'' if account.personal else ' — без этого воркера'}.",
-            reply_markup=scrape_kb(scrapes.key))
+            parse_mode="HTML", reply_markup=scrape_kb(scrapes.key))
         await scraping.do_scrape(build_credentials(account.client), params)
     except SystemExit as err:
         # a str code is a user-input error with its reason; an int one an interrupted run,

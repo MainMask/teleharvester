@@ -12,6 +12,7 @@ from bot.routers.scraping import common
 from bot.services import scraping
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import Members
 from modules import projects, scraped_files
 from modules.registry import BASE, title
@@ -37,7 +38,7 @@ async def _ask_groups(message: Message, state: FSMContext, deps: dict):
     note += (" — новые участники добавятся к его базе, повторы не дублируются."
              if scraped_files.members_base(project).exists() else ".")
     await message.answer(
-        f"{title('members')} — пришлите группы через запятую ({CHAT_FORMAT}).\n"
+        f"{head(title('members'))} — пришлите группы через запятую ({CHAT_FORMAT}).\n"
         "Аккаунт должен состоять в группе. Подписчики канала доступны только админам." + note,
         parse_mode="HTML", reply_markup=cancel_kb(Members.chats),
     )
@@ -82,8 +83,8 @@ async def _members_go(message: Message, state: FSMContext, name: str, pool: Work
     stop = params.stop = scrapes.soft_stop()  # the job's own ⏹: a later job's can't relabel this one
     status = None
     try:
-        status = await message.answer(common.started(title("members"), account.label),
-                                      reply_markup=scrape_kb(scrapes.key))
+        status = await message.answer(common.started(head(title("members")), html.escape(account.label)),
+                                      parse_mode="HTML", reply_markup=scrape_kb(scrapes.key))
         path, problems = await scraping.do_members(build_credentials(account.client), params)
     except (Exception, SystemExit) as err:  # connect() raises SystemExit on a logged-out session
         await common.to_collect(message, f"⚠️ Ошибка: {err}", scrapes)

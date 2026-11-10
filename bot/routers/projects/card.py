@@ -89,6 +89,7 @@ ACTIONS = {
     "members": lambda tap: scraping.members_project(tap.message, tap.state, tap.project, tap.scraper),
     "verify": lambda tap: scraping.verify_project(tap.message, tap.state, tap.project, tap.scraper),
     "analysis": lambda tap: scraping.analysis_project(tap.message, tap.state, tap.project),
+    "channels": lambda tap: manage.ask_channels(tap.message, tap.state, tap.project),
     # 🎯 База и рассылка
     "upload": lambda tap: manage.ask_upload(tap.message, tap.state, tap.project),
     "clearbase": lambda tap: manage.offer_clear(tap.message, tap.state, tap.project),
@@ -96,7 +97,6 @@ ACTIONS = {
     "pmmailing": lambda tap: _base(tap, ("participants", "list"), mailing.ask_recipients),
     "exportbase": _export,
     # 🛠 Управление
-    "channels": lambda tap: manage.ask_channels(tap.message, tap.state, tap.project),
     "region": _region,
     "rename": lambda tap: manage.ask_rename(tap.message, tap.state, tap.project),
     "delete": lambda tap: manage.confirm_delete(tap.message, tap.state, tap.project),

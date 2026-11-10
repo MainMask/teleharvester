@@ -68,10 +68,14 @@ def test_the_chat_s_current_project_is_given_to_its_handlers():
 
     async def answer(text, **kwargs):
         alerts.append((text, kwargs.get("show_alert")))
+        markups.append(kwargs.get("reply_markup"))
 
+    markups = []
     message = ns(chat=ns(id=5), answer=answer)
     asyncio.run(middleware(handler, message, {}))  # no project opened yet: the handler doesn't run
     assert seen == [] and alerts == [(NO_PROJECT, None)]
+    # with ⬅️ to 📁 Проекты, as the screens say it (bot/routers/menu.py): never a dead end
+    assert [[b.text for b in row] for row in markups[0].inline_keyboard] == [["⬅️ 📁 Проекты"]]
 
     workspace = workspaces.open(5, green)  # its card opened in this chat
     asyncio.run(middleware(handler, message, {}))

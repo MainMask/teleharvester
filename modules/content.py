@@ -16,7 +16,7 @@ def path(region: str, name: str) -> str:
 def pool(region: str, name: str) -> list[str]:
     """The lines of <region>/<name>.txt but blank ones and # comments; [] without one."""
     try:
-        with open(path(region, f"{name}.txt"), encoding="utf-8") as fileobj:
+        with open(path(region, f"{name}.txt"), encoding="utf-8-sig") as fileobj:
             return [line.strip() for line in fileobj if line.strip() and not line.lstrip().startswith("#")]
     except FileNotFoundError:
         return []

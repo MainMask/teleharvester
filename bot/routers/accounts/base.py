@@ -19,6 +19,7 @@ from bot.keyboards.menu import back_kb, nav_button, screen_kb
 from bot.routers._common import MAX_MESSAGE, confirm_expired, fit_lines
 from bot.routers.accounts import card, workers
 from bot.services import screens
+from bot.services.screens import head
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace, delete_workers
@@ -30,9 +31,10 @@ router = Router()
 
 SHOWN_ACCOUNTS = 50  # a category's accounts listed in its message
 PERSONAL = "personal"  # the personal accounts' button: theirs are cards only, they are no project's files
-PERSONAL_TITLE = "👤 Личные"
+PERSONAL_TITLE = card.PERSONAL_TITLE
 EMPTY_CATEGORY = "В этой категории нет аккаунтов."
 WHOLE_BASE = "📦 Все аккаунты"
+ZIP = "📦 Скачать ZIP"  # a category's
 # 📋 Список's own buttons, each with what it does (screens.screen_text's `own`); the categories: the two not named
 # by the warmup
 OWN_BUTTONS = {"cat": ("Категории", "карточки аккаунтов (код входа), 📦 ZIP, 🗑 удаление; ⛔ — по проверке SpamBot, "
@@ -124,12 +126,12 @@ async def category_open(callback: CallbackQuery, callback_data: AccountBaseCB, s
         lines.append(f"• {html.escape(projects.account_label(path))}" + (f" — {html.escape(error)}" if error else ""))
     # the live ones' cards (a dead one's file is no session of the project's any more)
     live = [account for account in scrape_accounts(pool.storage) if account.path in set(paths)]
-    head = f"{screens.title_line(ACCOUNT_LIST, screens.project_name(project))} › <b>{warmup.CATEGORIES[name]}</b>: " \
+    top = f"{screens.title_line(ACCOUNT_LIST, screens.project_name(project))} › <b>{warmup.CATEGORIES[name]}</b>: " \
            f"{len(paths)}\n\n"
     hint = f"\n\n{card.CARDS_HINT}" if live else ""
-    text = head + fit_lines(lines, MAX_MESSAGE - len(head) - len(hint), len(paths) - len(lines)) + hint
-    tail = [[("📦 Скачать ZIP", AccountBaseCB(action="zip", value=name, project=project).pack()),
-             ("🗑 Удалить", AccountBaseCB(action="del", value=name, project=project).pack())],
+    text = top + fit_lines(lines, MAX_MESSAGE - len(top) - len(hint), len(paths) - len(lines)) + hint
+    tail = [[(ZIP, AccountBaseCB(action="zip", value=name, project=project).pack()),
+             (card.DELETE, AccountBaseCB(action="del", value=name, project=project).pack())],
             *card.back_to_list(project)]
     await card.offer_cards(callback.message, state, live, text, tail, project, edit=True)
 
@@ -175,9 +177,10 @@ async def category_zip(callback: CallbackQuery, callback_data: AccountBaseCB, po
     await callback.answer()
     what = "Все аккаунты" if name == "all" else warmup.CATEGORIES[name]
     if callback_data.fmt not in FORMATS:
+        heading = head(WHOLE_BASE) if name == "all" else f"{head(ZIP)} — {what}"
         back = nav_button("✖️ Отмена", ACCOUNT_LIST, project) if name == "all" else \
             _button("✖️ Отмена", "cat", name, project)
-        lines = [f"📦 <b>{what}</b>: файлов {len(paths)} — в каком формате?", "",
+        lines = [f"{heading}: файлов {len(paths)} — в каком формате?", "",
                  *(f"<b>{label}</b> — {hint}" for label, hint in FORMATS.values()), "", f"<i>{SAME_KEY}</i>"]
         rows = [[button(label, AccountBaseCB(action="zip", value=name, project=project, fmt=fmt))]
                 for fmt, (label, _) in FORMATS.items()]
@@ -206,8 +209,8 @@ async def delete_ask(callback: CallbackQuery, callback_data: AccountBaseCB, stat
     await callback.answer()
     await state.update_data(base_delete={"name": name, "paths": paths})
     await callback.message.edit_text(  # in the category's place: ✖️ brings it back
-        f"🗑 Удалить файлы сессий категории {warmup.CATEGORIES[name]} ({len(paths)})? "
-        "Аккаунты из Telegram не выходят, но в проекте их больше не будет. Это необратимо.",
+        f"{head(card.DELETE)} файлы сессий категории {warmup.CATEGORIES[name]} ({len(paths)})? "
+        "Аккаунты из Telegram не выходят, но в проекте их больше не будет. Это необратимо.", parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[_button("🗑 Да, удалить", "delok", name, project),
                                                             _button("✖️ Отмена", "cat", name, project)]]))
 

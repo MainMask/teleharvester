@@ -16,6 +16,7 @@ from bot.routers._common import (CHAT_FORMAT, SEND_MESSAGE_PROMPT, STALE_STEP, b
 from bot.routers.projects import views
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.services.workspaces import Workspaces
 from modules import watch_state
 from modules.rich_message import RichContent
@@ -28,8 +29,8 @@ router = Router()
 
 # what each flow asks first: its modes (instant, chat), or the post's link (comments)
 _MODES = {
-    "instant": (f"{title('instant')} — что отправлять?", INSTANT_MODES),
-    "chat": (f"{title('chat')} — что отправлять?\n💬 Ответом на сообщение — отправьте триггер ответом на нужное "
+    "instant": (f"{head(title('instant'))} — что отправлять?", INSTANT_MODES),
+    "chat": (f"{head(title('chat'))} — что отправлять?\n💬 Ответом на сообщение — отправьте триггер ответом на нужное "
              "сообщение: воркеры ответят на него.", MODE_OPTIONS),
 }
 # what its run needs, from the steps before the message: a stale message step has some missing
@@ -38,7 +39,7 @@ _NEEDS = {"comments": ("link", "messages_count"), "instant": ("choice", "link", 
 VARIANTS_FLOWS = ("comments", "watch")  # their message may be a .txt of variants, one a comment
 MAX_VARIANTS_FILE = 1024 * 1024
 VARIANTS_ASK = "\n\nИли пришлите .txt со списком вариантов — по одному на строку: каждый комментарий возьмёт случайный."
-WATCH_ASK = (f"{title('watch')} — за какими каналами следить? Пришлите их через запятую ({CHAT_FORMAT}). Если "
+WATCH_ASK = (f"{head(title('watch'))} — за какими каналами следить? Пришлите их через запятую ({CHAT_FORMAT}). Если "
              f"обсуждение канала только для участников — сначала «{title('join')}».")
 
 
@@ -47,7 +48,7 @@ async def start(callback: CallbackQuery, callback_data: FunctionCB, state: FSMCo
                 workspaces: Workspaces):
     flow = dict(flow=callback_data.key)
     if callback_data.key == "comments":
-        await start_form(callback, state, ChatPost.link, f"{title('comments')} — пришлите ссылку на пост:", pool,
+        await start_form(callback, state, ChatPost.link, f"{head(title('comments'))} — пришлите ссылку на пост:", pool,
                          data=flow)
         return
     if callback_data.key == "watch":
@@ -61,7 +62,7 @@ async def start(callback: CallbackQuery, callback_data: FunctionCB, state: FSMCo
                          data=dict(flow, project_channels=project.channels))
         return
     ask, modes = _MODES[callback_data.key]
-    await start_form(callback, state, ChatPost.mode, ask, pool, choice_kb("bc_mode", modes), data=flow)
+    await start_form(callback, state, ChatPost.mode, ask, pool, choice_kb("bc_mode", modes), data=flow, choice=True)
 
 
 @router.callback_query(ChoiceCB.filter(F.scope == "bc_mode"))
@@ -271,8 +272,8 @@ async def count_input(message: Message, state: FSMContext):
 
 async def _save_options(message: Message, data: dict, settings: Settings, manager: JobManager, cleanup) -> bool:
     """Write the run's trigger / messages count to config.toml right before it starts; False
-    (content dropped by `cleanup`, operator told; the step stays, to send the message again) if it can't start. No
-    await follows the busy check, so the caller's manager.run takes the slot this saw free."""
+    (content dropped by `cleanup`, operator told; the step stays, to send the message again) if it can't start. A job
+    started between this check and the caller's manager.run is refused there (cleanup too), as this one would."""
     if manager.active:
         cleanup()
         await busy_step(message, manager, ACTIVITY)

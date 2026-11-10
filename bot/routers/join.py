@@ -7,22 +7,24 @@ from bot.keyboards.common import cancel_kb, choice_kb, yes_no_kb
 from bot.routers._common import STALE_STEP, back_answer, busy_step, left_flow, require_text, resolve, start_form
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import Join
 from functions.joiner import CAPTCHA_WAIT
 from modules.registry import ACTIVITY, title
 
 router = Router()
 
+BY_LINK, TO_COMMENTS = "🚪 По ссылке", "💬 В комментарии"  # where the workers join: its buttons, described above them
+
 
 @router.callback_query(FunctionCB.filter(F.key == "join"))
 async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await start_form(
         callback, state, Join.mode,
-        f"{title('join')} — куда вступят воркеры?\n\n"
-        "🚪 <b>По ссылке</b> — в канал или группу, куда она ведёт (и приглашение t.me/+…).\n"
-        "💬 <b>В комментарии</b> — в группу комментариев канала по его публичной ссылке: чтобы писать под "
-        "постами.",
-        pool, choice_kb("join_mode", [("🚪 По ссылке", "1"), ("💬 В комментарии", "2")]), parse_mode="HTML",
+        f"{head(title('join'))} — куда вступят воркеры?\n\n"
+        f"{head(BY_LINK)} — в канал или группу, куда она ведёт (и приглашение t.me/+…).\n"
+        f"{head(TO_COMMENTS)} — в группу комментариев канала по его публичной ссылке: чтобы писать под постами.",
+        pool, choice_kb("join_mode", [(BY_LINK, "1"), (TO_COMMENTS, "2")]), choice=True,
     )
 
 

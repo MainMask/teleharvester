@@ -125,7 +125,7 @@ def test_mailing_without_bases_offers_the_default_list_and_cancel(tmp_path, monk
     asyncio.run(mailing.ask_recipients(callback.message, _State(), "OmniBase", 0, []))  # a project with no base yet
     text, markup = callback.message.answers[0]
     assert [b.text for b in _buttons(markup)] == ["📄 assets/targets.txt", "✖️ Отмена"] and text.startswith(
-        "📨 Рассылка — выберите базу ниже")  # its default list, a button too
+        "<b>📨 Рассылка</b> — выберите базу ниже")  # its default list, a button too
 
 
 def test_contacts_button_launches_with_the_picked_base(tmp_path, monkeypatch):
@@ -669,7 +669,8 @@ def test_verify_offers_posts_files(tmp_path, monkeypatch):
     state, msg = _State(), _Msg()
 
     asyncio.run(scraping_router.verify.verify_project(msg, state, ns(name="Omni"), _deps()))
-    assert msg.answers[0] == ("🔍 Верификация — аккаунт: 🤖 w1 (+1)", None)  # its one account, in the screen's place
+    # its one account, in the screen's place
+    assert msg.answers[0] == ("<b>🔍 Верификация</b> — аккаунт: 🤖 w1 (+1)", None)
     _, markup = msg.answers[-1]
     assert [b.text for b in _buttons(markup)] == ["📄 posts · 01.05.2022-27.09.2026 · 1", "✖️ Отмена"]
     assert state.data["files"] == [path]
@@ -917,7 +918,7 @@ def test_analysis_filter_asks_for_words(tmp_path, monkeypatch):
 
     pick = _Callback()
     asyncio.run(scraping_router.analysis.analysis_file_pick(pick, ChoiceCB(scope="an_file", value="0"), state, manager))
-    assert pick.message.answers[0][0].startswith("🔎 Поиск постов по словам — пришлите слова через запятую")
+    assert pick.message.answers[0][0].startswith("<b>🔎 Поиск постов по словам</b> — пришлите слова через запятую")
 
     msg = _Msg()
     msg.text = "крипта, , биткоин"

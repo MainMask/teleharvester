@@ -7,7 +7,7 @@ from bot.callbacks import ChoiceCB, FunctionCB, ReleaseCB
 from bot.keyboards.common import choice_kb
 from bot.keyboards.menu import back_kb
 from bot.routers._common import busy_tap, confirm_expired, ensure_workers, resolve
-from bot.routers.accounts.proxies import proxies_busy, rehome_now
+from bot.routers.accounts.proxies import proxies_busy_tap, rehome_now
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace, Workspaces
@@ -114,9 +114,9 @@ async def rehome_restricted(callback: CallbackQuery, callback_data: ChoiceCB, wo
     if workspace is None or confirm_expired(message, BUTTON_TTL):
         await callback.answer(STALE_CHECK, show_alert=True)
         return
-    await callback.answer()
     pool = workspace.pool
-    if await proxies_busy(message, pool, workspace.manager):
+    if await proxies_busy_tap(callback, pool, workspace.manager):
         return
+    await callback.answer()
     if report := await rehome_now(message, pool):
         await message.edit_text(report, reply_markup=back_kb(ACCOUNT_LIST, workspace.project_id, fresh=False))

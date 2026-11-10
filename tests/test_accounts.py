@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import datetime
 import json
 import types
 
@@ -21,6 +22,8 @@ def _me(premium=False, phone=None, **kw):  # a live profile: Telegram's User alw
 class _Msg:
     def __init__(self):
         self.replies = []
+        # as Telegram's: sent now, never edited (a confirmation's age: _common.confirm_expired)
+        self.date, self.edit_date = datetime.datetime.now(datetime.timezone.utc), None
 
     async def answer(self, text, **kwargs):
         self.replies.append(text)
@@ -439,6 +442,28 @@ def test_an_old_removal_confirmation_never_removes_another_account(tmp_path, mon
 
     _press("prm_ok", old, state, pool, personal, msg)  # «Да» on b's old confirmation
     assert removed == [] and "устарел" in msg.replies[-1][0]  # not a.jsession, now at index 1
+
+
+def test_a_removal_confirmation_left_too_long_removes_nothing(tmp_path, monkeypatch):
+    """Irreversible (a log-out, the file deleted): an old «Да» must not do it days later, as every confirmation."""
+    monkeypatch.chdir(tmp_path)
+    removed = []
+
+    async def remove_personal(personal, account):
+        removed.append(account.path)
+        return True
+
+    monkeypatch.setattr(accounts.card.sign_in, "remove_personal", remove_personal)
+    personal, _, _ = _personal(tmp_path)
+    personal.full_sessions = {"personal_sessions/a.jsession": _Me()}
+    state, msg, pool = _State(), _CbMsg(), _free_pool()
+    asyncio.run(_list(msg, state, pool, personal))
+    _press("acc_act", f"rm.{_key(state, 0)}", state, pool, personal, msg)
+    msg.date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)  # asked an hour ago
+
+    _press("prm_ok", _key(state, 0), state, pool, personal, msg)
+    assert removed == []
+    assert msg.replies[-1] == ("Подтверждение устарело — откройте карточку аккаунта заново.", "pop-up")
 
 
 def _free_pool():

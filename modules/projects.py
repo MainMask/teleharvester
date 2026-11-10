@@ -527,7 +527,7 @@ def _head(project: Project, workers: int, esc, warmup: str = "") -> list[str]:
     return [f"📁 {name}",
             f"🤖 Воркеров: {workers}" + (f" · {warmup}" if warmup else "") if workers else
             f"🤖 Воркеров нет — добавьте их: «{ACCOUNTS}» → «{ADD}» (по номеру, из файлов или из свободных).",
-            base_line(project),
+            esc(base_line(project)),  # escaped, as base_text has it: a ledger's error text may hold anything
             f"📢 Каналы — {len(project.channels)}" if project.channels else
             f"📢 Каналов нет — для скрапа добавьте их: «{COLLECT}» → «{ADD_CHANNELS}»."]
 
@@ -564,8 +564,16 @@ def base_line(project: Project, files: list[tuple[str, str]] | None = None) -> s
     files = _base_files(project) if files is None else files
     if not files:
         return f"🎯 Базы пока нет — {FIRST_BASE}."
-    return (f"🎯 База: людей {project_base.people(project.name)} (без повторов) · написали {mailed(home(project))} · "
-            f"в контактах {len(contacts_ledger.load(home(project)))}")
+    people = f"🎯 База: людей {project_base.people(project.name)} (без повторов)"
+    try:
+        written = mailed(home(project))
+    except ValueError as err:  # edited by hand: the card still opens, and says which
+        return f"{people} · ⚠️ {MAILING_STATS} не читается ({err})"
+    try:
+        contacts = len(contacts_ledger.load(home(project)))
+    except ValueError as err:
+        return f"{people} · написали {written} · ⚠️ {contacts_ledger.NAME} не читается ({err})"
+    return f"{people} · написали {written} · в контактах {contacts}"
 
 
 def mailed(project_home: str, before: str | None = None) -> int:

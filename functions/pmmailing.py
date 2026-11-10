@@ -124,6 +124,8 @@ class PmMailingFunc(TelethonFunction):
         for row in rows[start:]:
             if len(batch) == REQUIREMENTS_BATCH:
                 break
+            if not isinstance(row, dict):  # a list's line in 📚 Вся база's queue: nothing to check by
+                continue
             if row.get("owner_id") in (None, me.id) and (id(session), row["user_id"]) not in self._requirements:
                 batch.append(row)
 
@@ -322,7 +324,7 @@ class PmMailingFunc(TelethonFunction):
         if path.endswith(".parquet"):
             return parquet_db.load(path)
 
-        with open(path, encoding="utf-8") as fileobj:
+        with open(path, encoding="utf-8-sig") as fileobj:
             return self.parse_list(fileobj)
 
     @staticmethod

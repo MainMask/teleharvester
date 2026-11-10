@@ -2,6 +2,7 @@
 .session files with their .json (modules/session_import.py), or ZIPs of these. Each message (or album) is imported at
 once: its .session ones, then its tdata ones in turn — one without its 2FA .txt asks for its password —; then the
 chat waits for the next files, no ➕ Добавить again for each account."""
+import asyncio
 import html
 import io
 import os
@@ -16,8 +17,9 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import MAX_MESSAGE, busy_step, busy_tap, delete_quietly, download, fit_lines
+from bot.routers._common import MAX_MESSAGE, busy_step, busy_tap, delete_quietly, download, fit_lines, start_form
 from bot.services.delegation import WorkerPool
+from bot.services.screens import head
 from bot.services.jobs import JobManager, busy
 from bot.states import ImportFiles
 from modules import login, projects, session_import, tdata_import
@@ -33,18 +35,13 @@ SUFFIXES = (".zip", ".session", ".json")
 async def files_start(callback: CallbackQuery, state: FSMContext, manager: JobManager):
     if await busy_tap(callback, manager):
         return
-    await callback.answer()
-
-    await state.clear()  # an abandoned flow's data must not reach this one
-    await state.set_state(ImportFiles.files)
-    await callback.message.answer(  # a prompt for files: a new message, ➕ Добавить's menu stays
-        f"<b>{title('files')}</b>\n\nПришлите ZIP с папкой tdata (Telegram Desktop), "
+    await start_form(  # a prompt for files: a new message, ➕ Добавить's menu stays
+        callback, state, ImportFiles.files,
+        f"{head(title('files'))} — пришлите ZIP с папкой tdata (Telegram Desktop), "
         "файлы <code>.session</code> (Telethon) вместе с <code>.json</code> того же имени — выделите их вместе — "
         "или ZIP с ними; можно несколько сразу. "
         "Пароль 2FA к tdata можно положить в его ZIP файлом .txt (например <code>2fa.txt</code>: пароль или "
-        "<code>2fa: пароль</code>); без него бот спросит пароль.",
-        parse_mode="HTML", reply_markup=cancel_kb(ImportFiles.files),
-    )
+        "<code>2fa: пароль</code>); без него бот спросит пароль.")
 
 
 async def _received(message: Message, album) -> dict[str, bytes]:
@@ -84,7 +81,8 @@ async def files_sent(message: Message, state: FSMContext, pool: WorkerPool, mana
             try:
                 if not zipfile.is_zipfile(io.BytesIO(data)):
                     raise ValueError("это не ZIP-архив")
-                if tdata_import.unpack(data, folder) is not None:  # a tdata: its own queue, with its password
+                # off the event loop: up to MAX_UNZIPPED written to disk would freeze the bot meanwhile
+                if await asyncio.to_thread(tdata_import.unpack, data, folder) is not None:  # a tdata: its own queue
                     queue.append(data)
                     shutil.rmtree(folder)
             except ValueError as err:
@@ -183,7 +181,7 @@ async def _import(message: Message, pool: WorkerPool, manager: JobManager, zip_b
     try:
         tmp_dir = tempfile.mkdtemp(prefix="tdata_")  # inside try: a full disk must not hold the slot
         try:
-            tdata_dir = tdata_import.unpack(zip_bytes, tmp_dir)
+            tdata_dir = await asyncio.to_thread(tdata_import.unpack, zip_bytes, tmp_dir)  # off the event loop
         except ValueError as err:
             await message.answer(f"⚠️ {err}.")
             return True

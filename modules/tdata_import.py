@@ -7,6 +7,7 @@ the project's `sessions/<phone>.jsession` and the source folder is marked so a l
 does not reconnect it again.
 """
 
+import asyncio
 import io
 import json
 import os
@@ -42,7 +43,7 @@ def load_proxies(path: str) -> list[Proxy]:
     if not os.path.exists(path):
         return []
 
-    with open(path, encoding="utf-8") as fileobj:
+    with open(path, encoding="utf-8-sig") as fileobj:
         return parse_proxies(fileobj.read())
 
 
@@ -124,7 +125,7 @@ def _password_files(names: list[str]) -> list[str]:
 def read_2fa_password(worker_dir: str) -> str | None:
     """The two-step password from a .txt in `worker_dir` (_password_files, parse_2fa); None without one."""
     for name in _password_files(sorted(os.listdir(worker_dir))):
-        with open(os.path.join(worker_dir, name), encoding="utf-8", errors="replace") as fileobj:
+        with open(os.path.join(worker_dir, name), encoding="utf-8-sig", errors="replace") as fileobj:
             if password := parse_2fa(fileobj.read()):
                 return password
     return None
@@ -134,7 +135,7 @@ def zip_2fa_password(archive_bytes: bytes) -> str | None:
     """The two-step password from a .txt in a tdata's ZIP (as read_2fa_password, anywhere in it)."""
     with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
         for name in _password_files(sorted(info.filename for info in archive.infolist() if not info.is_dir())):
-            if password := parse_2fa(archive.read(name).decode("utf-8", "replace")):
+            if password := parse_2fa(archive.read(name).decode("utf-8-sig", "replace")):
                 return password
     return None
 
@@ -155,7 +156,7 @@ def write_2fa_password(phone: str, password: str, workers_dir: str = "tdata_impo
     path = os.path.join(worker_dir, matches[0] if matches else "Пароль 2фа.txt")
     text = ""
     if matches:
-        with open(path, encoding="utf-8", errors="replace") as fileobj:
+        with open(path, encoding="utf-8-sig", errors="replace") as fileobj:
             text = fileobj.read()
     if old := parse_2fa(text):
         head, _, tail = text.rpartition(old)
@@ -224,17 +225,28 @@ async def convert(tdata_dir: str, proxy: Proxy | None, password: str | None,
     return phone
 
 
+# connect() and the authorization check of an account being imported: Telethon retries a dead proxy for a minute
+# or more, while the import holds the project's job slot
+CONNECT_TIMEOUT = 40
+
+
 async def save_worker(client, proxy: Proxy | None, password: str | None, lang_pack: str,
                       sessions_dir: str) -> tuple[str | None, bool]:
     """An imported account's fresh client (from tdata, or a .session: modules/session_import.py) into
     `<sessions_dir>/<phone>.jsession`, without the personal channel pinned to its profile: (its phone, True if it is
     new). (None, False) for a session no longer authorized; an account already the project's: its phone, its file
     left as is; a personal account or another place's worker: ValueError (existing_worker)."""
-    await client.connect()
+    async def account():
+        await client.connect()
+        return await client.get_me() if await client.is_user_authorized() else None
+
     try:
-        if not await client.is_user_authorized():
+        try:
+            me = await asyncio.wait_for(account(), CONNECT_TIMEOUT)
+        except TimeoutError:  # its own text: a bare timeout's is empty, and the import's report shows it
+            raise TimeoutError(f"Telegram не ответил за {CONNECT_TIMEOUT} с (мёртвый прокси или сеть)") from None
+        if me is None:
             return None, False
-        me = await client.get_me()
         if (phone := existing_worker(me.id, sessions_dir)) is not None:
             return phone, False
         try:  # new workers start without a personal channel pinned to the profile

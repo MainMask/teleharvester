@@ -67,7 +67,7 @@ def cancel_kb(step, markup: InlineKeyboardMarkup | None = None) -> InlineKeyboar
 
 
 def yes_no_kb(scope: str) -> InlineKeyboardMarkup:
-    return choice_kb(scope, [("✅ Да", "yes"), ("✖️ Нет", "no")])
+    return choice_kb(scope, [("✅ Да", "yes"), ("❌ Нет", "no")])  # ✖️: the form's Отмена under it (cancel_kb)
 
 
 def stop_kb(slot: int) -> InlineKeyboardMarkup:

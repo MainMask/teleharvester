@@ -9,9 +9,10 @@ from aiogram.types import CallbackQuery, Message
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import back_answer, busy_tap, download, ensure_workers
+from bot.routers._common import back_answer, busy_step, busy_tap, download, start_form
 from bot.services.delegation import WorkerPool
-from bot.services.jobs import JobManager, busy
+from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import SetProxy
 from functions.spamblock import rehome, rehome_report, set_restricted_proxies
 from modules import projects, restricted_workers, tdata_import
@@ -28,7 +29,7 @@ SPARE_PROMPT = (
 )
 
 PROXY_PROMPT = (
-    f"{title('proxy')} — пришлите список прокси <b>.txt файлом</b> или текстом, по одному на строку:\n"
+    f"{head(title('proxy'))} — пришлите список прокси <b>.txt файлом</b> или текстом, по одному на строку:\n"
     "<code>scheme://user:pass@ip:port</code> (socks5/socks4/http).\n\n"
     f"Они распределятся по аккаунтам проекта: один прокси на {ACCOUNTS_PER_PROXY} аккаунта. Новые аккаунты "
     "проекта тоже получат прокси из этого списка."
@@ -50,13 +51,27 @@ def proxy_state(storage) -> str:
     return f"Сейчас: {lists} · {accounts}."
 
 
+POLLING = "⛔ Идёт проверка автоответа. Повторите через минуту."
+
+
 async def proxies_busy(message, pool, manager) -> bool:
-    """A proxy change now would rebuild clients in use (a job, the autoreply poll): told, True."""
-    if manager.active:  # a job may have started since the prompt or the button
-        await back_answer(message, busy(manager.label), ACCOUNTS, manager.project_id)
+    """A list sent while a proxy change would rebuild clients in use (a job, the autoreply poll): told, the step
+    stays (the list is sent again), True."""
+    if manager.active:  # a job may have started since the prompt
+        await busy_step(message, manager, ACCOUNTS, "пришлите список ещё раз")
         return True
     if pool.polling is not None:  # its old client is connected through the old proxy until the poll ends
-        await back_answer(message, "⛔ Идёт проверка автоответа. Повторите через минуту.", ACCOUNTS, manager.project_id)
+        await back_answer(message, POLLING, ACCOUNTS, manager.project_id)
+        return True
+    return False
+
+
+async def proxies_busy_tap(callback, pool, manager) -> bool:
+    """proxies_busy for a button: in a pop-up over it (busy_tap), which stays to be tapped again; True."""
+    if await busy_tap(callback, manager):
+        return True
+    if pool.polling is not None:
+        await callback.answer(POLLING, show_alert=True)
         return True
     return False
 
@@ -76,13 +91,9 @@ async def rehome_now(message, pool) -> str | None:
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.PROXY))
 async def proxy_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool, manager: JobManager):
-    if await busy_tap(callback, manager) or not await ensure_workers(callback, pool):
+    if await busy_tap(callback, manager):
         return
-
-    await state.clear()  # an abandoned flow's data must not reach this one
-    await state.set_state(SetProxy.input)
-    await callback.message.answer(f"{PROXY_PROMPT}\n\n{proxy_state(pool.storage)}", parse_mode="HTML",
-                                  reply_markup=cancel_kb(SetProxy.input))
+    await start_form(callback, state, SetProxy.input, f"{PROXY_PROMPT}\n\n{proxy_state(pool.storage)}", pool)
 
 
 async def _proxy_list(message: Message):
@@ -93,7 +104,7 @@ async def _proxy_list(message: Message):
             return None
         if (data := await download(message, message.document)) is None:
             return None
-        raw = data.decode("utf-8", "replace")
+        raw = data.decode("utf-8-sig", "replace")
     else:
         raw = message.text or ""
 
@@ -161,16 +172,17 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
 @router.callback_query(SetProxy.spare, ChoiceCB.filter(F.scope == "proxy_spare"))
 async def proxy_spare_choice(callback: CallbackQuery, callback_data: ChoiceCB, state: FSMContext,
                              pool: WorkerPool, manager: JobManager):
-    await callback.answer()
     if callback_data.value == "skip":
+        await callback.answer()
         await state.clear()
         await callback.message.edit_text("✅ Прокси для ограниченных — без изменений.",  # in the question's place
                                          reply_markup=back_kb(ACCOUNTS, manager.project_id, fresh=False))
         return
 
     # 🗑 Не отделять: the list goes, the ones on it back into the pool
-    if await proxies_busy(callback.message, pool, manager):
+    if await proxies_busy_tap(callback, pool, manager):
         return
+    await callback.answer()
     set_restricted_proxies(pool.storage, None)
     await state.clear()
     report = await rehome_now(callback.message, pool)

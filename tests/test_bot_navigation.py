@@ -575,7 +575,7 @@ def test_start_names_every_main_menu_button():
     assert "📁 Проектов: <b>1</b> · 🤖 воркеров: <b>2</b>" in text
     assert MAIN_MENU == (PROJECTS, TASKS, SETTINGS)
     for label in MAIN_MENU:
-        assert f"<b>{label.split(' ', 1)[1]}</b> — {SCREENS[label].hint}" in text
+        assert f"<b>{label}</b> — {SCREENS[label].hint}" in text  # bold, its emoji too: as a screen's title
 
 
 def test_photo_folder_button_works_only_in_its_step():

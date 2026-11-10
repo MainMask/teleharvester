@@ -49,6 +49,16 @@ def test_every_menu_button_starts_with_an_emoji():
     assert [text for text in texts if not _starts_with_emoji(text)] == []
 
 
+def test_a_yes_no_question_s_no_is_not_its_form_s_cancel():
+    """Under a question the form's ✖️ Отмена (cancel_kb) leaves it: its «Нет» is another mark, not a second ✖️."""
+    from bot.keyboards.common import cancel_kb
+    from bot.states import SetSetting
+
+    no = _texts(yes_no_kb("x"))[1]
+    cancel, = _texts(cancel_kb(SetSetting.value))
+    assert no == "❌ Нет" and no.split()[0] != cancel.split()[0]
+
+
 def test_every_screen_is_described_and_the_main_menu_is_the_screens_without_a_parent():
     assert list(MAIN_MENU) == _texts(main_menu())
     assert all(screen.hint.strip() for screen in SCREENS.values())
@@ -160,6 +170,43 @@ def test_no_message_names_a_button_by_hand():
     typed = [f"{path}:{line}" for path in _sources("bot", "functions", "modules") for line, text in _strings(path)
              if any(f"«{title}»" in text for title in titles)]
     assert typed == []
+
+
+def _title_expr(node, module) -> bool:
+    """The expression is a function's, a button's or a screen's title: title(…), x.title, FLOW_TITLES[…], a name
+    holding one."""
+    import importlib
+    from modules.registry import ADD_CHANNELS
+
+    if isinstance(node, ast.Call):
+        return getattr(node.func, "id", None) == "title"
+    if isinstance(node, ast.Attribute):
+        return node.attr == "title"
+    if isinstance(node, ast.Subscript):
+        return getattr(node.value, "id", None) == "FLOW_TITLES"
+    if isinstance(node, ast.Name):
+        titles = {f.title for f in BOT_FUNCTIONS} | {b.title for s in SCREENS.values() for b in s.buttons} \
+            | set(SCREENS) | {ADD_CHANNELS}
+        return node.id == "title" or getattr(importlib.import_module(module), node.id, None) in titles
+    return False
+
+
+def test_a_message_names_its_title_in_bold():
+    """A prompt, a question, a confirmation starts with its function's or button's title — bold, its emoji too, as
+    the screens' titles (screens.head): «<b>🗑 Удалить</b> — …», never «🗑 Удалить — …» nor «🗑 <b>Удалить</b>»."""
+    import re
+
+    plain = []
+    for path in _sources("bot"):
+        module = path[:-3].replace("/", ".")
+        for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+            if isinstance(node, ast.JoinedStr) and len(node.values) > 1:
+                first, then = node.values[0], node.values[1]
+                if (isinstance(first, ast.FormattedValue) and _title_expr(first.value, module)
+                        and isinstance(then, ast.Constant) and then.value.startswith(" —")):
+                    plain.append(f"{path}:{node.lineno}")
+        plain += [f"{path}:{line}" for line, text in _strings(path) if re.match(r"\S{1,2} <b>", text)]
+    assert plain == []
 
 
 def test_every_way_back_to_a_project_s_screen_names_its_project():

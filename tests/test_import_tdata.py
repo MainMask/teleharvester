@@ -399,3 +399,22 @@ def test_an_existing_worker_is_not_reconnected(tmp_path, monkeypatch):
     assert phone == "79990001122"
     assert _FakeTDesktop.last_client is None  # its key isn't connected from another proxy
     assert sorted(p.name for p in sessions.iterdir()) == ["broken.jsession", "other-name.jsession"]
+
+
+def test_a_dead_proxy_does_not_hold_the_import(tmp_path, monkeypatch):
+    """connect() hanging on a dead proxy: the import ends with a reason within CONNECT_TIMEOUT (it holds the project's
+    slot meanwhile), the client disconnected, no file written."""
+    monkeypatch.setattr(tdata_import, "CONNECT_TIMEOUT", 0.01)
+    client = _FakeClient()
+    disconnected = []
+
+    async def hang():
+        await asyncio.sleep(1)
+
+    async def disconnect():
+        disconnected.append(True)
+    client.connect, client.disconnect = hang, disconnect
+
+    with pytest.raises(TimeoutError, match="Telegram не ответил"):
+        asyncio.run(tdata_import.save_worker(client, None, None, "", str(tmp_path / "s")))
+    assert disconnected and not (tmp_path / "s").exists()

@@ -97,7 +97,8 @@ def test_a_line_cut_by_a_crash_is_skipped(tmp_path):
     assert outreach.stats(home, NOW)[1]["sent"] == 1
 
 
-def test_the_report_has_the_table_each_hypothesis_and_the_answers(tmp_path):
+def test_the_report_has_the_table_each_hypothesis_and_the_answers(tmp_path, monkeypatch):
+    monkeypatch.setattr(outreach, "_now", lambda: NOW.strftime(outreach.TIME_FORMAT))  # the runs' dates: NOW's
     home = _project(tmp_path, [_send(1, 5, 100, username="ann"), _send(1, 6, 100)],
                     [_reply(5, 98, text="а сколько | стоит?\nи когда")])
     outreach.close_hypothesis(home, 1, "no", "оффер слишком длинный")

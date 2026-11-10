@@ -86,12 +86,13 @@ async def ensure_workers(callback, pool) -> bool:
     return True
 
 
-async def start_form(callback, state, step, text: str, pool=None, markup=None, parse_mode=None,
-                     data: dict | None = None) -> bool:
+async def start_form(callback, state, step, text: str, pool=None, markup=None, data: dict | None = None,
+                     choice: bool = False) -> bool:
     """A function's first step from its screen's button: with `pool`, none without a worker (ensure_workers);
     else the chat at `step` (a form before it left), `data` kept for the next steps, and the step's prompt
-    (`text`, which starts with the function's title) with ✖️ Отмена under its own buttons (`markup`): a
-    choice of them in the screen's place, a prompt for text as a new message. False: not started."""
+    (`text`, HTML, which starts with the function's title in bold: screens.head) with ✖️ Отмена under its own
+    buttons (`markup`). `choice`: a step only its buttons answer — in the screen's place; else (it waits for text,
+    with buttons or not) a new message, the screen stays. False: not started."""
     if pool is not None:
         if not await ensure_workers(callback, pool):
             return False
@@ -101,8 +102,8 @@ async def start_form(callback, state, step, text: str, pool=None, markup=None, p
     await state.set_state(step)
     if data:
         await state.update_data(**data)
-    send = callback.message.edit_text if markup is not None else callback.message.answer
-    await send(text, parse_mode=parse_mode, reply_markup=cancel_kb(step, markup))
+    send = callback.message.edit_text if choice else callback.message.answer
+    await send(text, parse_mode="HTML", reply_markup=cancel_kb(step, markup))
     return True
 
 
@@ -202,7 +203,7 @@ async def read_text_document(message, max_size: int) -> str | None:
         await message.answer("Файл слишком большой. Пришлите .txt поменьше:")
         return None
     data = await download(message, message.document)
-    return None if data is None else data.decode("utf-8", "replace")
+    return None if data is None else data.decode("utf-8-sig", "replace")
 
 
 async def left_flow(callback, state, step) -> bool:

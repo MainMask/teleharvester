@@ -7,6 +7,7 @@ from bot.keyboards.common import cancel_kb
 from bot.routers._common import busy_step, require_text, resolve, start_form
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import Invite
 from modules.registry import ACTIVITY, title
 
@@ -16,7 +17,7 @@ router = Router()
 @router.callback_query(FunctionCB.filter(F.key == "invite"))
 async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await start_form(callback, state, Invite.source,
-                     f"{title('invite')} — пришлите ссылку или @username чата-источника (откуда брать "
+                     f"{head(title('invite'))} — пришлите ссылку или @username чата-источника (откуда брать "
                      "участников):", pool)
 
 

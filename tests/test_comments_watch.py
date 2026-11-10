@@ -340,7 +340,7 @@ def test_the_project_s_channels_are_one_tap_away():
     asyncio.run(broadcasts.start(callback, FunctionCB(key="watch"), state, ns(count=lambda: 2),
                                  _workspaces(["@a", "@b"])))
     text, markup = callback.message.answers[-1]
-    assert text.startswith("🆕 Комментарии — к новым постам — за какими каналами следить?")
+    assert text.startswith("<b>🆕 Комментарии — к новым постам</b> — за какими каналами следить?")
     assert state.state == ChatPost.channels
     assert markup.inline_keyboard[0][0].text == "📢 Каналы проекта (2)"
 

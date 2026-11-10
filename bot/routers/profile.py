@@ -14,6 +14,7 @@ from bot.routers._common import (back_answer, busy_step, busy_tap, delete_quietl
 from modules.registry import BOT_FUNCTIONS_BY_KEY, PROFILE, SECURITY
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import ChangePhoto, PickWorkers, ProfileText, SetPassword
 from modules import content, profile_done, restricted_workers, warmup
 from modules.scraper_creds import scrape_accounts
@@ -52,7 +53,7 @@ async def _sent_lines(message: Message) -> list[str] | None:
 # --- worker picker: a function's first step, so workers done earlier can be left out ---
 
 def _workers_text(key: str, picked: list[int], total: int, new: list[int]) -> str:
-    text = (f"{BOT_FUNCTIONS_BY_KEY[key].title} — на каких воркерах? Отмечено: {len(picked)} из {total}\n"
+    text = (f"{head(BOT_FUNCTIONS_BY_KEY[key].title)} — на каких воркерах? Отмечено: {len(picked)} из {total}\n"
             f"✓ — эта функция уже меняла воркера. Отмечены те, что ещё не менялись: {len(new)}")
     return text if new else text + "\nВсе уже менялись — отметьте вручную."
 
@@ -84,7 +85,7 @@ async def _ask_workers(message: Message, state: FSMContext, key: str, pool: Work
     await state.set_state(PickWorkers.marks)
     await state.update_data(workers=None, pick_key=key, pick_paths=[account.path for account in accounts],
                             pick_labels=labels, pick_new=new, picked=new, pick_page=0)
-    await message.edit_text(_workers_text(key, new, len(labels), new),  # in its screen's place
+    await message.edit_text(_workers_text(key, new, len(labels), new), parse_mode="HTML",  # in its screen's place
                             reply_markup=_workers_kb(labels, new, 0))
 
 
@@ -106,7 +107,7 @@ async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
         # the paths, «all» too: a worker added meanwhile (by phone, tdata) was never shown nor picked
         await state.update_data(workers=[paths[i] for i in picked])
         title = BOT_FUNCTIONS_BY_KEY[data["pick_key"]].title
-        await callback.message.edit_text(f"{title} — воркеры: {len(picked)} из {len(paths)}")
+        await callback.message.edit_text(f"{head(title)} — воркеры: {len(picked)} из {len(paths)}", parse_mode="HTML")
         await _NEXT[data["pick_key"]](callback.message, state,
                                       dict(pool=pool, functions=functions, manager=manager))
         return
@@ -117,7 +118,7 @@ async def workers_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
     if (new_picked, new_page) == (picked, page):  # an unchanged message can't be edited ("page" too)
         return
     await state.update_data(picked=new_picked, pick_page=new_page)
-    await callback.message.edit_text(_workers_text(data["pick_key"], new_picked, len(labels), new),
+    await callback.message.edit_text(_workers_text(data["pick_key"], new_picked, len(labels), new), parse_mode="HTML",
                                      reply_markup=_workers_kb(labels, new_picked, new_page))
 
 

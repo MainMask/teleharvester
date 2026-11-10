@@ -4,6 +4,7 @@ never a worker), with its own client, in its own job slot (`scrapes`), so it nev
 pool nor holds up the other tasks; the check of the typed chats' names on that account; the slot with
 its ⏹; the result files sent back. The analysis of the files (analysis.py) has a slot of its own."""
 import asyncio
+import html
 import os
 
 from aiogram import F, Router
@@ -18,6 +19,7 @@ from bot.services import scraping
 from bot.services.delegation import WorkerPool, borrow
 from bot.services.jobs import JobManager, busy
 from bot.services.progress import Progress
+from bot.services.screens import head
 from modules import projects, scraped_files
 from modules.registry import ADD, COLLECT, menu_path, title
 from modules.scraper_creds import find_account, scrape_accounts
@@ -123,12 +125,13 @@ async def choose_account(message: Message, state: FSMContext, flow: str, **deps)
         return
     if len(accounts) == 1:  # in 📥 Сбор's place, as after a pick: its buttons gone, the account said
         only = accounts[0]
-        await message.edit_text(f"{FLOW_TITLES[flow]} — аккаунт: {'👤' if only.personal else '🤖'} {only.label}")
+        await message.edit_text(f"{head(FLOW_TITLES[flow])} — аккаунт: {'👤' if only.personal else '🤖'} "
+                                f"{html.escape(only.label)}", parse_mode="HTML")
         await _account_chosen(message, state, only, flow, deps)
         return
     labels = [f"{'👤' if a.personal else '🤖'} {a.label}" for a in accounts]
     await state.update_data(account_flow=flow, account_paths=[a.path for a in accounts], account_labels=labels)
-    await message.edit_text(f"{FLOW_TITLES[flow]} — на каком аккаунте?",  # in 📥 Сбор's place
+    await message.edit_text(f"{head(FLOW_TITLES[flow])} — на каком аккаунте?", parse_mode="HTML",  # in 📥 Сбор's place
                             reply_markup=_accounts_kb(labels, 0, deps["scrapes"].project_id))
 
 
@@ -156,7 +159,8 @@ async def account_pick(callback: CallbackQuery, callback_data: ChoiceCB, state: 
     # chosen once: the picker says which, its buttons gone, so a second tap can't run the next step again
     await callback.answer()
     label = data["account_labels"][data["account_paths"].index(path)]
-    await callback.message.edit_text(f"{FLOW_TITLES[data['account_flow']]} — аккаунт: {label}")
+    await callback.message.edit_text(f"{head(FLOW_TITLES[data['account_flow']])} — аккаунт: {html.escape(label)}",
+                                     parse_mode="HTML")
     await _account_chosen(callback.message, state, account, data["account_flow"],
                           dict(pool=pool, personal=personal, scrapes=scrapes))
 

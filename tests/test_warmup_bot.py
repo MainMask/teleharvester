@@ -360,7 +360,7 @@ def test_the_reset_and_a_category_s_deletion_are_asked_in_their_screen_s_place()
     reset = _Callback()
     asyncio.run(router.reset_ask(reset, _Pool(storage), ns(project_id=3)))
     [(text, markup)] = reset.message.edits  # in 🔥's place, no new message
-    assert text.startswith("♻️ Сбросить прогрев") and reset.message.answers == []
+    assert text.startswith("<b>♻️ Сбросить прогрев</b>") and reset.message.answers == []
     assert NavCB.unpack(markup.inline_keyboard[0][1].callback_data) == NavCB(screen=WARMUP, project=3)  # ↩️
 
     warmup.forget([os.path.join(storage.directory, "a.session")])  # 🆕 again
@@ -368,7 +368,7 @@ def test_the_reset_and_a_category_s_deletion_are_asked_in_their_screen_s_place()
     asyncio.run(base.delete_ask(delete, AccountBaseCB(action="del", value=warmup.NEW, project=3), _State(),
                                 _Pool(storage), ns(project_id=3)))
     [(text, markup)] = delete.message.edits
-    assert text.startswith("🗑 Удалить файлы сессий категории 🆕 Новые (1)") and delete.message.answers == []
+    assert text.startswith("<b>🗑 Удалить</b> файлы сессий категории 🆕 Новые (1)") and delete.message.answers == []
     # ↩️ opens the category again in its place
     assert AccountBaseCB.unpack(markup.inline_keyboard[0][1].callback_data) == AccountBaseCB(
         action="cat", value=warmup.NEW, project=3)
@@ -501,7 +501,7 @@ def test_the_personal_accounts_are_a_button_of_the_list_with_their_cards():
     asyncio.run(base.category_open(callback, AccountBaseCB(action="cat", value=base.PERSONAL, project=3), state, pool,
                                    workspace, personal))
     text, markup = callback.message.edits[-1]
-    assert "👤 <b>Личные</b>" in text and _texts(markup) == ["👤 me.session", "⬅️ Назад"]
+    assert "<b>👤 Личные</b>" in text and _texts(markup) == ["👤 me.session", "⬅️ Назад"]
 
 
 def test_an_empty_list_says_where_accounts_are_added():
@@ -540,7 +540,7 @@ def test_the_days_and_the_threads_are_typed_and_any_number_from_one_is_taken(fie
     assert f"{name}: {current}" in _texts(router._warmup_view(pool, JobManager(), 3)[1])
     asyncio.run(router.number_ask(callback, WarmupCB(action="number", value=field, project=3), state, pool))
     prompt, _ = callback.message.answers[-1]
-    assert prompt.startswith(f"{name} — сейчас <b>{current}</b>") and state.state == SetWarmupNumber.value
+    assert prompt.startswith(f"<b>{name}</b> — сейчас <b>{current}</b>") and state.state == SetWarmupNumber.value
     assert origin(SetWarmupNumber.value.state, {}) == WARMUP  # its ✖️: back to 🔥 Прогрев
 
     for wrong in ("0", "-3", "много", "2.5"):

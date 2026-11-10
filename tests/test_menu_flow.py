@@ -205,7 +205,7 @@ def test_no_keyword_and_all_posts_by_button(key, value):
     state = _State({"keyword": "war", "max_messages": 50}, Scrape.keyword)
     asyncio.run(scrape.scrape_any(callback, ChoiceCB(scope="scrape_any", value=key), state))
     assert state.data[key] == value and state.state == Scrape.confirm
-    assert callback.message.edits[0][0].startswith("🎛 Дополнительно — ")  # in the prompt's place
+    assert callback.message.edits[0][0].startswith("<b>🎛 Дополнительно</b> — ")  # in the prompt's place
 
 
 def test_a_report_without_a_comment_by_button(monkeypatch):

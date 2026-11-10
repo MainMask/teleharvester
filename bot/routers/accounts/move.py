@@ -10,6 +10,7 @@ from bot.keyboards.common import cancel_kb, choice_kb, marks_kb, page_of, paged_
 from bot.keyboards.menu import back_kb
 from bot.routers._common import back_answer, ensure_workers, marks_step
 from bot.services import screens
+from bot.services.screens import head
 from bot.services.delegation import WorkerPool
 from bot.services.workspaces import Workspace, Workspaces, move_out, take_free
 from bot.states import MoveWorkers
@@ -23,8 +24,8 @@ router = Router()
 # The lists of the worker picker (profile.py, keyboards.marks_kb): ✅ / ⬜, ☑️ Все, ⬜ Никого, then ▶️.
 
 TICKS = [("☑️ Все", "all"), ("⬜ Никого", "none")]
-FREE_HEAD = f"<b>{title('free')}</b>\n\nАккаунты, ещё ни в одном проекте. Отмеченные станут воркерами этого проекта."
-OUT_HEAD = (f"{title('move')} — воркеров в другой проект или в свободные. Ограничения от @SpamBot и прокси "
+FREE_HEAD = f"{head(title('free'))} — аккаунты, ещё ни в одном проекте. Отмеченные станут воркерами этого проекта."
+OUT_HEAD = (f"{head(title('move'))} — воркеров в другой проект или в свободные. Ограничения от @SpamBot и прокси "
             "аккаунты унесут с собой; люди, добавленные ими в контакты, в этом проекте перейдут к другим воркерам.")
 
 

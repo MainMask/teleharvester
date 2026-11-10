@@ -10,6 +10,7 @@ from aiogram import BaseMiddleware
 from aiogram.dispatcher.flags import get_flag
 from aiogram.types import CallbackQuery
 
+from bot.keyboards.menu import back_kb
 from bot.services import autoreply, login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
@@ -226,7 +227,7 @@ class ProjectMiddleware(BaseMiddleware):
         elif self.required and not get_flag(data, "any_project"):
             if isinstance(event, CallbackQuery):
                 await event.answer(NO_PROJECT, show_alert=True)
-            else:
-                await event.answer(NO_PROJECT)
+            else:  # a step's message: ⬅️ to 📁 Проекты under it, as the screens' (bot/routers/menu.py)
+                await event.answer(NO_PROJECT, reply_markup=back_kb(PROJECTS))
             return None
         return await handler(event, data)

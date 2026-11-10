@@ -8,14 +8,17 @@ import os
 from datetime import datetime
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
+from aiogram.filters import ExceptionTypeFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Message
 
 from bot.callbacks import ChoiceCB, HypothesisCB
 from bot.keyboards.common import button, cancel_kb, choice_kb
 from bot.keyboards.menu import nav_button, screen_kb
-from bot.routers._common import fit_lines, require_text
+from bot.routers._common import confirm_expired, fit_lines, require_text, start_form
 from bot.services import screens
+from bot.services.screens import head
 from bot.services.delegation import WorkerPool
 from bot.services.workspaces import Workspace
 from bot.states import Hypotheses
@@ -28,6 +31,7 @@ SHOWN_TEXT = 120  # of a hypothesis's text, on the screen
 CARD_BUTTONS = 20  # the newest hypotheses get a button to their card on the screen
 GONE = "Такой гипотезы больше нет."
 CLOSED = "Гипотеза уже закрыта."
+CLOSE, EDIT, DELETE = "🏁 Закрыть с итогом", "✏️ Изменить текст", "🗑 Удалить"  # a card's buttons
 HAS_RUNS = "Под этой гипотезой уже шла рассылка — её цифры нужны в отчёте. Закройте её вместо удаления."
 
 
@@ -74,7 +78,12 @@ def _noted(note: str, text: str) -> str:
 
 
 async def _show(message: Message, edit: bool, pool: WorkerPool, project: int, note: str = ""):
-    text, markup = await asyncio.to_thread(_view, pool.storage.home, project)
+    try:
+        text, markup = await asyncio.to_thread(_view, pool.storage.home, project)
+    except ValueError as err:  # edited by hand: said, never rewritten (its hypotheses would be lost)
+        text = (f"{screens.title_line(HYPOTHESES, screens.project_name(project))}\n\n⚠️ {outreach.STATE_NAME} не "
+                f"читается ({html.escape(str(err))}) — исправьте или удалите его.")
+        markup = screen_kb(HYPOTHESES, project)
     await screens.send(message, edit)(_noted(note, text), parse_mode="HTML", reply_markup=markup)
 
 
@@ -90,7 +99,7 @@ def _card_view(home: str, number: int, project: int):
     hypothesis = outreach.find_hypothesis(home, number)
     if hypothesis is None:
         return None
-    lines = [f"🧪 <b>Гипотеза #{number}</b> — {outreach.status(hypothesis)}",
+    lines = [f"{head(f'🧪 Гипотеза #{number}')} — {outreach.status(hypothesis)}",
              f"<blockquote>{html.escape(hypothesis['text'])}</blockquote>",
              _numbers_line(outreach.stats(home).get(number))]
     if hypothesis.get("insight"):
@@ -99,10 +108,10 @@ def _card_view(home: str, number: int, project: int):
     def act(label: str, action: str):
         return [button(label, HypothesisCB(action=action, id=number, project=project))]
 
-    rows = [*([act("🏁 Закрыть с итогом", "close")] if not hypothesis.get("closed") else []),
-            act("✏️ Изменить текст", "edit"),
-            *([act("🗑 Удалить", "delete")] if not outreach.has_runs(home, number) else []),
-            [nav_button(f"⬅️ {HYPOTHESES}", HYPOTHESES, project)]]
+    rows = [*([act(CLOSE, "close")] if not hypothesis.get("closed") else []),
+            act(EDIT, "edit"),
+            *([act(DELETE, "delete")] if not outreach.has_runs(home, number) else []),
+            [nav_button("⬅️ Назад", HYPOTHESES, project)]]  # in the screen's place: back as a screen
     return "\n\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -146,7 +155,7 @@ async def close_ask(callback: CallbackQuery, callback_data: HypothesisCB, state:
                 for key, label in outreach.VERDICTS.items()]
         rows.append(_back_to_card(hypothesis["id"], project))
         await callback.message.edit_text(
-            f"🏁 Итог гипотезы <b>#{hypothesis['id']}</b>:\n<blockquote>{html.escape(hypothesis['text'])}"
+            f"{head(CLOSE)} — гипотеза #{hypothesis['id']}:\n<blockquote>{html.escape(hypothesis['text'])}"
             "</blockquote>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         return
     await state.clear()
@@ -155,7 +164,7 @@ async def close_ask(callback: CallbackQuery, callback_data: HypothesisCB, state:
     await callback.message.edit_text(
         f"{outreach.VERDICTS[callback_data.value]}. Вывод одной строкой — что узнали и что проверить дальше? "
         "Он попадёт в отчёт.",
-        reply_markup=cancel_kb(Hypotheses.insight, choice_kb("hyp_skip", [("Без вывода", "skip")])))
+        reply_markup=cancel_kb(Hypotheses.insight, choice_kb("hyp_skip", [("⏭ Без вывода", "skip")])))
 
 
 async def _close(message: Message, state: FSMContext, pool: WorkerPool, project: int, insight: str, edit: bool):
@@ -189,12 +198,9 @@ async def edit_ask(callback: CallbackQuery, callback_data: HypothesisCB, state: 
     if outreach.find_hypothesis(pool.storage.home, callback_data.id) is None:
         await callback.answer(GONE, show_alert=True)
         return
-    await callback.answer()
-    await state.clear()
-    await state.set_state(Hypotheses.text)
-    await state.update_data(hypothesis=callback_data.id)
-    await callback.message.edit_text(f"✏️ Новый текст гипотезы #{callback_data.id} одним сообщением:",
-                                     reply_markup=cancel_kb(Hypotheses.text))
+    await start_form(callback, state, Hypotheses.text,  # a prompt for text: a new message, the card stays
+                     f"{head(EDIT)} — гипотеза #{callback_data.id}: пришлите новый текст одним сообщением:",
+                     data=dict(hypothesis=callback_data.id))
 
 
 @router.message(Hypotheses.text)
@@ -222,14 +228,33 @@ async def delete(callback: CallbackQuery, callback_data: HypothesisCB, pool: Wor
         return
     if callback_data.value != "yes":
         await callback.answer()
-        rows = [[button("🗑 Да, удалить", HypothesisCB(action="delete", id=number, value="yes", project=project))],
-                _back_to_card(number, project)]
-        await callback.message.edit_text(f"🗑 Удалить гипотезу #{number}?",
+        rows = [[button("🗑 Да, удалить", HypothesisCB(action="delete", id=number, value="yes", project=project)),
+                 *_back_to_card(number, project)]]  # on one row, as every confirmation
+        await callback.message.edit_text(f"{head(DELETE)} гипотезу #{number}?", parse_mode="HTML",
                                          reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        return
+    if confirm_expired(callback.message):
+        await callback.answer("Подтверждение устарело — откройте гипотезу заново.", show_alert=True)
         return
     deleted = await asyncio.to_thread(outreach.delete_hypothesis, home, number)
     await callback.answer()
     await _show(callback.message, True, pool, project, f"🗑 Гипотеза #{number} удалена." if deleted else GONE)
+
+
+@router.error(ExceptionTypeFilter(outreach.Unreadable))
+async def unreadable(event: ErrorEvent):
+    """A card's button or a step (🏁, ✏️, 🗑) on the project's outreach file edited by hand: said, as on the screen
+    (_show), not a tap left unanswered; the file is never rewritten."""
+    text = f"⚠️ {outreach.STATE_NAME} не читается ({event.exception}) — исправьте или удалите его."
+    message = event.update.message
+    if (callback := event.update.callback_query) is not None:
+        try:
+            await callback.answer(text[:200], show_alert=True)  # a pop-up's limit
+            return
+        except TelegramAPIError:  # answered before the file was read (🏁 Без вывода): a message then
+            message = callback.message
+    if message is not None:
+        await message.answer(text)
 
 
 def _earlier(home: str) -> int:
@@ -250,7 +275,12 @@ async def report(callback: CallbackQuery, pool: WorkerPool, workspace: Workspace
     """📄: the report as a document under the screen (it stays, as 📦 Скачать базу's)."""
     await callback.answer()
     name = screens.project_name(workspace.project_id) or str(workspace.project_id)
-    data = await asyncio.to_thread(_report, pool, name)
+    try:
+        data = await asyncio.to_thread(_report, pool, name)
+    except ValueError as err:  # a file of the project's edited by hand: said, not a tap that does nothing
+        await callback.message.answer(f"⚠️ Отчёт не собран: {projects.MAILING_STATS} или {outreach.STATE_NAME} не "
+                                      f"читается ({err}).")
+        return
     await callback.message.answer_document(
         BufferedInputFile(data, filename=f"{name}_outreach_{datetime.now():%Y-%m-%d}.md"),
         caption=f"📄 Отчёт по гипотезам проекта «{name}»: таблица, тексты, цифры по воркерам, ответы людей.")

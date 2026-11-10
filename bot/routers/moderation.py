@@ -12,6 +12,7 @@ from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager, busy
 from bot.services.progress import Progress
 from bot.services.runner import TelegramReporter
+from bot.services.screens import head
 from bot.states import ReportMessage, ReportUser
 from functions.report import ReportFunc
 from modules.storages.sessions_storage import connect_client, release_client
@@ -32,7 +33,7 @@ _FLOWS: dict[tuple[int, int], tuple] = {}
 @router.callback_query(FunctionCB.filter(F.key == "reportuser"))
 async def ru_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await start_form(callback, state, ReportUser.username,
-                     f"{title('reportuser')} — пришлите @username или ссылку на него:", pool)
+                     f"{head(title('reportuser'))} — пришлите @username или ссылку на него:", pool)
 
 
 @router.message(ReportUser.username)
@@ -118,7 +119,7 @@ async def _abort(key: tuple[int, int], pool: WorkerPool):
 @router.callback_query(FunctionCB.filter(F.key == "report"))
 async def rm_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await start_form(callback, state, ReportMessage.link,
-                     f"{REPORT.title} — пришлите ссылку на канал или чат, или сразу на пост:", pool)
+                     f"{head(REPORT.title)} — пришлите ссылку на канал или чат, или сразу на пост:", pool)
 
 
 @router.message(ReportMessage.link)
@@ -246,8 +247,8 @@ async def _report_posts(message: Message, state: FSMContext, pool: WorkerPool, f
 
     if status == "choose":
         _FLOWS[key] = (instance, flow, options)
-        menu = await message.answer(f"{REPORT.title} — выберите вариант (его повторят остальные воркеры):",
-                                    reply_markup=_options_kb(options))
+        menu = await message.answer(f"{head(REPORT.title)} — выберите вариант (его повторят остальные воркеры):",
+                                    parse_mode="HTML", reply_markup=_options_kb(options))
         flow["menu"] = menu.message_id  # its next levels come in its place: the only message whose taps count
     else:
         await _finish(instance, flow, message.bot, message.chat.id, manager, pool)
@@ -304,8 +305,8 @@ async def rm_choose(callback: CallbackQuery, callback_data: ChoiceCB, manager: J
     if status == "choose":
         flow["busy"] = False
         _FLOWS[key] = (instance, flow, options)
-        menu = await callback.message.edit_text(f"{REPORT.title} — выберите вариант:",  # the next level
-                                                reply_markup=_options_kb(options))
+        menu = await callback.message.edit_text(f"{head(REPORT.title)} — выберите вариант:",  # the next level
+                                                parse_mode="HTML", reply_markup=_options_kb(options))
         if isinstance(menu, Message):  # the menu gone: SafeEdit sent it anew, its taps count from now on
             flow["menu"] = menu.message_id
     else:

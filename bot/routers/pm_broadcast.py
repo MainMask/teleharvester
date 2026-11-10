@@ -7,6 +7,7 @@ from bot.keyboards.common import cancel_kb
 from bot.routers._common import SEND_MESSAGE_PROMPT, build_content, busy_step, require_text, resolve, start_form
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import PmBroadcast
 from functions.pmbroadcast import is_phone
 from modules import login as sign_in
@@ -17,7 +18,7 @@ router = Router()
 
 @router.callback_query(FunctionCB.filter(F.key == "pm"))
 async def start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await start_form(callback, state, PmBroadcast.peer, f"{title('pm')} — кому пишут все воркеры? Пришлите "
+    await start_form(callback, state, PmBroadcast.peer, f"{head(title('pm'))} — кому пишут все воркеры? Пришлите "
                      "@username, ссылку t.me или номер телефона:", pool)
 
 

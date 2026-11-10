@@ -47,14 +47,20 @@ def project_name(project_id: int) -> str:
         return ""
 
 
+def head(title: str) -> str:
+    """A title in a message (HTML) — a screen's, a function's, a button's, a choice's —, its emoji too: bold, as
+    the screens show theirs (title_line, screen_text). A form's prompt, question or confirmation starts with its own."""
+    return f"<b>{html.escape(title)}</b>"
+
+
 def title_line(title: str, name: str = "") -> str:
     """A screen's title (HTML): a project's (its `name`) as the path from its card — 📁 GreenBase › 🤖 Аккаунты ›
     👤 Профиль —; ⚠️ once on it when every button there is risky (registry.all_risky)."""
     risky = " ⚠️" if all_risky(title) else ""
     if not name:
-        return f"<b>{html.escape(title)}</b>{risky}"
+        return head(title) + risky
     below = [part for part in trail(title) if part not in (PROJECTS, CARD)]
-    return " › ".join([f"📁 <b>{html.escape(name)}</b>", *(f"<b>{html.escape(part)}</b>" for part in below)]) + risky
+    return " › ".join([f"📁 {head(name)}", *(head(part) for part in below)]) + risky
 
 
 async def show(message, title: str, edit: bool, header: str = "", project: int = 0, hidden=(),
@@ -67,7 +73,7 @@ async def show(message, title: str, edit: bool, header: str = "", project: int =
 
 
 def _line(title: str, hint: str, marker: str = "") -> str:
-    return f"<b>{html.escape(title)}</b>{marker} — {html.escape(hint)}"
+    return f"{head(title)}{marker} — {html.escape(hint)}"
 
 
 def screen_text(title: str, header: str = "", hidden=(), titles: dict | None = None, own=()) -> str:

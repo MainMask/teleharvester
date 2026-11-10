@@ -13,6 +13,7 @@ from bot.routers._common import (SEND_MESSAGE_PROMPT, STALE_STEP, back_answer, b
                                  left_flow, pick_from, require_text, resolve, stale_tap)
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import PmMailing
 from functions.pmmailing import GONE_SKIPPED, SKIP_ASK, PmMailingFunc
 from modules import outreach, project_base
@@ -39,9 +40,9 @@ async def ask_recipients(message: Message, state: FSMContext, project: str, whol
     await state.clear()  # an abandoned run's `recipients` would otherwise override a new path
     await state.set_state(PmMailing.path)
     await state.update_data(bases=[path for path, _ in bases], project=project)  # buttons carry an index into this
-    await message.edit_text(  # in 🎯 База и рассылка's place, as a choice by button
-        f"{title('pmmailing')} — выберите базу ниже, пришлите .txt файлом или вставьте список — по одному "
-        "@username, ссылке t.me или номеру на строку (или путь к .parquet/.txt на сервере):",
+    await message.answer(  # it waits for a list or a path too: a new message, 🎯 База и рассылка stays (start_form)
+        f"{head(title('pmmailing'))} — выберите базу ниже, пришлите .txt файлом или вставьте список — по одному "
+        "@username, ссылке t.me или номеру на строку (или путь к .parquet/.txt на сервере):", parse_mode="HTML",
         reply_markup=cancel_kb(PmMailing.path, choice_kb(
             "mail_base", [*([(f"📚 Вся база · {whole}", project_base.WHOLE)] if bases else []),
                           *((f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)),
@@ -78,7 +79,7 @@ async def mail_path(message: Message, state: FSMContext):
             return
         if (data := await download(message, message.document)) is None:
             return
-        recipients = PmMailingFunc.parse_list(data.decode("utf-8", "replace").splitlines())
+        recipients = PmMailingFunc.parse_list(data.decode("utf-8-sig", "replace").splitlines())
         if not recipients:
             await message.answer("В файле нет получателей. Пришлите ещё раз:")
             return
@@ -112,12 +113,16 @@ async def mail_skip(callback: CallbackQuery, callback_data: ChoiceCB, state: FSM
     await callback.answer()
 
 
-def _hypothesis_kb(pool: WorkerPool):
-    """The project's open hypotheses (modules/outreach.py), newest first, then «Без гипотезы»."""
-    hypotheses = outreach.open_hypotheses(pool.storage.home)[::-1][:HYPOTHESIS_BUTTONS]
+def _hypothesis_step(pool: WorkerPool):
+    """The 🧪 step's question and buttons: the project's open hypotheses (modules/outreach.py), newest first, then
+    «Без гипотезы» — that alone with its file broken by hand (never rewritten then: its hypotheses would be lost)."""
+    try:
+        hypotheses, note = outreach.open_hypotheses(pool.storage.home)[::-1][:HYPOTHESIS_BUTTONS], ""
+    except ValueError as err:
+        hypotheses, note = [], f"\n\n⚠️ {outreach.STATE_NAME} не читается ({err}): рассылка пойдёт без гипотезы."
     options = [(f"#{h['id']} {h['text'][:SHOWN_HYPOTHESIS]}", str(h["id"])) for h in hypotheses]
     options.append((outreach.NO_HYPOTHESIS, NO_HYPOTHESIS_VALUE))
-    return cancel_kb(PmMailing.hypothesis, choice_kb("mail_hyp", options))
+    return HYPOTHESIS_ASK + note, cancel_kb(PmMailing.hypothesis, choice_kb("mail_hyp", options))
 
 
 @router.callback_query(PmMailing.limit, ChoiceCB.filter(F.scope == "mail_all"))
@@ -125,7 +130,8 @@ async def mail_all(callback: CallbackQuery, state: FSMContext, pool: WorkerPool)
     await callback.answer()
     await state.update_data(limit=None)
     await state.set_state(PmMailing.hypothesis)
-    await callback.message.edit_text(HYPOTHESIS_ASK, reply_markup=_hypothesis_kb(pool))
+    text, markup = _hypothesis_step(pool)
+    await callback.message.edit_text(text, reply_markup=markup)
 
 
 @router.message(PmMailing.limit)
@@ -137,7 +143,8 @@ async def mail_limit(message: Message, state: FSMContext, pool: WorkerPool):
         return
     await state.update_data(limit=None if raw == "-" else int(raw))
     await state.set_state(PmMailing.hypothesis)
-    await message.answer(HYPOTHESIS_ASK, reply_markup=_hypothesis_kb(pool))
+    text, markup = _hypothesis_step(pool)
+    await message.answer(text, reply_markup=markup)
 
 
 @router.callback_query(PmMailing.hypothesis, ChoiceCB.filter(F.scope == "mail_hyp"))

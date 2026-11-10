@@ -311,21 +311,25 @@ class BaseFunction:
         people only once the others ran out (or when they are the only free workers). If a worker
         runs out (limit / restriction), its own people wait for it: nobody else takes them. A
         worker on hold keeps its people too: the caller holds its queue back.
-        A plain list (.txt) has none of this: one queue for all workers.
+        A plain list (.txt) has none of this: one queue for all workers; so has a list's line among a base's rows
+        (📚 Вся база: modules/project_base.merged) — it is shared.
         """
-        if not rows or not isinstance(rows[0], dict):
+        if not any(isinstance(row, dict) for row in rows):
             return [(self.sessions, rows)]
 
         by_id = {self.worker_id(s): s for s in self.sessions + self.on_hold}
         by_id.pop(None, None)
-        owners = {id(by_id[row.get("owner_id")]) for row in rows if row.get("owner_id") in by_id}
+        owners = {id(by_id[row.get("owner_id")]) for row in rows
+                  if isinstance(row, dict) and row.get("owner_id") in by_id}
         assigned = assigned or {}
 
         own, shared = {}, []
         for row in rows:
-            worker = by_id.get(assigned.get(str(row["user_id"])))
-            if worker is None and not row.get("username"):
-                worker = by_id.get(row.get("owner_id"))
+            worker = None
+            if isinstance(row, dict):
+                worker = by_id.get(assigned.get(str(row["user_id"])))
+                if worker is None and not row.get("username"):
+                    worker = by_id.get(row.get("owner_id"))
             if worker is None:
                 shared.append(row)
             else:

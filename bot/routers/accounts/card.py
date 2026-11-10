@@ -12,8 +12,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.callbacks import ChoiceCB, NavCB
 from bot.keyboards.common import choice_kb, page_of, paged_kb
 from bot.keyboards.menu import back_kb
+from bot.routers._common import confirm_expired
 from bot.services import login as logins
 from bot.services import screens
+from bot.services.screens import head
 from bot.services.delegation import WorkerPool
 from modules import login as sign_in, scraped_files
 from modules.registry import ACCOUNT_LIST, menu_path
@@ -25,6 +27,9 @@ STALE_LIST = f"Список устарел — откройте заново: {m
 
 
 CARDS_HINT = "🪪 Карточка аккаунта — код входа, удаление личного:"
+PERSONAL_TITLE = "👤 Личные"  # the personal accounts' button (base.py) and their list's heading
+CODES = "🔑 Код входа"
+DELETE = "🗑 Удалить"
 
 
 def back_to_list(project: int) -> list[list[tuple[str, str]]]:
@@ -50,7 +55,7 @@ async def offer_cards(message: Message, state: FSMContext, listed: list, text: s
 def personal_text(own: list) -> str:
     """The personal accounts, as stored (one is never connected just to be listed), numbered (HTML)."""
     lines = "\n".join(f"{i}. {html.escape(account.label)}" for i, account in enumerate(own, 1))
-    return f"👤 <b>Личные</b> (только для скрапа, общие для всех проектов): <b>{len(own)}</b>\n\n{lines}"
+    return f"{head(PERSONAL_TITLE)} (только для скрапа, общие для всех проектов): <b>{len(own)}</b>\n\n{lines}"
 
 
 def _cards_kb(labels: list[str], token: str, page: int, tail: list):
@@ -79,15 +84,15 @@ def _card(pool: WorkerPool, personal, account, key: str):
     lines[0] = f"<b>{lines[0]}</b>"
     if pool.scraped(account.path):
         lines.append("⏳ занят скрапом")
-    actions = [("🔑 Код входа", f"codes.{key}")]
+    actions = [(CODES, f"codes.{key}")]
     if account.personal:
-        actions.append(("🗑 Удалить", f"rm.{key}"))
+        actions.append((DELETE, f"rm.{key}"))
     actions.append(("⬅️ Назад", f"list.{key}"))  # to the list it was opened from, in its place
     return "\n".join(lines), choice_kb("acc_act", actions, widths=(len(actions) - 1, 1))
 
 
 def _codes_text(account, codes, now: datetime) -> str:
-    lines = [f"🔑 <b>Коды входа</b> — {html.escape(account.label)}", ""]
+    lines = [f"{head(CODES)} — {html.escape(account.label)}", ""]
     if not codes:
         lines.append(f"{sign_in.NO_CODES} и нажмите 🔄 Обновить.")
     for code, sent_at in codes:
@@ -163,7 +168,7 @@ async def _confirm_removal(message: Message, state: FSMContext, account, key: st
     # the button carries the card's key; prm_confirm, this account: it removes this account only
     await state.update_data(prm_confirm=account.path)
     await message.edit_text(  # in the card's place: ✖️ brings it back
-        f"🗑 Удалить личный аккаунт {html.escape(account.label)}?\n\n"
+        f"{head(DELETE)} личный аккаунт {html.escape(account.label)}?\n\n"
         f"Бот завершит авторизацию из этого файла и удалит его: <code>{html.escape(account.path)}</code>. "
         "Вход на телефоне не затрагивается; но если файл получен из tdata Telegram Desktop, "
         "тот Desktop тоже выйдет из аккаунта.",
@@ -193,6 +198,9 @@ async def personal_remove(callback: CallbackQuery, callback_data: ChoiceCB, stat
     account = await _account_at(state, pool, personal, callback_data.value)
     if account is None or not account.personal or account.path != data.get("prm_confirm"):
         await callback.answer(STALE_LIST, show_alert=True)
+        return
+    if confirm_expired(callback.message):
+        await callback.answer("Подтверждение устарело — откройте карточку аккаунта заново.", show_alert=True)
         return
     if reason := _removal_blocked(pool, account.path):  # over the confirmation, which stays to tap again
         await callback.answer(reason, show_alert=True)

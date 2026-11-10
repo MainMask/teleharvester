@@ -338,6 +338,20 @@ def test_a_hung_resend_is_timed_out(monkeypatch):
     assert callback.message.answers[-1] == "⚠️ Код не отправлен: TimeoutError." and 7 in logins._logins
 
 
+def test_a_hung_sign_in_is_timed_out(monkeypatch):
+    """A dead proxy after the code was sent: the code's step ends with a reason, not unanswered."""
+    client = _Client()
+    state, pool, _ = _start(monkeypatch, client)
+    monkeypatch.setattr(sign_in, "FETCH_TIMEOUT", 0.01)
+
+    async def hang(phone=None, code=None, password=None):
+        await asyncio.sleep(1)
+    client.sign_in = hang
+    reply = _send(router.code_input, "1 2 3 4 5", state, pool)
+    assert reply.answers[-1] == "⚠️ Вход не удался: Telegram не ответил вовремя"
+    assert state.cleared and 7 not in logins._logins and not client.connected
+
+
 @pytest.mark.parametrize("where", ["workers", "personal"])
 def test_known_number_gets_no_code(monkeypatch, where):
     client = _Client()

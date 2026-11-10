@@ -36,8 +36,8 @@ def name_problem(name: str) -> str | None:
     return None
 
 
-def _newest(pattern: str, limit: int, skip=lambda path: False) -> list[tuple[Path, int]]:
-    """(path, row count) of BASES_DIR's newest `pattern` files; the count comes from the
+def _newest(pattern: str, limit: int | None, skip=lambda path: False) -> list[tuple[Path, int]]:
+    """(path, row count) of BASES_DIR's newest `pattern` files (None: all of them); the count comes from the
     parquet footer, so even a large file isn't read."""
     try:
         paths = [p for p in Path(BASES_DIR).glob(pattern) if not skip(p)]
@@ -102,9 +102,10 @@ def read_list(path) -> list[str]:
         return []
 
 
-def project_files(name: str, limit: int = 50, kinds=("posts", "reactors", "participants")) -> list[tuple[str, str]]:
-    """(path, label) of a project's scrape files in BASES_DIR, newest first: the posts, reactors
-    and participants files (or only `kinds` of them) whose name before the marker is the project's
+def project_files(name: str, limit: int | None = 50,
+                  kinds=("posts", "reactors", "participants")) -> list[tuple[str, str]]:
+    """(path, label) of a project's scrape files in BASES_DIR, newest first (`limit` of them, None: all): the
+    posts, reactors and participants files (or only `kinds` of them) whose name before the marker is the project's
     exactly (GreenBase's, not GreenBase2's). label: "posts · 01.05.2022-27.09.2026 · 48 213".
     "list" in `kinds`: its uploaded list too, last ("list · 120") — a text file, for the mailing only."""
     def kind(path):  # "posts" / "reactors" / "participants"; None for another name's (Green_x's for Green)

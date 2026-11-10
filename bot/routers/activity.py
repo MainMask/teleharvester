@@ -10,6 +10,7 @@ from bot.keyboards.common import cancel_kb, choice_kb
 from bot.routers._common import busy_step, busy_tap, require_post_link, resolve, stale_tap, start_form
 from bot.services.delegation import WorkerPool, borrow
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import PollVote, Reactions
 from functions.reactions import ReactionsFunc
 from modules.registry import ACTIVITY, title
@@ -27,8 +28,8 @@ def _reactions_kb():
 
 @router.callback_query(FunctionCB.filter(F.key == "reactions"))
 async def reactions_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
-    await start_form(callback, state, Reactions.link, f"{title('reactions')} — пришлите ссылку на сообщение или пост:",
-                     pool)
+    await start_form(callback, state, Reactions.link,
+                     f"{head(title('reactions'))} — пришлите ссылку на сообщение или пост:", pool)
 
 
 @router.message(Reactions.link)
@@ -70,7 +71,7 @@ async def reactions_run(
 @router.callback_query(FunctionCB.filter(F.key == "poll"))
 async def poll_start(callback: CallbackQuery, state: FSMContext, pool: WorkerPool):
     await start_form(callback, state, PollVote.link,
-                     f"{title('poll')} — пришлите ссылку на сообщение или пост с опросом:", pool)
+                     f"{head(title('poll'))} — пришлите ссылку на сообщение или пост с опросом:", pool)
 
 
 POLL_ASK = "Пришлите номер варианта в опросе, например, 1 или 2:"

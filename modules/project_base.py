@@ -11,9 +11,10 @@ EXPORT_COLUMNS = ("user_id", "access_hash", "owner_id", "username", "name", "pho
 
 
 def sources(name: str) -> list[tuple[str, str]]:
-    """(path, label) of the files the project's base is made of, newest first: the participants' bases, then its
-    list (scraped_files.project_files)."""
-    return scraped_files.project_files(name, kinds=("participants", "list"))
+    """(path, label) of the files the project's base is made of, newest first: the participants' bases, every one
+    (not the newest a list shows: an older scrape's people must not drop out of it), then its list
+    (scraped_files.project_files)."""
+    return scraped_files.project_files(name, limit=None, kinds=("participants", "list"))
 
 
 def _username(value) -> str | None:

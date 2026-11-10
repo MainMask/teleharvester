@@ -1,5 +1,6 @@
 """The check of a project's posts file against the live channel (bot/routers/projects/card.py)."""
 import asyncio
+import html
 import os
 
 from aiogram import F, Router
@@ -13,6 +14,7 @@ from bot.routers.scraping import common
 from bot.services import scraping
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import Verify
 from modules import projects, scraped_files
 from modules.registry import title
@@ -38,13 +40,15 @@ async def _ask_posts_file(message: Message, state: FSMContext, deps: dict):
     await state.update_data(files=[path for path, _ in files])  # buttons carry an index into this
     if files:
         await message.answer(
-            f"{title('verify')} — выберите файл с постами или пришлите путь к файлу или папке на сервере:",
+            f"{head(title('verify'))} — выберите файл с постами или пришлите путь к файлу или папке на сервере:",
+            parse_mode="HTML",
             reply_markup=cancel_kb(Verify.input, choice_kb(
                 "verify_base", [(f"📄 {label}", str(i)) for i, (_, label) in enumerate(files)])),
         )
     else:
         await message.answer(
-            f"{title('verify')} — у проекта нет файлов с постами. Пришлите путь к файлу или папке на сервере:",
+            f"{head(title('verify'))} — у проекта нет файлов с постами. Пришлите путь к файлу или папке на сервере:",
+            parse_mode="HTML",
             reply_markup=cancel_kb(Verify.input),
         )
 
@@ -220,8 +224,8 @@ async def _run_verify(message: Message, scrapes: JobManager, pool: WorkerPool, a
     interrupted = False
     bad_input = None
     try:
-        status = await message.answer(common.started(title("verify"), account.label),
-                                      reply_markup=scrape_kb(scrapes.key))
+        status = await message.answer(common.started(head(title("verify")), html.escape(account.label)),
+                                      parse_mode="HTML", reply_markup=scrape_kb(scrapes.key))
 
         # Drop a stale <input>_missed from an earlier run first, so the file existing after
         # the run cleanly means THIS run wrote it (mtime can't tell two runs in one second apart).

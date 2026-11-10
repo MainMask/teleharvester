@@ -268,6 +268,12 @@ class TestContactRequirements:
         checks, sent, _reports, _stats = _run_base(tmp_path, monkeypatch, ["bob"])
         assert checks == [] and sent == ["bob"]
 
+    def test_the_whole_base_s_list_lines_go_with_its_rows(self, tmp_path, monkeypatch):
+        """📚 Вся база: a base's rows, then its own list's lines (project_base.merged) — all of them sent."""
+        checks, sent, _reports, _stats = _run_base(
+            tmp_path, monkeypatch, [*_rows(2), "bob"], lambda ids: [tl_types.RequirementToContactEmpty()] * len(ids))
+        assert checks == [[1, 2]] and sent == [1, 2, "bob"]
+
     def test_a_refused_send_names_the_reason(self, tmp_path, monkeypatch):
         _checks, sent, reports, stats = _run_base(
             tmp_path, monkeypatch, ["bob"], refuse=errors.ForbiddenError(None, "PRIVACY_PREMIUM_REQUIRED"))

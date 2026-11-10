@@ -56,6 +56,15 @@ def test_a_known_owner_comes_before_another_account_s(tmp_path, monkeypatch):
     assert row["access_hash"] == 11
 
 
+def test_the_whole_base_reads_every_file_of_the_project_not_the_newest_50(tmp_path, monkeypatch):
+    """The card lists the newest files (scraped_files.project_files' limit); the base the mailing takes is all of
+    them: an older scrape's people must not drop out of it silently."""
+    monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
+    for number in range(55):
+        _base(tmp_path, f"Blue_participants_{number}", [(number + 1, 10 + number, None, None)], 1_000 + number)
+    assert len(project_base.merged("Blue")) == 55 and project_base.people("Blue") == 55
+
+
 def test_a_file_that_is_no_base_is_left_out(tmp_path, monkeypatch):
     monkeypatch.setattr(scraped_files, "BASES_DIR", str(tmp_path))
     pd.DataFrame({"a": [1, 2]}).to_parquet(tmp_path / "Blue_participants_x.parquet")

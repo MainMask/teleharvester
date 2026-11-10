@@ -98,6 +98,8 @@ def test_refuses_while_job_active(tmp_path, monkeypatch):
 
     assert storage.applied is None  # nothing applied
     assert state.cleared is False
+    # the step stays, as every form's while the slot is busy (_common.busy_step): said so
+    assert any("Когда она закончится, пришлите список ещё раз." in r for r in msg.replies)
     assert not (tmp_path / "home" / "proxies.txt").exists()
 
 
@@ -206,7 +208,19 @@ def test_not_separating_clears_the_list_and_brings_them_back(tmp_path, monkeypat
     assert any("больше не отделяются" in r for r in cb.message.replies)
 
 
-def test_a_broken_list_for_the_restricted_comes_first(tmp_path, monkeypatch):
+def test_not_separating_while_busy_says_so_in_a_pop_up_and_keeps_the_step(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path, "proxies_restricted.txt", "socks5://9.9.9.9:1080\n")
+    storage, state = _Rehoming(on=["socks5://9.9.9.9:1080"]), _State()
+    for pool, manager, why in ((_Pool(storage), _manager(True, "Рассылка"), "Занято: идёт «Рассылка»"),
+                               (_Pool(storage, polling="sessions/a.jsession"), _manager(), "автоответа")):
+        cb = _Callback()
+        asyncio.run(accounts.proxies.proxy_spare_choice(cb, ns(value="clear"), state, pool, manager))
+        assert why in cb.alert and not cb.message.replies and not state.cleared
+        assert (tmp_path / "home" / "proxies_restricted.txt").exists()
+
+
+
     """Its step before the pool's: counted in the pool, a pool sized for the others would fall short."""
     monkeypatch.chdir(tmp_path)
     _write(tmp_path, "proxies_restricted.txt", "garbage\n")
@@ -283,7 +297,8 @@ def test_the_move_button_moves_its_own_project_and_waits_for_a_job(monkeypatch):
 
     cb = _Callback()
     asyncio.run(spamblock.rehome_restricted(cb, ns(value="7"), workspaces))
-    assert moved == [] and any("Занято: идёт «Рассылка»" in r for r in cb.message.replies)  # its job runs
+    # its job runs: in a pop-up over the button, as every button's while the slot is busy (_common.busy_tap)
+    assert moved == [] and "Занято: идёт «Рассылка»" in cb.alert and not cb.message.replies
 
     mine.manager.active = False
     edits = []

@@ -2505,7 +2505,7 @@ def test_the_clear_dialogs_question_takes_the_screen_s_place_and_its_cancel_brin
     message = ns(edit_text=edit_text, answer=answer, chat=ns(id=1))
     callback = ns(message=message, answer=answer)
     asyncio.run(service.clear_start(callback, ns(count=lambda: 1), ns(project_id=0)))
-    assert edits[0][0].startswith("🧹 Очистить диалоги — ⚠️ очистить ВСЕ диалоги")  # in 🔐's place
+    assert edits[0][0].startswith("<b>🧹 Очистить диалоги</b> — ⚠️ очистить ВСЕ диалоги")  # in 🔐's place
     no = edits[0][1].inline_keyboard[0][1].callback_data  # its ✖️, as drawn: names its project
     asyncio.run(service.clear_run(callback, ChoiceCB.unpack(no), ns(), {}, ns(active=False), ns(project_id=0)))
     assert edits[1][0].startswith("<b>🔐 Безопасность</b>")  # ↩️: the screen again, in the question's place

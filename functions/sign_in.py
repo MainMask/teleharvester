@@ -148,7 +148,8 @@ class AddByPhoneFunc(TelethonFunction):
                 say("Ожидаются цифры кода.")
                 continue
             try:
-                return await login.client.sign_in(login.phone, code)
+                # as the code's request: a dead proxy must not hang the prompt
+                return await asyncio.wait_for(login.client.sign_in(login.phone, code), sign_in.FETCH_TIMEOUT * 2)
             except errors.SessionPasswordNeededError:
                 return await self.password(login)
             except errors.PhoneCodeInvalidError:
@@ -161,7 +162,7 @@ class AddByPhoneFunc(TelethonFunction):
             except errors.FloodWaitError as err:
                 say(f"⚠️ Слишком много попыток, подождите {err.seconds} с и введите код снова.")
             except Exception as err:
-                say(f"⚠️ Вход не удался: {err}")
+                say(f"⚠️ Вход не удался: {str(err) or 'Telegram не ответил вовремя'}")
                 return None
 
     async def password(self, login):
@@ -172,7 +173,7 @@ class AddByPhoneFunc(TelethonFunction):
                 say("Отменено.")
                 return None
             try:
-                me = await login.client.sign_in(password=password)
+                me = await asyncio.wait_for(login.client.sign_in(password=password), sign_in.FETCH_TIMEOUT * 2)
             except errors.PasswordHashInvalidError:
                 say("Неверный пароль.")
                 continue
@@ -180,7 +181,7 @@ class AddByPhoneFunc(TelethonFunction):
                 say(f"⚠️ Слишком много попыток, подождите {err.seconds} с и введите пароль снова.")
                 continue
             except Exception as err:
-                say(f"⚠️ Вход не удался: {err}")
+                say(f"⚠️ Вход не удался: {str(err) or 'Telegram не ответил вовремя'}")
                 return None
             login.password = password  # a worker keeps it in its .jsession (sign_in.store)
             return me

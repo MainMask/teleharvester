@@ -21,11 +21,7 @@ router = Router()
 
 def welcome(name: str, projects_count: int, workers: int) -> str:
     """The /start message: each main-menu button with what it holds (registry SCREENS hints), the commands."""
-    lines = []
-    for label in MAIN_MENU:
-        icon, title = label.split(" ", 1)
-        lines.append(f"{icon} <b>{title}</b> — {SCREENS[label].hint}")
-    sections = "\n".join(lines)
+    sections = "\n".join(f"{screens.head(label)} — {html.escape(SCREENS[label].hint)}" for label in MAIN_MENU)
     return (f"👋 Здравствуйте, <b>{html.escape(name)}</b>!\n\n"
             "Добро пожаловать в <b>teleharvester</b> — вашу панель управления Telegram-аккаунтами.\n\n"
             f"📁 Проектов: <b>{projects_count}</b> · 🤖 воркеров: <b>{workers}</b>\n\n{sections}\n\n"

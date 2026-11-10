@@ -9,10 +9,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.callbacks import FunctionCB, WarmupCB
-from bot.keyboards.common import button, cancel_kb
+from bot.keyboards.common import button
 from bot.keyboards.menu import back_kb, nav_button, screen_kb
-from bot.routers._common import STALE_BUTTON, busy_tap, confirm_expired, ensure_workers, require_text, resolve
+from bot.routers._common import (STALE_BUTTON, busy_tap, confirm_expired, ensure_workers, require_text, resolve,
+                                 start_form)
 from bot.services import screens, warmup_daily
+from bot.services.screens import head
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace
@@ -27,11 +29,12 @@ MODES = {warmup.OFF: "⬜", warmup.ON: "✅", warmup.KEEP: "🛡"}
 # 📅 and 🧵: typed, any whole number from 1 — the button's title, what the prompt asks for
 NUMBERS = {"days": ("📅 Дней", "сколько дней греть аккаунт"),
            "threads": ("🧵 Потоков", "сколько аккаунтов греть одновременно")}
+RESET = "♻️ Сбросить прогрев"
 # 🔥 Прогрев's own buttons, each with what it does (screens.screen_text's `own`)
 OWN_BUTTONS = ((NUMBERS["days"][0], "сколько дней греть аккаунт, раз в день; прогрет — когда пройдены все"),
                (NUMBERS["threads"][0], "сколько аккаунтов греются одновременно — с одного прокси всегда по одному"),
                ("🔁 Ежедневно", "автозапуск раз в день в случайное время"),
-               ("♻️ Сбросить прогрев", "все аккаунты проекта начнут прогрев с первого дня"))
+               (RESET, "все аккаунты проекта начнут прогрев с первого дня"))
 
 
 def _button(text: str, action: str, value: str, project: int) -> InlineKeyboardButton:
@@ -70,14 +73,14 @@ def _warmup_view(pool: WorkerPool, manager: JobManager, project: int) -> tuple[s
         screens.title_line(WARMUP, screens.project_name(project)),
         "",
         _state_line(manager, settings, project),
-        warmup.summary(pool.storage) or "Аккаунтов нет.",
+        html.escape(warmup.summary(pool.storage)) or "Аккаунтов нет.",  # escaped, as 🤖 Аккаунты has it
         f"{html.escape(warmup.region_title(pool.storage.home))} — меняется в «{MANAGE}»",
     ])
     # its settings under ▶️ Прогреть, before 🧩 Шаги › (screen_kb's `own`)
     own = [
         [_button(f"{name}: {settings[field]}", "number", field, project) for field, (name, _) in NUMBERS.items()],
         [_button(f"🔁 Ежедневно: {'вкл' if settings['daily'] else 'выкл'}", "set", "daily", project)],
-        [_button("♻️ Сбросить прогрев", "reset", "", project)],
+        [_button(RESET, "reset", "", project)],
     ]
     return screens.screen_text(WARMUP, header, own=OWN_BUTTONS), screen_kb(WARMUP, project, own=own)
 
@@ -108,19 +111,15 @@ async def warmup_run(callback: CallbackQuery, pool: WorkerPool, functions: dict,
 @router.callback_query(WarmupCB.filter(F.action == "number"))
 async def number_ask(callback: CallbackQuery, callback_data: WarmupCB, state: FSMContext, pool: WorkerPool):
     """📅 and 🧵: the number typed, a prompt as a new message (🔥's screen stays)."""
-    await callback.answer()
-    await state.clear()  # an abandoned flow's data must not reach this one
-    await state.set_state(SetWarmupNumber.value)
     field = callback_data.value
-    await state.update_data(field=field)
     name, ask = NUMBERS[field]
-    prompt = (f"{name} — сейчас <b>{warmup.load_settings(pool.storage.home)[field]}</b>. "
+    prompt = (f"{head(name)} — сейчас <b>{warmup.load_settings(pool.storage.home)[field]}</b>. "
               f"Пришлите, {ask} (целое число от 1).")
     if field == "threads":
         prompt += ("\n\nС одного прокси аккаунты всегда греются по одному, так что одновременно греется не больше, "
                    f"чем прокси у аккаунтов проекта (сейчас <b>{warmup.proxy_count(pool.storage)}</b>): больше "
                    "потоков не ускорит прогрев.")
-    await callback.message.answer(prompt, parse_mode="HTML", reply_markup=cancel_kb(SetWarmupNumber.value))
+    await start_form(callback, state, SetWarmupNumber.value, prompt, data=dict(field=field))
 
 
 @router.message(SetWarmupNumber.value)
@@ -152,7 +151,8 @@ async def reset_ask(callback: CallbackQuery, pool: WorkerPool, workspace: Worksp
     await callback.answer()
     project = workspace.project_id
     await callback.message.edit_text(  # in 🔥's place: ✖️ brings it back
-        "♻️ Сбросить прогрев всех аккаунтов проекта? Они начнут прогрев с первого дня (оформление — заново).",
+        f"{head(RESET)} всех аккаунтов проекта? Они начнут прогрев с первого дня (оформление — заново).",
+        parse_mode="HTML",
         reply_markup=_markup([[_button("♻️ Да, сбросить", "resetok", "", project),
                                nav_button("✖️ Отмена", WARMUP, project)]]))
 
@@ -160,7 +160,7 @@ async def reset_ask(callback: CallbackQuery, pool: WorkerPool, workspace: Worksp
 @router.callback_query(WarmupCB.filter(F.action == "resetok"))
 async def reset_run(callback: CallbackQuery, pool: WorkerPool, manager: JobManager, workspace: Workspace):
     if confirm_expired(callback.message):
-        await callback.answer("Подтверждение устарело — нажмите «♻️ Сбросить прогрев» заново.", show_alert=True)
+        await callback.answer(f"Подтверждение устарело — нажмите «{RESET}» заново.", show_alert=True)
         return
     if await busy_tap(callback, manager):  # a running warmup would write its day over the reset
         return

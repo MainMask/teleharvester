@@ -51,6 +51,7 @@ MAX_FORWARDED = 10       # unread messages forwarded per chat and round
 NOT_MAILING_LIMIT = 10_000  # past this many, _not_mailing is dropped: each such chat is searched once more
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 NOTIFY_ATTEMPTS = 3      # a burst of replies can hit the Bot API's flood limit
+ANSWER = "✍️ Ответить"   # under a forwarded reply: an answer from its worker (bot/routers/replies.py)
 
 _task = None
 _replied: dict | None = None  # the ledger the running loop holds (rename_worker edits it in place)
@@ -306,7 +307,7 @@ def make_notify(bot, admins):
         answer = []
         if reply:
             try:
-                answer = [InlineKeyboardButton(text="✍️ Ответить", callback_data=reply.pack())]
+                answer = [InlineKeyboardButton(text=ANSWER, callback_data=reply.pack())]
             except ValueError:  # a hand-placed .session's long name: past a button's 64 bytes, the notice goes without
                 log.warning("autoreply: no ✍️ for %s: its file name is too long", reply.worker)
         markup = InlineKeyboardMarkup(
@@ -343,15 +344,27 @@ def due_workers(pool, due: dict, now: float, interval: list[int]) -> list:
     return ready
 
 
+async def _round(pool, text: str | None, replied: dict, notify, project: int, clients: list):
+    """A project's due workers polled (poll_once); never let one bad round end the loop."""
+    try:
+        await poll_once(pool, text, replied, notify, project, clients)
+    except Exception as err:
+        log.warning("autoreply: round failed: %s", err)
+
+
 async def _loop(bot, workspaces, settings, admins):
     global _replied
     replied = _replied = load_replied()
     notify = make_notify(bot, admins)
     due = {}  # session path -> its next check (time.monotonic): each worker's own timer
+    # a project's round under way, by its pool: the projects side by side, so one's dead proxies (WORKER_TIMEOUT a
+    # worker) hold up only its own workers — they are polled once its round is over
+    rounds: dict = {}
 
     try:
         while True:
             now, polled = time.monotonic(), set()
+            rounds = {pool: task for pool, task in rounds.items() if not task.done()}
             for workspace in workspaces.all():  # every project's workers: projects deleted meanwhile are gone
                 pool = workspace.pool
                 home = pool.storage.home
@@ -360,19 +373,21 @@ async def _loop(bot, workspaces, settings, admins):
                 # once the project has mailed anyone (its ledger there), its replies are tracked
                 if text is None and not os.path.exists(os.path.join(home, MAILING_STATS)):
                     continue  # nothing to track nor answer here yet: looked at again next time
-                ready = due_workers(pool, due, now, settings.autoreply_interval)
                 polled.update(pool.storage.get_session_path(client) for client in pool.workers)
-                if not ready:
+                if pool in rounds:  # its round still under way
                     continue
-                try:
-                    await poll_once(pool, text, replied, notify, workspace.project_id, ready)
-                except Exception as err:  # never let one bad round end the loop
-                    log.warning("autoreply: round failed: %s", err)
+                if ready := due_workers(pool, due, now, settings.autoreply_interval):
+                    rounds[pool] = asyncio.create_task(_round(pool, text, replied, notify, workspace.project_id, ready))
             for path in set(due) - polled:  # gone, or its project not polled now: a new first check when back
                 del due[path]
-            wait = min(due.values()) - time.monotonic() if due else TICK  # until the next worker's check
+            # until the next worker's check; one overdue waits for its project's round, seen within a TICK after it
+            ahead = [moment - time.monotonic() for moment in due.values()]
+            wait = min((seconds for seconds in ahead if seconds > 0), default=TICK)
             await asyncio.sleep(min(TICK, max(1, wait)))
-    finally:
+    finally:  # the bot is stopping: the rounds under way too
+        for task in rounds.values():
+            task.cancel()
+        await asyncio.gather(*rounds.values(), return_exceptions=True)
         _replied = None
 
 

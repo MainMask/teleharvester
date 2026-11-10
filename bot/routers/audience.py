@@ -9,6 +9,7 @@ from bot.keyboards.common import cancel_kb, choice_kb
 from bot.routers._common import back_answer, busy_step, busy_tap, pick_from, require_text, resolve, stale_tap
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
+from bot.services.screens import head
 from bot.states import AddContacts
 from modules import project_base
 from modules.registry import BASE, title
@@ -24,8 +25,9 @@ async def ask_base(message: Message, state: FSMContext, project: str, whole: int
     await state.clear()  # an abandoned flow's data must not reach this one
     await state.set_state(AddContacts.path)
     await state.update_data(bases=[path for path, _ in bases], project=project)  # buttons carry an index into this
-    await message.edit_text(  # in 🎯 База и рассылка's place, as a choice by button
-        f"{title('addcontacts')} — выберите базу ниже или пришлите путь к .parquet на сервере:",
+    await message.answer(  # it waits for a path too: a new message, 🎯 База и рассылка stays (start_form)
+        f"{head(title('addcontacts'))} — выберите базу ниже или пришлите путь к .parquet на сервере:",
+        parse_mode="HTML",
         reply_markup=cancel_kb(AddContacts.path, choice_kb(
             "contacts_base", [*([(f"📚 Вся база · {whole}", project_base.WHOLE)] if bases else []),
                               *((f"📄 {label}", str(i)) for i, (_, label) in enumerate(bases)),

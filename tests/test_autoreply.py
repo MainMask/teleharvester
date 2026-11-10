@@ -15,6 +15,7 @@ from bot.services import autoreply
 
 
 TEXT = "Для связи пишите @MainMask"
+real_sleep = asyncio.sleep  # the loop's tests replace asyncio.sleep: theirs still lets the started rounds run
 
 
 @pytest.fixture(autouse=True)
@@ -497,6 +498,7 @@ def test_loop_polls_while_on_or_once_the_project_has_mailed(monkeypatch, tmp_pat
         rounds.append(reply_text)
 
     async def fake_sleep(seconds):
+        await real_sleep(0)  # as a real sleep: the rounds started (each a task) get their turn
         if len(sleeps) == 2:
             raise asyncio.CancelledError
         sleeps.append(seconds)
@@ -524,6 +526,7 @@ def test_the_loop_answers_with_each_project_s_own_text_and_skips_the_ones_off(mo
         rounds.append((pool.storage.home, reply_text))
 
     async def fake_sleep(seconds):
+        await real_sleep(0)  # as a real sleep: the rounds started (each a task) get their turn
         if sleeps:
             raise asyncio.CancelledError
         sleeps.append(seconds)
@@ -545,6 +548,38 @@ def test_the_loop_answers_with_each_project_s_own_text_and_skips_the_ones_off(mo
         asyncio.run(autoreply._loop(FakeBot(), workspaces, settings, {1}))
     # a project without its own: config.toml's
     assert rounds == [(own, "свой текст"), (default, TEXT)]
+
+
+def test_a_project_s_slow_round_holds_up_no_other_project(monkeypatch, tmp_path):
+    """Projects side by side: one's dead proxies (WORKER_TIMEOUT a worker) must not delay another's replies."""
+    rounds = []
+
+    async def fake_poll(pool, reply_text, replied, notify, project, clients):
+        rounds.append(f"{project} start")
+        if project == 1:  # its workers slow: their round still under way at the loop's next look
+            await real_sleep(0.05)
+        rounds.append(f"{project} end")
+
+    async def fake_sleep(seconds):
+        await real_sleep(0)  # the rounds started get their turn
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            raise asyncio.CancelledError
+
+    sleeps = []
+    monkeypatch.setattr(autoreply, "poll_once", fake_poll)
+    monkeypatch.setattr(autoreply.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(autoreply.random, "uniform", lambda low, high: 0)
+    pools = [FakePool([FakeClient([])], home=str(tmp_path / str(number))) for number in (1, 2)]
+    for number, pool in enumerate(pools):
+        pool._paths = {key: f"{number}/{path}" for key, path in pool._paths.items()}
+    workspaces = pytypes.SimpleNamespace(all=lambda: [pytypes.SimpleNamespace(pool=pool, project_id=number)
+                                                      for number, pool in enumerate(pools, 1)])
+    settings = pytypes.SimpleNamespace(autoreply_enabled=True, autoreply_text=TEXT, autoreply_interval=[600, 1200])
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(autoreply._loop(FakeBot(), workspaces, settings, {1}))
+    # 2's round while 1's goes on; 1's polled once: its round under way, the loop doesn't start another
+    assert rounds[:3] == ["1 start", "2 start", "2 end"] and rounds.count("1 start") == 1
 
 
 # --- config.toml writes and the bot screen -------------------------------------------
@@ -934,6 +969,7 @@ def test_a_worker_gone_or_its_project_off_gets_a_new_first_check_when_back(monke
         rounds.append(len(clients))
 
     async def fake_sleep(seconds):
+        await real_sleep(0)  # as a real sleep: the rounds started (each a task) get their turn
         sleeps.append(seconds)
         if len(sleeps) == 2:
             raise asyncio.CancelledError

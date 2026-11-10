@@ -15,7 +15,7 @@ from bot.keyboards.menu import nav_button
 from bot.routers._common import pick_from, require_text, stale_tap
 from bot.routers.scraping import common
 from bot.services import scraping
-from bot.services.screens import title_line
+from bot.services.screens import head, title_line
 from bot.services.jobs import JobManager, busy
 from bot.states import Analysis
 from modules import analysis_tools, scraped_files
@@ -35,8 +35,8 @@ def _tools_kb(token: str, project: int):
 def _analysis_text(project: str) -> str:
     """The analysis menu's message (HTML): its path from the project's card, then each tool with what it does, as
     a screen's."""
-    lines = [f"<b>{html.escape(label)}</b> — {html.escape(hint)}" for label, hint, *_ in analysis_tools.TOOLS.values()]
-    return (f"{title_line(COLLECT, project)} › <b>{html.escape(title('analysis'))}</b>\n\n"
+    lines = [f"{head(label)} — {html.escape(hint)}" for label, hint, *_ in analysis_tools.TOOLS.values()]
+    return (f"{title_line(COLLECT, project)} › {head(title('analysis'))}\n\n"
             "Утилиты для файлов скрапа. Аккаунты не нужны: бот читает файл и присылает результат.\n\n"
             + "\n".join(lines))
 
@@ -78,7 +78,7 @@ async def analysis_tool(callback: CallbackQuery, callback_data: ChoiceCB, state:
     await state.set_state(Analysis.file)
     await state.update_data(tool=tool, files=[path for path, _ in files])
     await callback.message.answer(
-        f"<b>{html.escape(label)}</b>\n{html.escape(hint)}\n\n{html.escape(ask)}", parse_mode="HTML",
+        f"{head(label)} — {html.escape(hint)}\n\n{html.escape(ask)}", parse_mode="HTML",
         reply_markup=cancel_kb(Analysis.file, choice_kb("an_file", options) if options else None),
     )
 
@@ -111,8 +111,8 @@ async def _analysis_file_chosen(message: Message, state: FSMContext, analyses: J
     if tool == "filter":
         await state.update_data(path=path)
         await state.set_state(Analysis.keywords)
-        await message.answer(f"{analysis_tools.TOOLS[tool][0]} — {analysis_tools.KEYWORDS_ASK}:",
-                             reply_markup=cancel_kb(Analysis.keywords))
+        await message.answer(f"{head(analysis_tools.TOOLS[tool][0])} — {analysis_tools.KEYWORDS_ASK}:",
+                             parse_mode="HTML", reply_markup=cancel_kb(Analysis.keywords))
         return
     await _clear_keeping_menu(state)
     # the project: combine writes the project's own file
@@ -160,7 +160,7 @@ async def _run_analysis(message: Message, analyses: JobManager, tool: str, path,
 
     label = analysis_tools.TOOLS[tool][0]
     try:
-        await message.answer(f"{label} — выполняется…")
+        await message.answer(f"{head(label)} — выполняется…", parse_mode="HTML")
         text, file_path = await scraping.do_analysis(tool, path, data)
         if tool == "read":
             await message.answer(text, parse_mode="HTML")

@@ -6,10 +6,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
-from bot.keyboards.common import cancel_kb, choice_kb
+from bot.keyboards.common import choice_kb
 from bot.keyboards.menu import screen_kb
-from bot.routers._common import STALE_STEP, back_answer, left_flow, stale_tap
+from bot.routers._common import STALE_STEP, back_answer, left_flow, stale_tap, start_form
 from bot.services import screens
+from bot.services.screens import head
 from bot.states import SetSetting
 from modules.registry import SCREENS, SETTINGS, title
 from modules.settings import Settings, count_text, parse_seconds, seconds_text
@@ -93,17 +94,12 @@ async def settings_screen(message: Message, state: FSMContext, edit: bool, setti
 
 @router.callback_query(MenuCB.filter(F.action.in_(VALUES)))
 async def setting_start(callback: CallbackQuery, callback_data: MenuCB, state: FSMContext, settings: Settings):
-    await callback.answer()
     setting, button = VALUES[callback_data.action], _BUTTONS[callback_data.action.value]
-    await state.clear()
-    await state.set_state(SetSetting.value)
-    await state.update_data(setting=callback_data.action.value)
     # the button names its setting: under another setting's prompt (the same step) it is stale
     markup = choice_kb("set_unlim", [(UNLIMITED, callback_data.action.value)]) if setting.unlimited else None
-    await callback.message.answer(
-        f"{button.title} — сейчас <b>{setting.shown(setting.current(settings))}</b> ({button.hint}).\n\n{setting.ask}",
-        parse_mode="HTML", reply_markup=cancel_kb(SetSetting.value, markup),
-    )
+    await start_form(callback, state, SetSetting.value,
+                     f"{head(button.title)} — сейчас <b>{setting.shown(setting.current(settings))}</b> "
+                     f"({button.hint}).\n\n{setting.ask}", markup=markup, data=dict(setting=callback_data.action.value))
 
 
 @router.message(SetSetting.value)

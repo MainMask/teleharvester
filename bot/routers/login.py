@@ -12,9 +12,10 @@ from telethon.tl.types.auth import SentCodeTypeApp
 from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
-from bot.routers._common import delete_quietly, stale_tap
+from bot.routers._common import delete_quietly, stale_tap, start_form
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
+from bot.services.screens import head
 from bot.services.workspaces import Workspace
 from modules.registry import ADD, menu_path, title
 from bot.states import AddByPhone
@@ -46,16 +47,11 @@ ROLES = {MenuAction.BY_PHONE: "worker", MenuAction.PERSONAL: sign_in.PERSONAL}
 @router.callback_query(MenuCB.filter(F.action.in_(ROLES)))
 async def phone_role(callback: CallbackQuery, callback_data: MenuCB, state: FSMContext, workspace: Workspace):
     """➕ Добавить's 🤖 Воркер по номеру or 👤 Личный по номеру."""
-    await callback.answer()
-    await state.clear()
-    await state.update_data(role=ROLES[callback_data.action], project=workspace.project_id)  # its ⬅️ at the end
-    await state.set_state(AddByPhone.phone)
-    await callback.message.answer(  # a prompt for text: a new message, ➕ Добавить's screen stays
-        f"{title(callback_data.action.value)} — пришлите номер телефона аккаунта в международном формате, например, "
-        "<code>+79991234567</code>.\n"
-        "Аккаунт должен быть уже зарегистрирован в Telegram.",
-        parse_mode="HTML", reply_markup=cancel_kb(AddByPhone.phone),
-    )
+    await start_form(  # a prompt for text: a new message, ➕ Добавить's screen stays
+        callback, state, AddByPhone.phone,
+        f"{head(title(callback_data.action.value))} — пришлите номер телефона аккаунта в международном формате, "
+        "например, <code>+79991234567</code>.\nАккаунт должен быть уже зарегистрирован в Telegram.",
+        data=dict(role=ROLES[callback_data.action], project=workspace.project_id))  # project: its ⬅️ at the end
 
 
 @router.message(AddByPhone.phone)
@@ -130,7 +126,8 @@ async def code_input(message: Message, state: FSMContext, pool: WorkerPool, pers
         return
 
     try:
-        me = await login.client.sign_in(login.phone, code)
+        # as the code's request: a dead proxy must not leave the step unanswered
+        me = await asyncio.wait_for(login.client.sign_in(login.phone, code), sign_in.FETCH_TIMEOUT * 2)
     except errors.SessionPasswordNeededError:
         await state.set_state(AddByPhone.password)
         await message.answer("🔐 У аккаунта включён пароль 2FA. Пришлите его (сообщение удалю):",
@@ -152,7 +149,7 @@ async def code_input(message: Message, state: FSMContext, pool: WorkerPool, pers
         await message.answer(f"⚠️ Слишком много попыток, подождите {err.seconds} с и пришлите код снова.")
         return
     except Exception as err:
-        await _end_login(message, state, f"⚠️ Вход не удался: {err}")
+        await _end_login(message, state, f"⚠️ Вход не удался: {str(err) or 'Telegram не ответил вовремя'}")
         return
     await _finish(message, state, pool, personal, login, me)
 
@@ -170,7 +167,7 @@ async def password_input(message: Message, state: FSMContext, pool: WorkerPool, 
         return
 
     try:
-        me = await login.client.sign_in(password=password)
+        me = await asyncio.wait_for(login.client.sign_in(password=password), sign_in.FETCH_TIMEOUT * 2)
     except errors.PasswordHashInvalidError:
         await message.answer("Неверный пароль. Пришлите ещё раз:")
         return
@@ -178,7 +175,7 @@ async def password_input(message: Message, state: FSMContext, pool: WorkerPool, 
         await message.answer(f"⚠️ Слишком много попыток, подождите {err.seconds} с и пришлите пароль снова.")
         return
     except Exception as err:
-        await _end_login(message, state, f"⚠️ Вход не удался: {err}")
+        await _end_login(message, state, f"⚠️ Вход не удался: {str(err) or 'Telegram не ответил вовремя'}")
         return
     login.password = password  # kept in the .jsession, as the tdata import does
     await _finish(message, state, pool, personal, login, me)

@@ -36,8 +36,16 @@ def _now() -> str:
     return datetime.now().strftime(TIME_FORMAT)
 
 
+class Unreadable(ValueError):
+    """STATE_NAME edited by hand so that it can't be read: said where it is used, never rewritten (its hypotheses
+    would be lost) — every change here reads it first."""
+
+
 def load(home: str) -> dict:
-    return json_file.load(os.path.join(home, STATE_NAME), {"hypotheses": [], "runs": []})
+    try:
+        return json_file.load(os.path.join(home, STATE_NAME), {"hypotheses": [], "runs": []})
+    except ValueError as err:
+        raise Unreadable(str(err)) from err
 
 
 def _save(home: str, state: dict):

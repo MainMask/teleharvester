@@ -35,7 +35,7 @@ def collect(root: str) -> list[tuple[str, dict]]:
                 continue
             meta_path = os.path.join(dirpath, name[:-len(".session")] + ".json")
             try:
-                with open(meta_path, encoding="utf-8") as fileobj:
+                with open(meta_path, encoding="utf-8-sig") as fileobj:
                     meta = json.load(fileobj)
             except (OSError, ValueError):  # none, or not readable: a random app and device
                 meta = {}
