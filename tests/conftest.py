@@ -15,13 +15,35 @@ def _project_home(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_id_dates(monkeypatch, tmp_path):
+    """No test may read or write the real stats/telegram_id_dates.json (the weekly update's): the bundled table."""
+    from modules import account_age
+
+    monkeypatch.setattr(account_age, "UPDATED_PATH", str(tmp_path / "stats_id_dates" / "telegram_id_dates.json"))
+    account_age._points.cache_clear()  # not another test's table
+
+
+@pytest.fixture(autouse=True)
+def _no_proxy_geo_lookups(monkeypatch):
+    """No test may ask the geo service through a proxy (modules/proxy_geo.lookup): no country known, at once."""
+    from modules import proxy_geo
+
+    async def lookup(proxy):
+        return None
+
+    monkeypatch.setattr(proxy_geo, "lookup", lookup)
+    monkeypatch.setattr(proxy_geo, "_failed", {})  # not another test's failed checks
+
+
+@pytest.fixture(autouse=True)
 def _isolated_restricted_workers(monkeypatch, tmp_path):
-    """No test may read or write the real stats/restricted.json, spambot_status.json or released.json."""
+    """No test may read or write the real stats/restricted.json, spambot_status.json, released.json or dead.json."""
     from modules import restricted_workers
 
     monkeypatch.setattr(restricted_workers, "RESTRICTED_PATH", str(tmp_path / "restricted.json"))
     monkeypatch.setattr(restricted_workers, "STATUS_PATH", str(tmp_path / "spambot_status.json"))
     monkeypatch.setattr(restricted_workers, "RELEASED_PATH", str(tmp_path / "released.json"))
+    monkeypatch.setattr(restricted_workers, "DEAD_PATH", str(tmp_path / "dead.json"))
 
 
 @pytest.fixture(autouse=True)

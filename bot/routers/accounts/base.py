@@ -8,6 +8,7 @@ import io
 import os
 import tempfile
 import zipfile
+from collections import Counter
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -23,7 +24,7 @@ from bot.services.screens import head
 from bot.services.delegation import WorkerPool
 from bot.services.jobs import JobManager
 from bot.services.workspaces import Workspace, delete_workers
-from modules import projects, session_import, warmup
+from modules import account_age, projects, restricted_workers, session_import, warmup
 from modules.registry import ACCOUNT_LIST, ACCOUNTS, ADD
 from modules.scraper_creds import scrape_accounts
 
@@ -38,7 +39,7 @@ ZIP = "📦 Скачать ZIP"  # a category's
 # 📋 Список's own buttons, each with what it does (screens.screen_text's `own`); the categories: the two not named
 # by the warmup
 OWN_BUTTONS = {"cat": ("Категории", "карточки аккаунтов (код входа), 📦 ZIP, 🗑 удаление; ⛔ — по проверке SpamBot, "
-                                    "💀 — мёртвые сессии"),
+                                    "💀 — мёртвые сессии: бан или вылет (нужен новый вход)"),
                PERSONAL: (PERSONAL_TITLE, "общие для всех проектов, только для скрапа: карточки, удаление"),
                "zip": (WHOLE_BASE, "ZIP всех аккаунтов проекта")}
 # a ZIP's formats, each with what it is for
@@ -120,14 +121,22 @@ async def category_open(callback: CallbackQuery, callback_data: AccountBaseCB, s
         return
     await callback.answer()
     errors = warmup.load_state() if name == warmup.FAILED else {}
+    causes = {path: restricted_workers.CAUSES.get(cause, "")  # a dead one's, if the status check found it
+              for path, cause in restricted_workers.load_dead().items()} if name == warmup.DEAD else {}
     lines = []
     for path in paths[:SHOWN_ACCOUNTS]:
-        error = errors.get(warmup.key(pool.storage, path), {}).get("error")
-        lines.append(f"• {html.escape(projects.account_label(path))}" + (f" — {html.escape(error)}" if error else ""))
+        error = errors.get(warmup.key(pool.storage, path), {}).get("error") or causes.get(path)
+        account = projects.read_account(path) or {}
+        age = account_age.label(account.get("registered_at"), account.get("user_id"))
+        lines.append(f"• {html.escape(projects.account_label(path))}" + (f" · 🎂 {age}" if age else "")
+                     + (f" — {html.escape(error)}" if error else ""))
     # the live ones' cards (a dead one's file is no session of the project's any more)
     live = [account for account in scrape_accounts(pool.storage) if account.path in set(paths)]
+    known = any(causes.get(path) for path in paths)  # none known (all found dead before causes were kept): no split
+    counts = Counter(causes.get(path) or "причина неизвестна" for path in paths) if known else {}
+    split = f" ({' · '.join(f'{cause} {n}' for cause, n in counts.items())})" if counts else ""
     top = f"{screens.title_line(ACCOUNT_LIST, screens.project_name(project))} › <b>{warmup.CATEGORIES[name]}</b>: " \
-           f"{len(paths)}\n\n"
+           f"{len(paths)}{split}\n\n"
     hint = f"\n\n{card.CARDS_HINT}" if live else ""
     text = top + fit_lines(lines, MAX_MESSAGE - len(top) - len(hint), len(paths) - len(lines)) + hint
     tail = [[(ZIP, AccountBaseCB(action="zip", value=name, project=project).pack()),

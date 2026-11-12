@@ -182,7 +182,7 @@ def test_a_pool_proxy_is_never_off_the_pool_and_a_foreign_one_is(tmp_path):
     assert spamblock.rehome(storage, dry_run=True) == {"out": [], "back": [], "stuck": [], "busy": []}
 
     moved_in = sorted(storage.jsessions_paths)[3]
-    storage._set_proxy(moved_in, Proxy("socks5", "172.16.0.1", 1080))  # another project's
+    storage.set_proxy(moved_in, Proxy("socks5", "172.16.0.1", 1080))  # another project's
     assert spamblock.rehome(storage, dry_run=True) == {"out": [], "back": [moved_in], "stuck": [], "busy": []}
 
 

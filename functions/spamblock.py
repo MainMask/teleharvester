@@ -6,9 +6,12 @@ from types import SimpleNamespace
 from typing import Dict, List
 
 
-from telethon.errors import YouBlockedUserError
+from telethon.errors import (AuthKeyDuplicatedError, UnauthorizedError, UserDeactivatedBanError,
+                             UserDeactivatedError, YouBlockedUserError)
 from telethon.sync import TelegramClient
 from telethon.tl.functions.contacts import UnblockRequest
+from telethon.tl.functions.users import GetUsersRequest
+from telethon.tl.types import InputUserSelf
 
 from functions.base import TelethonFunction
 from modules import contacts_ledger, projects, restricted_workers, tdata_import
@@ -85,12 +88,27 @@ def rehome_report(moves: dict) -> str:
     return "\n".join(lines)
 
 
+async def death_cause(session) -> str | None:
+    """Why get_me() found no account (it swallows the error): restricted_workers.BANNED or LOGGED_OUT; None if
+    the probe tells neither (a network error, or it answered after all)."""
+    try:
+        await session(GetUsersRequest([InputUserSelf()]))
+    except (UserDeactivatedBanError, UserDeactivatedError):  # UnauthorizedError's too: first
+        return restricted_workers.BANNED
+    except UnauthorizedError:  # the key unregistered, the session revoked or expired
+        return restricted_workers.LOGGED_OUT
+    except Exception:
+        pass
+    return None
+
+
 def _context(home: str):
     """What one status check reads once for all its workers (see SpamBlockFunc.scan); `home`: their project's folder."""
     return SimpleNamespace(
         counts=Counter(contacts_ledger.load(home).values()),  # worker id -> its people
         released=set(restricted_workers.load_released()),
         replies={},  # id(session) -> (who, @SpamBot reply) of the permanently restricted
+        causes={},  # id(session) -> death_cause() of the dead
     )
 
 
@@ -98,6 +116,7 @@ class SpamBlockFunc(TelethonFunction):
     """Check accounts status"""
 
     _context = None  # set while scan() runs; check() alone builds its own
+    _causes = {}  # the last scan()'s context.causes, for drop_dead (never written to: scan sets a new dict)
 
     def holds_people(self, path, counts, released) -> bool:
         """A worker some people wait for: its contacts (a .jsession knows its user id; a
@@ -110,8 +129,11 @@ class SpamBlockFunc(TelethonFunction):
         async with self.storage.ainitialize_session(session):
             path = self.storage.get_session_path(session)
             name = os.path.basename(path) if path else "?"
+            cause = None
             try:
                 me = await session.get_me()
+            except AuthKeyDuplicatedError:  # its key used from two IPs at once: Telegram dropped it for good
+                me, cause = None, restricted_workers.LOGGED_OUT
             except Exception as err:
                 self.progress_failed()
                 await report(f"⚠️ {name} — не удалось опросить: {err}")
@@ -119,7 +141,11 @@ class SpamBlockFunc(TelethonFunction):
 
             if me is None:  # get_me() swallows the auth error of a banned / logged-out account
                 self.progress_failed()
-                await report(f"💀 {name} — сессия мертва (бан или выход), перенесена в inactive/ папки проекта")
+                cause = context.causes[id(session)] = cause or await death_cause(session)
+                why = {restricted_workers.BANNED: "аккаунт забанен",
+                       restricted_workers.LOGGED_OUT: "вылет: сессия завершена, нужен новый вход"}.get(
+                    cause, "бан или вылет — причину узнать не удалось")
+                await report(f"💀 {name} — сессия мертва ({why}), перенесена в inactive/ папки проекта")
                 return "dead", session
 
             self.storage.remember_username(session, me.username)  # orders the pool
@@ -195,6 +221,7 @@ class SpamBlockFunc(TelethonFunction):
             lines.append(text)
 
         context = self._context = _context(self.storage.home)
+        self._causes = context.causes
         try:
             results = await self.gather_in_order(self.check, collect)
         finally:
@@ -256,13 +283,19 @@ class SpamBlockFunc(TelethonFunction):
 
     async def drop_dead(self, blocks: Dict[str, List[TelegramClient]]) -> List[TelegramClient]:
         """Take the dead sessions out of `blocks` and the pool (to sessions/inactive): their
-        people become everyone's at once. Returns them."""
+        people become everyone's at once; their causes noted (restricted_workers.load_dead). Returns them."""
         dead = blocks.pop("dead", [])
+        causes = {}
         for session in dead:
             path = self.storage.get_session_path(session)
             if path is not None:
                 await release_client(session)  # a connected one: a forgotten client runs on
-                self.storage.move_to_inactive(path)
+                # its cause, or none: an unknown one clears a cause kept for that file before (the account died
+                # there once, was added again, and died again)
+                causes[self.storage.move_to_inactive(path)] = self._causes.get(id(session))
+        if causes:
+            kept = {**restricted_workers.load_dead(), **causes}
+            restricted_workers.save_dead({path: cause for path, cause in kept.items() if cause})
         return dead
 
     async def run(self, report, replies: bool = False) -> Dict[str, List[TelegramClient]]:

@@ -9,16 +9,18 @@ account already the project's is left as is; one that is a worker elsewhere or a
 A file imported (or found already imported) goes to `imported/` next to it, so a second run doesn't connect it
 again.
 """
+import datetime
 import json
 import os
 import random
 import shutil
 import tempfile
+import time
 
 from telethon import TelegramClient
 from telethon.sessions import SQLiteSession, StringSession
 
-from modules import json_file, login, tdata_import
+from modules import account_age, json_file, login, proxy_geo, tdata_import
 from modules.types.account_settings import AccountSettings
 
 IMPORT_DIR = "session_import"  # sessions/add_session.py's: the .session (+ .json) files to import
@@ -80,7 +82,29 @@ async def convert(path: str, meta: dict, proxy, sessions_dir: str) -> tuple[str 
     )
     password = meta.get("twoFA") or meta.get("2fa") or meta.get("password")
     return await tdata_import.save_worker(client, proxy, password, meta.get("lang_pack") or generator.lang_pack,
-                                          sessions_dir)
+                                          sessions_dir, registered_at(meta))
+
+
+TELEGRAM_START = datetime.datetime.combine(account_age.FIRST_DAY, datetime.time()).timestamp()
+
+
+def registered_at(meta: dict) -> float | None:
+    """The seller's registration date (the .json's register_time: Unix seconds or milliseconds, or an ISO date) as
+    a Unix timestamp; None without a plausible one."""
+    value = meta.get("register_time")
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError:
+            try:
+                value = datetime.datetime.fromisoformat(value).timestamp()
+            except ValueError:
+                return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value > 1e12:  # milliseconds
+        value /= 1000
+    return float(value) if TELEGRAM_START <= value <= time.time() else None
 
 
 def export(path: str, into: str) -> list[str]:
@@ -110,6 +134,8 @@ def export(path: str, into: str) -> list[str]:
             "sdk": app.sdk, "lang_pack": app.lang_pack, "system_lang_pack": app.system_lang_code,
             "user_id": account.user_id, "phone": account.phone_number, "first_name": account.first_name,
             "last_name": account.last_name, "username": account.username, "twoFA": settings.password}
+    if settings.registered_at:  # the seller's date, read back by convert
+        meta["register_time"] = int(settings.registered_at)
     json_file.save(base + ".json", meta)
     return [base + ".session", base + ".json"]
 
@@ -127,10 +153,13 @@ async def import_all(root: str, storage) -> tuple[list[str], list[tuple[str, str
     """Every .session under `root` into the project of `storage` (its live pool too): (the new .jsession files,
     [(file, why)] of the rest)."""
     added, failed = [], []
+    await proxy_geo.ensure(storage.home)  # the pool's countries known first: role_proxy picks by them
     for path, meta in collect(root):
         name = os.path.basename(path)
+        # its number, if the seller gave it (the .json, or a file named by it): a proxy of its country first
+        known = str(meta.get("phone") or "") or os.path.splitext(name)[0]
         try:  # a pool proxy, counting the accounts added just before (role_proxy reads the live pool)
-            phone, new = await convert(path, meta, login.role_proxy("worker", storage), storage.directory)
+            phone, new = await convert(path, meta, login.role_proxy("worker", storage, known), storage.directory)
         except Exception as err:
             failed.append((name, str(err)))
             continue

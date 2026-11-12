@@ -69,7 +69,8 @@ class WarmupFunc(TelethonFunction):
         await asyncio.gather(*(one(session) for session in due))
 
     async def warm(self, session, run, report):
-        """One day of one account's warmup: the setup steps not done yet, then the day's activity."""
+        """One day of one account's warmup: today's share of the setup steps not done yet (warmup.setup_today),
+        then the day's activity."""
         path = self.storage.get_session_path(session)
         account = warmup.key(self.storage, path)
         entry = warmup.load_state().get(account, {})
@@ -83,8 +84,8 @@ class WarmupFunc(TelethonFunction):
         async with self.storage.ainitialize_session(session):
             me = await self.poll_me(session, say)
             if me is not None:
-                steps = [step for step in warmup.SETUP if step not in done] + [key for key, _, _ in warmup.ACTIVITY]
-                steps = [step for step in steps if run.settings["steps"][step] != warmup.OFF]
+                steps = warmup.setup_today(run.settings, done, entry.get("day", 0)) + [
+                    key for key, _, _ in warmup.ACTIVITY if run.settings["steps"][key] != warmup.OFF]
                 full = None
                 if any(run.settings["steps"][step] == warmup.KEEP for step in steps):
                     try:  # what is filled: a field kept must not be overwritten for want of it
@@ -126,7 +127,7 @@ class WarmupFunc(TelethonFunction):
         warmup.update(account, status=status, day=day, last=warmup.today(), done=done, error="; ".join(errors),
                       **({"warmed_at": warmup.today()} if status == warmup.WARMED else {}))
         (self.progress_failed if errors else self.progress_ok)()
-        await say(f"день {day}: {warmup.CATEGORIES[status]}" if counted else
+        await say(f"день {day} из {run.settings['days']}: {warmup.CATEGORIES[status]}" if counted else
                   f"день не засчитан (ни один шаг не прошёл): {warmup.CATEGORIES[status]}")
 
     # --- the steps: each returns what it did, or raises Skipped ---

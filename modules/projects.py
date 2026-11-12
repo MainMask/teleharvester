@@ -420,11 +420,13 @@ def _worker_dirs() -> list[str]:
 
 
 def read_account(path: str) -> dict | None:
-    """A .jsession's "account" part (read offline), None for a broken file or a .session (no metadata)."""
+    """A .jsession's "account" part (read offline), with the seller's "registered_at" (kept beside it:
+    modules/types/account_settings.py); None for a broken file or a .session (no metadata)."""
     if not path.endswith(".jsession"):
         return None
     try:
-        return dict(json_file.load(path, {})["account"])
+        data = json_file.load(path, {})
+        return {**data["account"], "registered_at": data.get("registered_at")}
     except (OSError, ValueError, KeyError, TypeError):  # a broken file is skipped by SessionsStorage too
         return None
 

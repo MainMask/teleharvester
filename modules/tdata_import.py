@@ -231,10 +231,11 @@ CONNECT_TIMEOUT = 40
 
 
 async def save_worker(client, proxy: Proxy | None, password: str | None, lang_pack: str,
-                      sessions_dir: str) -> tuple[str | None, bool]:
+                      sessions_dir: str, registered_at: float | None = None) -> tuple[str | None, bool]:
     """An imported account's fresh client (from tdata, or a .session: modules/session_import.py) into
     `<sessions_dir>/<phone>.jsession`, without the personal channel pinned to its profile: (its phone, True if it is
-    new). (None, False) for a session no longer authorized; an account already the project's: its phone, its file
+    new). `registered_at`: the seller's registration date, if known. (None, False) for a session no longer
+    authorized; an account already the project's: its phone, its file
     left as is; a personal account or another place's worker: ValueError (existing_worker)."""
     async def account():
         await client.connect()
@@ -253,7 +254,7 @@ async def save_worker(client, proxy: Proxy | None, password: str | None, lang_pa
             await client(UpdatePersonalChannelRequest(InputChannelEmpty()))
         except Exception as err:
             console.print(f"[bold yellow]ВНИМАНИЕ:[/] не удалось убрать канал из профиля +{me.phone}: {err}")
-        account_settings = AccountSettings.from_client(client, me, proxy, password, lang_pack)
+        account_settings = AccountSettings.from_client(client, me, proxy, password, lang_pack, registered_at)
     finally:
         await client.disconnect()
 

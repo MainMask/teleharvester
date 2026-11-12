@@ -37,7 +37,7 @@ def _photo(folder, name="a.jpg"):
 
 def test_settings_start_from_the_defaults_and_each_button_cycles_its_value():
     settings = warmup.load_settings(conftest.home())
-    assert settings["region"] == "ru" and settings["days"] == 3 and settings["steps"]["username"] == warmup.KEEP
+    assert settings["region"] == "ru" and settings["days"] == 14 and settings["steps"]["username"] == warmup.KEEP
     # a field that may be empty: off → on → only an empty one → off; the others (a name never is): on ↔ off
     assert [warmup.cycle(settings, "bio")["steps"]["bio"] for _ in range(3)] == [warmup.KEEP, warmup.OFF, warmup.ON]
     assert [warmup.cycle(settings, "name")["steps"]["name"] for _ in range(2)] == [warmup.OFF, warmup.ON]
@@ -140,7 +140,7 @@ class _Client:
 
     def __init__(self, name, username=None, about="", photos=(), has_password=False):
         self.name, self.requests, self.sent, self.pinned = name, [], [], []
-        self.me = ns(first_name="Old", last_name=None, username=username)
+        self.me = ns(id=1000, first_name="Old", last_name=None, username=username)  # an id of 2013: an old account
         self.full = ns(about=about, profile_photo=object() if photos else None, saved_music=None)
         self.photos = list(photos)
         self.has_password = has_password
@@ -270,7 +270,7 @@ def test_a_session_worker_gets_no_2fa_password_it_could_not_keep():
 
 def test_kept_fields_stay_and_a_fresh_session_s_reset_is_left_for_the_next_day():
     _content()
-    _settings(days=3, music_chance=0, steps={**warmup.DEFAULTS["steps"], "bio": warmup.KEEP})
+    _settings(days=2, music_chance=0, steps={**warmup.DEFAULTS["steps"], "bio": warmup.KEEP})
     storage = _Storage(["a.session"])
     client = storage.sessions[0]
     client.me.username, client.full.about = "taken_name", "my bio"
@@ -279,17 +279,35 @@ def test_kept_fields_stay_and_a_fresh_session_s_reset_is_left_for_the_next_day()
 
     path = next(iter(storage.full_sessions))
     state = warmup.load_state()[path]
-    assert "UpdateUsernameRequest" not in client.requests and "username" in state["done"]  # kept: done
-    assert "bio" in state["done"] and "username" not in storage.remembered
+    # the first day: the security only, its reset refused a fresh session
     assert "terminate" not in state["done"] and state["status"] == warmup.FAILED and state["day"] == 1
-    # the next day: the reset again, the rest of the setup not
+    assert "UpdateProfileRequest" not in client.requests
+    # the next (last) day: the reset again, and the profile — the filled fields kept
     warmup.update(path, last="2000-01-01")
     client.requests.clear()
     client.terminate_error = None
     _run(_func(storage))
     state = warmup.load_state()[path]
-    assert "ResetAuthorizationsRequest" in client.requests and "UploadProfilePhotoRequest" not in client.requests
-    assert state["status"] == warmup.WARMING and state["day"] == 2 and "terminate" in state["done"]
+    assert "ResetAuthorizationsRequest" in client.requests and "terminate" in state["done"] and state["day"] == 2
+    assert "UpdateUsernameRequest" not in client.requests and "username" in state["done"]  # kept: done
+    assert "bio" in state["done"] and "username" not in storage.remembered
+    assert "UploadProfilePhotoRequest" in client.requests  # the rest of the profile set up
+
+
+def test_an_account_s_first_day_of_several_is_its_security_only():
+    _content()
+    _settings(days=3)  # its security today, its profile over the 2 days after
+    storage = _Storage(["a.jsession"])
+    _on_proxies(storage, [None])  # a .jsession: its 2FA password has a place to be kept
+    client = storage.sessions[0]
+    reports = _run(_func(storage))
+    for request in ("SetPrivacyRequest", "edit_2fa", "ResetAuthorizationsRequest"):
+        assert request in client.requests, request
+    assert "UpdateProfileRequest" not in client.requests and "UploadProfilePhotoRequest" not in client.requests
+    assert client.pinned  # the day's activity as every day: a note in Saved Messages, pinned
+    state = warmup.load_state()["1"]
+    assert state["done"] == ["lastseen", "2fa", "terminate"] and state["status"] == warmup.WARMING
+    assert any("день 1 из 3" in line for line in reports)
 
 
 def test_an_account_is_warmed_once_a_day():

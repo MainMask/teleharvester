@@ -313,7 +313,53 @@ class TestSpamBlockUnusableWorkers:
 
         assert (tmp_path / "sessions" / "inactive" / "d.jsession").exists()
         assert storage.sessions == [alive]
-        assert any(m.startswith("💀 d.jsession — сессия мертва") for m in msgs)
+        # the fake answers no probe: the cause unknown, not kept
+        assert "💀 d.jsession — сессия мертва (бан или вылет — причину узнать не удалось), перенесена в inactive/ " \
+               "папки проекта" in msgs
+
+    @pytest.mark.parametrize("error, cause, why", [
+        ("UserDeactivatedBanError", "banned", "аккаунт забанен"),
+        ("UserDeactivatedError", "banned", "аккаунт забанен"),
+        ("AuthKeyUnregisteredError", "logged_out", "вылет: сессия завершена, нужен новый вход"),
+        ("SessionRevokedError", "logged_out", "вылет: сессия завершена, нужен новый вход"),
+    ])
+    def test_a_dead_session_s_cause_is_told_and_kept_under_its_new_path(self, monkeypatch, tmp_path, error, cause,
+                                                                         why):
+        from telethon import errors
+        from modules import restricted_workers
+
+        monkeypatch.chdir(tmp_path)
+
+        class _Dead(self._S):
+            async def __call__(self, request):  # what Telegram answers the account's own lookup
+                raise getattr(errors, error)(request)
+
+        dead = _Dead("sessions/d.jsession", me=None)
+        storage = self._storage(tmp_path, [dead])
+
+        msgs = self._run(storage)
+
+        assert f"💀 d.jsession — сессия мертва ({why}), перенесена в inactive/ папки проекта" in msgs
+        new = os.path.join("sessions", "inactive", "d.jsession")
+        assert restricted_workers.load_dead() == {new: cause}
+        restricted_workers.forget(new)  # the dead file deleted (🗑): its cause goes too
+        assert restricted_workers.load_dead() == {}
+
+    def test_a_duplicated_key_is_a_dead_session_logged_out(self, monkeypatch, tmp_path):
+        """AUTH_KEY_DUPLICATED (get_me raises it, unswallowed): the key is dropped for good, not a check that failed."""
+        from telethon.errors import AuthKeyDuplicatedError
+        from modules import restricted_workers
+
+        monkeypatch.chdir(tmp_path)
+        dup = self._S("sessions/d.jsession", me=AuthKeyDuplicatedError(request=None))
+        storage = self._storage(tmp_path, [dup])
+
+        msgs = self._run(storage)
+
+        assert "💀 d.jsession — сессия мертва (вылет: сессия завершена, нужен новый вход), перенесена в inactive/ " \
+               "папки проекта" in msgs
+        assert storage.sessions == []
+        assert restricted_workers.load_dead() == {os.path.join("sessions", "inactive", "d.jsession"): "logged_out"}
 
     def test_permanent_is_excluded_until_clean(self, monkeypatch, tmp_path):
         from modules import contacts_ledger, restricted_workers
@@ -2509,3 +2555,16 @@ def test_the_clear_dialogs_question_takes_the_screen_s_place_and_its_cancel_brin
     no = edits[0][1].inline_keyboard[0][1].callback_data  # its ✖️, as drawn: names its project
     asyncio.run(service.clear_run(callback, ChoiceCB.unpack(no), ns(), {}, ns(active=False), ns(project_id=0)))
     assert edits[1][0].startswith("<b>🔐 Безопасность</b>")  # ↩️: the screen again, in the question's place
+
+
+def test_a_dead_session_s_unknown_cause_clears_the_one_kept_for_its_file_before(monkeypatch, tmp_path):
+    """Died once (banned), added again, died again of a cause not found: no "бан" left for it."""
+    from modules import restricted_workers
+
+    monkeypatch.chdir(tmp_path)
+    case = TestSpamBlockUnusableWorkers()
+    old = os.path.join("sessions", "inactive", "d.jsession")
+    restricted_workers.save_dead({old: "banned", "sessions/inactive/other.jsession": "logged_out"})
+    storage = case._storage(tmp_path, [case._S("sessions/d.jsession", me=None)])
+    case._run(storage)
+    assert restricted_workers.load_dead() == {"sessions/inactive/other.jsession": "logged_out"}

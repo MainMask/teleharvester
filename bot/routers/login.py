@@ -13,6 +13,7 @@ from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
 from bot.routers._common import delete_quietly, stale_tap, start_form
+from bot.routers.accounts.proxies import rebalance_now
 from bot.services import login as logins
 from bot.services.delegation import WorkerPool
 from bot.services.screens import head
@@ -20,6 +21,7 @@ from bot.services.workspaces import Workspace
 from modules.registry import ADD, menu_path, title
 from bot.states import AddByPhone
 from modules import login as sign_in
+from modules import proxy_geo
 
 router = Router()
 
@@ -42,6 +44,11 @@ async def _end_login(message: Message, state: FSMContext, text: str):
 
 # a worker joins the pool; a personal account goes to personal_sessions/ (scrapes only)
 ROLES = {MenuAction.BY_PHONE: "worker", MenuAction.PERSONAL: sign_in.PERSONAL}
+def _checking_countries(count: int) -> str:
+    """While the pool's proxies' countries are checked before a worker's proxy is picked (once: then they are
+    known)."""
+    return (f"🌍 Проверяю страны прокси ({count}), чтобы вход шёл с IP страны номера… "
+            f"до ~{proxy_geo.wait_minutes(count)} мин.")
 
 
 @router.callback_query(MenuCB.filter(F.action.in_(ROLES)))
@@ -64,8 +71,10 @@ async def phone_input(message: Message, state: FSMContext, pool: WorkerPool, per
     if refused := sign_in.refusal(role, phone, pool.storage, personal):
         await _end_login(message, state, refused)
         return
+    if role != sign_in.PERSONAL:  # the pool's countries known first: its first login from its own country's IP
+        await proxy_geo.ensure(pool.storage.home, lambda count: message.answer(_checking_countries(count)))
     try:
-        proxy = sign_in.role_proxy(role, pool.storage)
+        proxy = sign_in.role_proxy(role, pool.storage, phone)
     except ValueError as err:
         await _end_login(message, state, f"⚠️ {err}.")
         return
@@ -191,9 +200,15 @@ async def _finish(message: Message, state: FSMContext, pool: WorkerPool, persona
 
     role = (await state.get_data()).get("role")
     try:
-        sign_in.store(login, me, role, pool.storage, personal)
+        path = sign_in.store(login, me, role, pool.storage, personal)
     except Exception as err:
         await sign_in.log_out(login.client)  # without its saved key the new authorization is of no use
         await _end_login(message, state, f"⚠️ Аккаунт не сохранён: {err}")
         return
-    await _end_login(message, state, sign_in.added_text(login, me, role, pool.count()))
+    geo = ""
+    if role != sign_in.PERSONAL:
+        geo = await rebalance_now(pool)  # its proxy was one of its country's first: it rarely moves, others may
+        if (stored := pool.storage.jsessions_paths.get(path)) is not None:
+            login.proxy = stored.account.proxy  # the summary's proxy: where it is now
+    text = sign_in.added_text(login, me, role, pool.count())
+    await _end_login(message, state, text + (f"\n{geo}" if geo else ""))

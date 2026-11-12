@@ -189,9 +189,9 @@ class SessionsStorage:
             )
 
         for index, path in enumerate(aside):
-            self._set_proxy(path, spare[index % len(spare)])
+            self.set_proxy(path, spare[index % len(spare)])
         for index, path in enumerate(paths):
-            self._set_proxy(path, proxies[index // ACCOUNTS_PER_PROXY])
+            self.set_proxy(path, proxies[index // ACCOUNTS_PER_PROXY])
 
         return {
             "accounts": len(paths),
@@ -200,7 +200,7 @@ class SessionsStorage:
             "string_sessions_skipped": len(self.full_sessions) - len(self.jsessions_paths),
         }
 
-    def _set_proxy(self, path: str, proxy: Proxy | None):
+    def set_proxy(self, path: str, proxy: Proxy | None):
         """Persist the account's new proxy and rebuild its client, so it takes effect at once."""
         session = self.jsessions_paths[path]
         session.account.proxy = proxy
@@ -235,7 +235,7 @@ class SessionsStorage:
             proxies[path] = proxy
             moves[kind].append(path)
             if not dry_run:
-                self._set_proxy(path, proxy)
+                self.set_proxy(path, proxy)
 
         leaving = sorted(p for p in proxies if p not in restricted and off_pool(p))
         if spare:  # first: the places they free may take the ones coming back
@@ -267,14 +267,16 @@ class SessionsStorage:
         if json_session is not None and json_session in self.json_sessions:
             self.json_sessions.remove(json_session)
 
-    def move_to_inactive(self, path: str):
+    def move_to_inactive(self, path: str) -> str:
         """Drop a dead (banned / logged out) session from the pool and move its file
-        to sessions/inactive/."""
+        to sessions/inactive/; its new path."""
         self.forget_session(path)
 
         inactive_dir = os.path.join(os.path.dirname(path), "inactive")
         os.makedirs(inactive_dir, exist_ok=True)
-        os.rename(path, os.path.join(inactive_dir, os.path.basename(path)))
+        new = os.path.join(inactive_dir, os.path.basename(path))
+        os.rename(path, new)
+        return new
 
     def get_session_path(self, session: TelegramClient | JsonSession) -> str:
         for path, client in self.full_sessions.items():

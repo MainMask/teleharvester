@@ -6,12 +6,14 @@ stats/warmup.json, {key: {"status", "day", "last", "done", "error", "warmed_at"}
 modules/profile_done.py has it: an account moved to another project keeps its progress), the session file's path
 for a StringSession worker. An account is warmed once a day at most: its first run sets up its profile and
 security (SETUP — a step that failed is tried again on its next day), every run reads channels, writes a note,
-maybe starts a bot (ACTIVITY); after `days` runs with every setup step done it is warmed.
+maybe starts a bot (ACTIVITY); after `days` runs with every setup step done it is warmed. The setup: its security
+on its first day, its profile spread over the days after (setup_today).
 
 Its content: modules/content.py, the region's (the project's setting here, `region`).
 """
 import datetime
 import io
+import math
 import os
 import random
 import re
@@ -43,6 +45,7 @@ ACTIVITY = (
 GROUPS = (("Оформление", PROFILE), ("Безопасность", SECURITY), ("Активность — каждый день", ACTIVITY))
 STEPS = {key: title for key, title, _ in PROFILE + SECURITY + ACTIVITY}
 SETUP = tuple(key for key, _, _ in PROFILE + SECURITY)  # once, until done
+SECURITY_KEYS = tuple(key for key, _, _ in SECURITY)
 OFF, ON, KEEP = "off", "on", "keep"  # a step's mode; KEEP: its field only while it is empty
 KEEPABLE = ("username", "photo", "bio", "music")  # the fields that may be empty (a name never is)
 
@@ -58,7 +61,7 @@ CYCLES = {
     "channels_count": ["0-3", "1", "2", "3", "5", "3-7", "5-10"],
 }
 DEFAULTS = {
-    "region": "ru", "days": 3, "threads": 1, "daily": False,
+    "region": "ru", "days": 14, "threads": 1, "daily": False,
     "steps": {**dict.fromkeys(STEPS, ON), "username": KEEP},
     "avatars": "1", "music_chance": 30, "stickers_chance": 50, "bots_chance": 30, "channels_count": "0-3",
     "chat": 0,       # where the daily run reports: the chat that switched it on
@@ -127,6 +130,23 @@ def cycle(settings: dict, field: str) -> dict:
     else:
         settings[field] = _next(CYCLES[field], settings[field])
     return settings
+
+
+def setup_today(settings: dict, done: list, day: int) -> list[str]:
+    """Today's setup steps (on, not done yet): the security alone on the first day — a bought account out of its
+    seller's reach soonest, and no rush of profile changes at once —, then what is left of it (a step that failed)
+    with the profile's share, spread evenly over the days left of `days` (`day`: the days counted so far); on the
+    last day (or past it; or with a single day), all that is left. A security step that keeps failing holds nothing
+    up."""
+    left = [step for step in SETUP if step not in done and settings["steps"][step] != OFF]
+    security = [step for step in left if step in SECURITY_KEYS]
+    profile = [step for step in left if step not in SECURITY_KEYS]
+    days_left = settings["days"] - day
+    if days_left <= 1:
+        return security + profile
+    if day == 0 and security:
+        return security
+    return security + profile[:math.ceil(len(profile) / days_left)]
 
 
 def count(setting: str) -> int:

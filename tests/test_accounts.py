@@ -44,6 +44,7 @@ class _Storage:
     def __init__(self, jsessions=None, sessions=()):
         self.jsessions_paths = jsessions or {}
         self.sessions = list(sessions)
+        self.home = None  # no project's: no proxy countries known
 
     @contextlib.asynccontextmanager
     async def ainitialize_session(self, client):
@@ -543,7 +544,7 @@ def _workers_and_me(tmp_path):
     worker = _Client()
     worker.path = "sessions/w.jsession"
     stored = ns(account=ns(account=ns(first_name="Ann", last_name=None, username="ann", phone_number="79991234567",
-                                      user_id=7), proxy=Proxy("socks5", "1.2.3.4", 1080)))
+                                      user_id=7), proxy=Proxy("socks5", "1.2.3.4", 1080), registered_at=None))
     storage = _Storage({worker.path: stored}, sessions=[worker])
     pool = _free_pool()
     pool.storage, pool._workers = storage, [worker]
@@ -570,8 +571,12 @@ def test_a_worker_s_card_is_from_what_is_stored_and_has_no_removal(tmp_path, mon
     _press("acc", _key(state, 0), state, pool, personal, msg)
     text, markup = msg.replies[-1]
     # the number, id and file in <code>: a tap copies them
+    # its age estimated by its id (no seller's date): an id of 2013's
+    from modules import account_age
     assert text == ("<b>🤖 Воркер: Ann (@ann)</b>\n📱 <code>+79991234567</code> · 🆔 <code>7</code>\n"
+                    f"🎂 Возраст: {account_age.label(None, 7)} (оценка по ID)\n"
                     "🌐 socks5://1.2.3.4:1080\n❔ не проверялся\n📄 <code>sessions/w.jsession</code>")
+    assert account_age.label(None, 7).startswith("~1")  # over ten years
     # a worker is moved to another project (🤖 Аккаунты → ↪️ Перенести), never removed
     assert [b.text for row in markup.inline_keyboard for b in row] == ["🔑 Код входа", "⬅️ Назад"]
 

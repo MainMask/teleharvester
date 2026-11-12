@@ -2,7 +2,7 @@ import html as html_text
 import os
 from typing import NamedTuple
 
-from modules import restricted_workers
+from modules import account_age, phone_countries, proxy_geo, restricted_workers
 from modules.console import console
 from modules.storages.sessions_storage import SessionsStorage
 from rich.prompt import Prompt
@@ -71,8 +71,14 @@ def card_lines(storage, account: ScrapeAccount, html: bool = False) -> list[str]
     if js is not None:
         number = str(js.account.account.phone_number).lstrip("+")
         lines.append(f"📱 {code('+' + number)} · 🆔 {code(js.account.account.user_id)}")
+        stored = js.account.account
+        sold = js.account.registered_at  # the seller's date, if known
+        if age := account_age.label(sold, stored.user_id):
+            lines.append(f"🎂 Возраст: {esc(age)} ({'дата продавца' if sold else 'оценка по ID'})")
         proxy = js.account.proxy
-        lines.append(f"🌐 {esc(proxy.label())}" if proxy else "🌐 без прокси")
+        country = proxy_geo.cached(storage.home, proxy) if proxy else None  # as last found: never asked for a card
+        lines.append(f"🌐 {esc(proxy.label())}" + (f" {phone_countries.flag(country)}" if country else "")
+                     if proxy else "🌐 без прокси")
     if not account.personal:
         lines.append(esc(restricted_workers.classify(account.path, set(restricted_workers.load()),
                                                      restricted_workers.load_status())[1]))

@@ -442,7 +442,7 @@ def test_the_warmup_s_run_comes_first_marked_risky_in_the_text_and_its_region_is
     text, markup = router._warmup_view(_Pool(_Storage(["a.session"])), JobManager(), 0)
     assert text.startswith("<b>🔥 Прогрев</b>\n") and "<b>▶️ Прогреть</b> ⚠️" in text
     # its own buttons between its function and the screen it opens, in the text in the same order; 🔄 by ⬅️
-    assert _texts(markup) == ["▶️ Прогреть", "📅 Дней: 3", "🧵 Потоков: 1", "🔁 Ежедневно: выкл",
+    assert _texts(markup) == ["▶️ Прогреть", "📅 Дней: 14", "🧵 Потоков: 1", "🔁 Ежедневно: выкл",
                               "♻️ Сбросить прогрев", "🧩 Шаги ›", "🔄 Обновить", "⬅️ Назад"]
     assert [b.text for b in markup.inline_keyboard[-1]] == ["🔄 Обновить", "⬅️ Назад"]
     assert text.index("▶️ Прогреть") < text.index("<b>📅 Дней</b>") < text.index("<b>🧩 Шаги</b>")
@@ -488,6 +488,45 @@ def test_the_list_s_categories_open_their_accounts_cards_and_a_card_goes_back_to
     assert callback.message.edits[-1] == (text, markup)  # ⬅️ Назад: the category again, its buttons too
 
 
+def test_the_dead_category_tells_each_one_s_cause_and_their_split():
+    storage = _Storage()
+    inactive = os.path.join(storage.directory, "inactive")
+    os.makedirs(inactive)
+    paths = [os.path.join(inactive, name) for name in ("a.session", "b.session", "c.session")]
+    for path in paths:
+        open(path, "w").close()
+    a, b, _ = paths
+    restricted_workers.save_dead({a: restricted_workers.BANNED, b: restricted_workers.LOGGED_OUT})
+    callback = _Callback()
+    asyncio.run(base.category_open(callback, AccountBaseCB(action="cat", value=warmup.DEAD, project=3), _State(),
+                                   _Pool(storage), ns(project_id=3), None))
+    text = callback.message.edits[-1][0]
+    assert "<b>💀 Мёртвые</b>: 3 (бан 1 · вылет 1 · причина неизвестна 1)\n\n" \
+           "• a.session — бан\n• b.session — вылет\n• c.session" in text
+
+
+def test_a_category_s_line_tells_the_account_s_age():
+    from modules import account_age
+
+    storage = _Storage()
+    _jsession(os.path.join(storage.directory, "79991234567.jsession"))  # user id 7, no seller's date
+    callback = _Callback()
+    asyncio.run(base.category_open(callback, AccountBaseCB(action="cat", value=warmup.NEW, project=3), _State(),
+                                   _Pool(storage), ns(project_id=3), None))
+    assert f"• @ann · +79991234567 · 🎂 {account_age.label(None, 7)}" in callback.message.edits[-1][0]
+
+
+def test_the_dead_category_without_known_causes_has_no_split():
+    storage = _Storage()
+    inactive = os.path.join(storage.directory, "inactive")
+    os.makedirs(inactive)
+    open(os.path.join(inactive, "a.session"), "w").close()
+    callback = _Callback()
+    asyncio.run(base.category_open(callback, AccountBaseCB(action="cat", value=warmup.DEAD, project=3), _State(),
+                                   _Pool(storage), ns(project_id=3), None))
+    assert "<b>💀 Мёртвые</b>: 1\n\n• a.session" in callback.message.edits[-1][0]
+
+
 def test_the_personal_accounts_are_a_button_of_the_list_with_their_cards():
     me = ns()
     personal = ns(sessions=[me], jsessions_paths={}, get_session_path=lambda client: "personal_sessions/me.session")
@@ -531,7 +570,7 @@ class _Typed(_Message):
         self.text = text
 
 
-@pytest.mark.parametrize("field, name, current", [("days", "📅 Дней", 3), ("threads", "🧵 Потоков", 1)])
+@pytest.mark.parametrize("field, name, current", [("days", "📅 Дней", 14), ("threads", "🧵 Потоков", 1)])
 def test_the_days_and_the_threads_are_typed_and_any_number_from_one_is_taken(field, name, current):
     from bot.services.jobs import JobManager
     from bot.states import SetWarmupNumber, origin

@@ -12,6 +12,23 @@ def phone_of(storage, client, me) -> str | None:
     return str(js.account.account.phone_number) if js is not None else None
 
 
+def country_of(phone) -> str | None:
+    """The number's country as its ISO code — "RU", "KZ" (both +7), "US", "CA" (both +1) —; None if unknown, or a
+    number of no country (Fragment's anonymous +888: "001")."""
+    if not phone:
+        return None
+    try:
+        code = phonenumbers.region_code_for_number(phonenumbers.parse(f"+{str(phone).lstrip('+')}", None))
+    except Exception:
+        return None
+    return code if code and code.isalpha() and code != "ZZ" else None
+
+
+def flag(code: str) -> str:
+    """A country's ISO code as its flag: "RU" → 🇷🇺."""
+    return "".join(chr(0x1F1E6 + ord(letter) - ord("A")) for letter in code.upper())
+
+
 def summary(phones) -> str:
     """The accounts' countries, the most first: "+7 Россия — 3 · +1 Соединенные Штаты — 2"; a row per
     country, not per code (+1: the USA and Canada, +7: Russia and Kazakhstan); "" with no number known."""

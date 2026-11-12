@@ -61,7 +61,7 @@ def test_the_marker_is_dropped_after_every_other_shutdown_step():
 
     shutdown = [line.split("#")[0].strip() for line in inspect.getsource(app.run_bot).splitlines()
                 if line.strip().startswith("dp.shutdown.register(")]
-    assert shutdown[-1] == "dp.shutdown.register(mark_stopped)" and len(shutdown) == 6
+    assert shutdown[-1] == "dp.shutdown.register(mark_stopped)" and len(shutdown) == 7
     # a watch stopped by the shutdown is kept for the next start; the workers' jobs before the scrapes' long wait
     assert shutdown.index("dp.shutdown.register(chat_broadcasts.stop_watches)") \
         < shutdown.index("dp.shutdown.register(stop_jobs)") \

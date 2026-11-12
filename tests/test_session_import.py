@@ -152,3 +152,32 @@ def test_the_bot_imports_the_files_sent_and_waits_for_the_next_ones(tmp_path, mo
     assert any("не авторизована" in text for text in message.answers)
     # ready for the next files at once
     assert state.state == ImportFiles.files and "следующие файлы" in message.answers[-1]
+
+
+def test_after_a_session_import_every_account_goes_to_its_country_s_proxy(monkeypatch):
+    from types import SimpleNamespace as ns
+
+    from bot.routers.accounts import upload
+    from modules import proxy_geo
+
+    async def import_all(root, storage):
+        return ["sessions/79161234567.jsession"], []
+
+    rebalanced = []
+
+    async def rebalance(storage, in_use):
+        rebalanced.append((storage, in_use()))
+        return "🌍 Прокси по странам: пересажено аккаунтов — 2."
+
+    monkeypatch.setattr(session_import, "import_all", import_all)
+    monkeypatch.setattr(proxy_geo, "rebalance", rebalance)
+    monkeypatch.setattr(projects, "account_label", lambda path: path)
+    storage = ns(jsessions_paths={"sessions/a.jsession": None, "sessions/b.jsession": None})
+    pool = ns(storage=storage, count=lambda: 2, busy=lambda path: path == "sessions/a.jsession",
+              scraped=lambda path: False)
+    answers = []
+    message = ns(answer=lambda text, **kw: asyncio.sleep(0, answers.append(text)))
+    manager = ns(acquire=lambda *a, **k: True, release=lambda: None)
+    asyncio.run(upload._import_sessions(message, pool, manager, "root"))
+    assert rebalanced == [(storage, {"sessions/a.jsession"})]  # the one in use left as it is
+    assert answers[-1] == "🌍 Прокси по странам: пересажено аккаунтов — 2."

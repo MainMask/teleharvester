@@ -18,6 +18,7 @@ from bot.callbacks import ChoiceCB, MenuAction, MenuCB
 from bot.keyboards.common import cancel_kb, choice_kb
 from bot.keyboards.menu import back_kb
 from bot.routers._common import MAX_MESSAGE, busy_step, busy_tap, delete_quietly, download, fit_lines, start_form
+from bot.routers.accounts.proxies import rebalance_now
 from bot.services.delegation import WorkerPool
 from bot.services.screens import head
 from bot.services.jobs import JobManager, busy
@@ -109,6 +110,8 @@ async def _import_sessions(message: Message, pool: WorkerPool, manager: JobManag
                       *(f"• {html.escape(name)} — {html.escape(why)}" for name, why in failed)]
         count = f"🤖 Воркеров в проекте: {pool.count()}"  # last, whatever the lists above leave out
         await message.answer(f"{fit_lines(lines, MAX_MESSAGE - len(count) - 1)}\n{count}", parse_mode="HTML")
+        if added and (geo := await rebalance_now(pool)):  # every account of the project, the new ones too
+            await message.answer(geo)
     except Exception as err:
         await message.answer(f"⚠️ Ошибка импорта .session: {html.escape(str(err))}", parse_mode="HTML")
     finally:
@@ -210,7 +213,9 @@ async def _import(message: Message, pool: WorkerPool, manager: JobManager, zip_b
             await message.answer(f"ℹ️ Аккаунт +{phone} уже есть в проекте — файл не изменён.")
             return True
 
-        # read back from the file: if it was already on disk, convert() kept its settings
+        # its number was unknown before it connected: now every account of the project onto its country's proxy
+        geo = await rebalance_now(pool)
+        # read back from the file: if it was already on disk, convert() kept its settings (and its new proxy)
         saved = session.account
         proxy_note = saved.proxy.label() if saved.proxy else "без прокси"
         await message.answer(
@@ -218,7 +223,7 @@ async def _import(message: Message, pool: WorkerPool, manager: JobManager, zip_b
             f"📱 Номер: +{phone}\n"
             f"🔐 2FA: {'да' if saved.password else 'нет'}\n"
             f"🌐 Прокси: {proxy_note}\n"
-            f"🤖 Воркеров в проекте: {pool.count()}",
+            f"🤖 Воркеров в проекте: {pool.count()}" + (f"\n{geo}" if geo else ""),
         )
     except Exception as err:
         await message.answer(f"⚠️ Ошибка импорта: {err}")

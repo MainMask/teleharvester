@@ -6,6 +6,7 @@ import os
 import types
 
 from bot.routers import accounts
+from modules import projects
 from modules.types.proxy import Proxy
 
 
@@ -84,6 +85,22 @@ def test_text_proxies_applied_and_file_written(tmp_path, monkeypatch):
         "http://2.2.2.2:3128",
     ]
     assert any("применены" in r for r in msg.replies)
+
+
+def test_a_new_list_moves_the_accounts_onto_their_countries_proxies_at_once(tmp_path, monkeypatch):
+    from modules import proxy_geo
+
+    monkeypatch.chdir(tmp_path)
+    seen = []
+
+    async def rebalance(storage, in_use):
+        seen.append(os.path.exists(projects.proxies_path(conftest.home())))  # the new list saved before
+        return "🌍 Прокси по странам: пересажено аккаунтов — 3."
+
+    monkeypatch.setattr(proxy_geo, "rebalance", rebalance)
+    msg = _Msg(text="socks5://u:p@1.1.1.1:1080")
+    asyncio.run(accounts.proxies.proxy_apply(msg, _State(), _Pool(_Storage()), _manager()))
+    assert seen == [True] and any("применены" in r and "пересажено аккаунтов — 3" in r for r in msg.replies)
 
 
 def test_refuses_while_job_active(tmp_path, monkeypatch):
@@ -166,6 +183,25 @@ def test_the_restricted_proxies_are_saved_and_the_restricted_moved(tmp_path, mon
     assert (tmp_path / "home" / "proxies_restricted.txt").read_text() == "socks5://9.9.9.9:1080\n"
     assert storage.rehomed == [(0, 1, False, [])] and state.cleared
     assert any("На прокси для ограниченных: 1" in r for r in msg.replies)
+
+
+def test_after_the_rehome_the_pool_s_accounts_go_to_their_countries_proxies(tmp_path, monkeypatch):
+    """The ones back in the pool took any place free: then every one onto its country's proxy."""
+    from modules import proxy_geo
+
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    async def rebalance(storage, in_use):
+        calls.append(storage.rehomed[:])  # after the rehome
+        return "🌍 Прокси по странам: пересажено аккаунтов — 1."
+
+    monkeypatch.setattr(proxy_geo, "rebalance", rebalance)
+    storage = _Rehoming()
+    msg = _Msg(text="socks5://9.9.9.9:1080")
+    asyncio.run(accounts.proxies.proxy_spare_apply(msg, _State(), _Pool(storage), _manager()))
+    assert calls == [[(0, 1, False, [])]]
+    assert any("На прокси для ограниченных: 1" in r and "пересажено аккаунтов — 1" in r for r in msg.replies)
 
 
 def test_the_restricted_proxies_may_not_repeat_the_pool(tmp_path, monkeypatch):
@@ -291,7 +327,7 @@ def test_the_move_button_moves_its_own_project_and_waits_for_a_job(monkeypatch):
     moved = []
     monkeypatch.setattr("bot.routers.accounts.proxies.rehome", lambda storage, dry_run=False, busy=():
                         moved.append(storage.name) or {"out": [], "back": [], "stuck": [], "busy": []})
-    mine = _workspace(ns(name="mine", jsessions_paths={}), 7, active=True)
+    mine = _workspace(ns(name="mine", jsessions_paths={}, home=conftest.home()), 7, active=True)
     other = _workspace(ns(name="other", jsessions_paths={}), 8)
     workspaces = ns(get=lambda pid: {7: mine, 8: other}.get(pid))
 

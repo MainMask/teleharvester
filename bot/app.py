@@ -16,7 +16,7 @@ from modules.scraper_creds import PERSONAL_DIR, personal_storage
 from bot.config import BotConfig
 from bot.keyboards.menu import main_menu
 from bot.middlewares.auth import AuthMiddleware
-from bot.services import autoreply, warmup_daily, watchdog
+from bot.services import autoreply, id_dates_update, warmup_daily, watchdog
 from bot.services.album import AlbumMiddleware
 from bot.services.capture import clear_orphan_temp
 from bot.services.safe_edit import SafeEdit
@@ -238,6 +238,8 @@ async def run_bot():
     dp.shutdown.register(autoreply.stop)
     dp.startup.register(warmup_daily.start)
     dp.shutdown.register(warmup_daily.stop)
+    dp.startup.register(id_dates_update.start)
+    dp.shutdown.register(id_dates_update.stop)
     # last: a stop that hangs until systemd kills the bot leaves the marker, so the next start says so
     dp.shutdown.register(mark_stopped)
 

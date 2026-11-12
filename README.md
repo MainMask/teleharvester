@@ -32,7 +32,7 @@ A project's screens, on its own workers:
 |---|---|
 | **🤖 Аккаунты** | The workers' count and warmup, the project's proxies, moving workers to another project; its screens below. |
 | **➕ Добавить** | Adding accounts: **🤖 Воркер по номеру**, **👤 Личный по номеру** (all the projects', scrapes only), **📥 Из файлов** (tdata, `.session`), **📦 Из свободных** (accounts in no project); details under «Adding accounts» below. Each flow ends with ⬅️ back here. |
-| **📋 Список** | The accounts' checks, with workers only: **📡 Опросить** (every worker asked for its profile: name, username, Premium, its last @SpamBot status, the numbers' countries) and **🩺 SpamBot** (the @SpamBot status check). Then the project's accounts by category — 🆕 new, 🌡 warming, ✅ warmed, ❌ failed (with the error), ⛔ permanently restricted, 💀 dead (`sessions/inactive/`): a category's accounts with their cards (login codes; a dead one has none), **📦 Скачать ZIP** of their session files, **🗑 Удалить** (the files and their state; the accounts are not logged out; busy ones are skipped). **👤 Личные** — the personal accounts' cards (login codes, removal); **📦 Все аккаунты** — a ZIP of all the session files. A ZIP asks its format first: **.session + .json** (Telethon's SQLite session and the app, device, account and 2FA password it was used with — a `.session` worker's has the session only — what other software takes, and what **➕ Добавить → 📥 Из файлов** reads back) or **.jsession** (the bot's own, with the proxy: a backup for this bot). Either holds the bot's own keys: an account run here and elsewhere at once may have its session ended by Telegram. Only what there is is offered (a category with accounts, the ZIP with files). |
+| **📋 Список** | The accounts' checks, with workers only: **📡 Опросить** (every worker asked for its profile: name, username, Premium, its last @SpamBot status, the numbers' countries) and **🩺 SpamBot** (the @SpamBot status check). Then the project's accounts by category — 🆕 new, 🌡 warming, ✅ warmed, ❌ failed (with the error), ⛔ permanently restricted, 💀 dead (`sessions/inactive/`; each with its cause, as the @SpamBot check found it — a ban, or a logout: the session ended, revoked or its key used from two IPs at once, `AUTH_KEY_DUPLICATED`, so only a new login brings it back — and the split in the heading; none for the ones found before causes were kept): a category's accounts, each with its age (🎂, see [Warmup](#warmup)), with their cards (login codes, the age; a dead one has none), **📦 Скачать ZIP** of their session files, **🗑 Удалить** (the files and their state; the accounts are not logged out; busy ones are skipped). **👤 Личные** — the personal accounts' cards (login codes, removal); **📦 Все аккаунты** — a ZIP of all the session files. A ZIP asks its format first: **.session + .json** (Telethon's SQLite session and the app, device, account and 2FA password it was used with — a `.session` worker's has the session only — what other software takes, and what **➕ Добавить → 📥 Из файлов** reads back) or **.jsession** (the bot's own, with the proxy: a backup for this bot). Either holds the bot's own keys: an account run here and elsewhere at once may have its session ended by Telegram. Only what there is is offered (a category with accounts, the ZIP with files). |
 | **🔥 Прогрев** | Warming the project's accounts up before work, day by day; see [Warmup](#warmup). |
 | **👤 Профиль** | Name, username, bio, photo, remove profile channel — applied one account at a time with `profile_pause`; the lists offered are the project's region's ([Content](#content)). |
 | **🔐 Безопасность** | Set 2FA password, terminate other sessions, hide last seen, clear dialogs. |
@@ -102,8 +102,9 @@ python sessions/login.py [file.jsession] # login codes received in the last 15 m
     there, holding `<label>: <password>` or the password alone; without one the bot asks for it. A changed
     password is written back into that `.txt`.
   - **.session** — Telethon `.session` files (SQLite), each optionally with a `.json` of the same name (`app_id`,
-    `app_hash`, `device`, `sdk`, `app_version`, `lang_pack`, `system_lang_pack`, `twoFA`): the `.json`'s app and
-    device are presented (a random official one without it). In the bot send a `.session` with its `.json` at
+    `app_hash`, `device`, `sdk`, `app_version`, `lang_pack`, `system_lang_pack`, `twoFA`, `register_time`): the
+    `.json`'s app and device are presented (a random official one without it); its `register_time` (Unix seconds or
+    milliseconds, or an ISO date) is kept as the account's registration date (see [Warmup](#warmup)). In the bot send a `.session` with its `.json` at
     once (selected together) or a ZIP of them; for the script put them in `session_import/` (moved to
     `imported/` once done).
   - The bot takes several files at once — the `.session` ones first, then the tdata ones in turn — and after them
@@ -120,6 +121,19 @@ python sessions/login.py [file.jsession] # login codes received in the last 15 m
   a login) is left for the next check. **🗑 Не отделять** at that step
   drops the list and brings them back into the pool. Any other worker not on a pool
   proxy (clean again, its list replaced, or moved here from another project) is offered back into it too.
+- **Proxies by country.** Each account works through a proxy of its number's country (+7 Russia and Kazakhstan,
+  +1 the USA and Canada told apart). A proxy's country is that of its exit IP, as Telegram sees it: `ipinfo.io`
+  asked through the proxy itself (it sees the proxy's exit IP, no account), kept in
+  `projects/<id>/proxies_geo.json` (a password as a short hash only: two proxies differing by it alone — a
+  provider picking the country by the password — are two); one that could not be told is asked again 6 h later, and the
+  accounts on it are left as they are (it may well be their country). A new account takes a proxy of its country
+  first when its number is known (by phone; a `.session` whose `.json` or file name holds it): the pool's countries
+  are found before it is given one. After a list in 🌐 Прокси, a `.session` or tdata import and a login by phone, the bot goes
+  over all the pool's accounts: one already on a proxy of its country stays, the others move onto the least used
+  proxy of theirs with a place (≤ 3 accounts), two on each other's full proxies swap; one with no such place stays
+  where it is and is told («⚠️ Нет свободного прокси своей страны: 🇷🇺 RU — 4») so proxies of that country can be
+  added. The restricted ones on their own proxies, `.session` workers (no proxy kept) and the ones in use right now
+  (a scrape, a login code) are left; the card shows the proxy's flag, 🌐 Прокси the list by country.
 - Session files put in by hand are read when the bot starts.
 
 ## Usage
@@ -212,16 +226,31 @@ make, and its files count; **📥 Сбор** lists its channels and the scrape's
 
 ## Warmup
 
-A project's **🤖 Аккаунты → 🔥 Прогрев** warms its accounts up before they work, one day of it per account a day: on the first, the
-profile and its security (a step that fails, e.g. terminating other sessions, which Telegram refuses a new session for
-24 h, is tried again the next day); every day, light activity. An account is ✅ warmed once its days are run (**📅 Дней**,
-typed, any number from 1; 1 — a single pass) and every setup step is done; a day where no step went through (a flood limit, the profile not read)
+A project's **🤖 Аккаунты → 🔥 Прогрев** warms its accounts up before they work, one day of it per account a day: the
+security and the profile over its days (see below; a step that fails, e.g. terminating other sessions, which Telegram
+refuses a new session for 24 h, is tried again the next day); every day, light activity. An account is ✅ warmed once its days are run (**📅 Дней**,
+typed, any number from 1, 14 by default; 1 — a single pass) and every setup step is done; a day where no step went through (a flood limit, the profile not read)
 is not counted. **▶️ Прогреть** (on top) runs it now; **🔁 Ежедневно** runs it by itself once a day
 at a random time between 10:00 and 21:00 when the project's job slot is free (bot only; one still busy at 21:00, or a
 bot started later, waits for the next day), reporting to the chat that switched it on. **🧵 Потоков** — accounts warmed at once, typed (any number from 1; each next one after the profile
 pause), but never two of one proxy side by side (those without one: the server's address), so at most as many as the
 accounts' proxies; the ⚙️ delay between steps. The screen shows whether it runs now and when the daily run is (**🔄 Обновить** redraws it), the accounts by
 category and the warmed today / in all; **♻️ Сбросить прогрев** starts every account of the project from day one.
+
+The setup is spread: the security (last seen, 2FA, other sessions — a bought account out of its seller's reach
+soonest) alone on the first day, then the profile evenly over the days after, a security step that failed (other
+sessions, refused a fresh session for 24 h) tried again along with it — one failing every day holds nothing up: e.g.
+14 days, 6 profile steps — about one a day; on the last day (or with a single day), all that is left.
+
+**Account age** (on its card and in 📋 Список; information only — the warmup is the same for all): the seller's
+registration date if its `.json` had one, else estimated from its user id (`~`) by the dataset of
+[telegram-id-age](https://github.com/Jobians/telegram-id-age) (`modules/telegram_id_dates.json`, MIT) — off by
+weeks for accounts of 2013–2023, by 2–3 months (up to 10) for newer ones: a year from five, not a month from three.
+An id newer than the dataset is shown as «новый, после ММ.ГГГГ». The bot downloads the dataset from that repository
+weekly (5 min after its start, again in 6 h after a failure) into `stats/telegram_id_dates.json` and uses it once
+checked — 100+ entries of an id and a date between 2013-08 and today, no fewer, no older and reaching no lower id
+than the one in use —, else keeps the one in use, the bundled one its fallback; each check is logged
+(`journalctl`). A `.session` worker's file holds no user id: the lists show no age for it.
 
 - **🧩 Шаги** — each step on (✅), off (⬜) or, for username, avatars, bio and music, only while the field is empty
   (🛡, a filled one is kept); 🎲 next to a step — how many or with what chance:
@@ -281,6 +310,7 @@ Scraping more than ~150–200 communities in one block may trigger a 24-hour sof
 | `projects/<id>/proxies.txt`, `pm_mailing.json`, `contacts.json` | The project's proxy pool, mailing statistics and contacts ledger. |
 | `projects/<id>/outreach.json`, `outreach_sends.jsonl`, `outreach_dialogs.jsonl` | The project's hypotheses and mailing runs, each send (whom, by which worker) and each message of the dialogs after it, both ways (🧪 Гипотезы). |
 | `projects/<id>/proxies_restricted.txt` | Optional: the project's proxies for its permanently restricted workers. |
+| `projects/<id>/proxies_geo.json` | Each pool proxy's exit country, as `ipinfo.io` told it (by `scheme://user@ip:port#<password's short hash>`, never the password). |
 | `projects/<id>/warmup.json` | The project's warmup settings. |
 | `stats/warmup.json` | Each account's warmup: day, steps done, status, last error (by user id: kept when moved). |
 | `session_import/` | `.session` (+ `.json`) files for `sessions/add_session.py`'s import; imported ones in `imported/`. |
@@ -288,6 +318,8 @@ Scraping more than ~150–200 communities in one block may trigger a 24-hour sof
 | `stats/account_limits.json`, `invite_limits.json`, `contacts_limits.json` | Daily per-account counters (mailing, invites, contact adds). |
 | `stats/released.json` | Released workers. |
 | `stats/restricted.json`, `spambot_status.json` | Results of the last @SpamBot check. |
+| `stats/telegram_id_dates.json` | The user id → registration date table as last downloaded and checked (the account's age). |
+| `stats/dead.json` | Why the @SpamBot check found each dead worker dead (ban / logout), by its file in `inactive/`. |
 | `stats/auto_replies.json` | People who answered a mailing (each auto-replied to once, with the auto-reply on). |
 | `stats/projects.json` | Projects. |
 | `stats/profile_done.json` | Which profile function last changed which worker (the pickers tick the rest). |

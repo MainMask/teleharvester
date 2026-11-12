@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 
-from modules import projects, scraper_creds, tdata_import
+from modules import phone_countries, projects, proxy_geo, scraper_creds, tdata_import
 from modules.generators.linux import LinuxAPI
 from modules.generators.telegram_android import TelegramAppAPI
 from modules.storages.sessions_storage import connect_client
@@ -128,14 +128,17 @@ def refusal(role: str, phone: str, workers, personal) -> str | None:
     return None
 
 
-def role_proxy(role: str, workers):
+def role_proxy(role: str, workers, phone: str | None = None):
     """The new account's proxy: a worker's from its project's pool, as the tdata import (at most
-    ACCOUNTS_PER_PROXY accounts per proxy; ValueError if all are full); a personal account
-    has none, as the ones put in by hand — no worker proxy ties it to the workers."""
+    ACCOUNTS_PER_PROXY accounts per proxy; ValueError if all are full), one of its number's country first
+    (`phone`, if known: modules/proxy_geo.py); a personal account has none, as the ones put in by hand — no
+    worker proxy ties it to the workers."""
     if role == PERSONAL:
         return None
     used = [js.account.proxy for js in workers.jsessions_paths.values()]
-    return tdata_import.choose_pool_proxy(used, tdata_import.load_proxies(projects.proxies_path(workers.home)))
+    pool = tdata_import.load_proxies(projects.proxies_path(workers.home))
+    return tdata_import.choose_pool_proxy(used, proxy_geo.first_of(workers.home, pool,
+                                                                  phone_countries.country_of(phone)))
 
 
 async def request_code(client, phone: str):

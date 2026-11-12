@@ -117,6 +117,7 @@ class AccountSettingsRoundTripTest(unittest.TestCase):
             },
             "proxy": proxy,
             "password": None,
+            "registered_at": None,
         }
 
     def test_roundtrip_no_proxy(self):

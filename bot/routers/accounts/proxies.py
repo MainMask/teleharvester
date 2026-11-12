@@ -1,5 +1,7 @@
 """🌐 Прокси: the project's proxies for its accounts, and the optional ones for its permanently restricted
 workers."""
+import html
+import logging
 import os
 
 from aiogram import F, Router
@@ -15,11 +17,12 @@ from bot.services.jobs import JobManager
 from bot.services.screens import head
 from bot.states import SetProxy
 from functions.spamblock import rehome, rehome_report, set_restricted_proxies
-from modules import projects, restricted_workers, tdata_import
+from modules import projects, proxy_geo, restricted_workers, tdata_import
 from modules.registry import ACCOUNTS, menu_path, title
 from modules.types.proxy import ACCOUNTS_PER_PROXY, overlap, parse_proxies
 
 router = Router()
+log = logging.getLogger(__name__)
 
 MAX_PROXY_FILE_SIZE = 256 * 1024       # a proxy list is tiny; reject anything clearly wrong
 
@@ -46,6 +49,8 @@ def proxy_state(storage) -> str:
     except ValueError:  # edited by hand
         return f"Сейчас: ⚠️ список прокси испорчен — пришлите новый · {accounts}."
     lists = f"в списке {len(pool)} прокси" if pool else "списка прокси нет"
+    if pool and (countries := proxy_geo.summary(storage.home, pool)):
+        lists += f" (по странам: {countries})"
     if spare:
         lists += f" (+{len(spare)} для ограниченных)"
     return f"Сейчас: {lists} · {accounts}."
@@ -76,17 +81,36 @@ async def proxies_busy_tap(callback, pool, manager) -> bool:
     return False
 
 
+def in_use(pool) -> set:
+    """The project's accounts in use outside the job slot (a scrape, 🔑 Код входа, the autoreply poll): their clients
+    must not change under them."""
+    return {path for path in pool.storage.jsessions_paths if pool.busy(path) or pool.scraped(path)}
+
+
+async def rebalance_now(pool) -> str:
+    """The project's accounts onto proxies of their numbers' countries (modules/proxy_geo.rebalance), but the ones
+    in use: after a proxy list, after accounts are added. The report, "" without a proxy list; a failure is told in
+    it, not raised — the accounts were added all the same."""
+    try:
+        return await proxy_geo.rebalance(pool.storage, lambda: in_use(pool))
+    except Exception as err:  # a file not written (set_proxy), …
+        log.exception("rebalance by country")
+        return f"⚠️ Пересадка по странам не удалась: {str(err) or type(err).__name__}"
+
+
 async def rehome_now(message, pool) -> str | None:
     """Move the restricted workers onto their proxies and the others off the pool back into it now
-    (functions.spamblock.rehome), but the ones in use outside the job slot (a scrape, 🔑 Код входа): their
-    clients must not change under them, the next status check offers them. The report, or None once a bad
-    proxy list is told."""
-    busy = {path for path in pool.storage.jsessions_paths if pool.busy(path) or pool.scraped(path)}
+    (functions.spamblock.rehome), but the ones in use (in_use): the next status check offers them; then the pool's
+    accounts onto their countries' proxies (rebalance_now: the ones back took any place free). The report, or None
+    once a bad proxy list is told."""
     try:
-        return rehome_report(rehome(pool.storage, busy=busy))
+        report = rehome_report(rehome(pool.storage, busy=in_use(pool)))
     except ValueError as err:  # a list edited by hand
         await message.answer(f"⚠️ Пересадка невозможна: {err}. Исправьте: {menu_path('proxy')}.")
         return None
+    if geo := await rebalance_now(pool):
+        report += f"\n{geo}"
+    return report
 
 
 @router.callback_query(MenuCB.filter(F.action == MenuAction.PROXY))
@@ -150,11 +174,15 @@ async def proxy_apply(message: Message, state: FSMContext, pool: WorkerPool, man
     tdata_import.save_proxies(raw, projects.proxies_path(pool.storage.home))
 
     await state.set_state(SetProxy.spare)
+    await message.answer("🌍 Узнаю страны прокси и пересаживаю аккаунты по странам…")
+    geo = await rebalance_now(pool)  # before any of them connects: Telegram sees their final IPs only
 
     text = (
         f"✅ Прокси применены, аккаунтов: <b>{summary['accounts']}</b> "
         f"(использовано прокси: {summary['proxies_used']})."
     )
+    if geo:
+        text += f"\n{html.escape(geo)}"
     if summary["restricted"]:
         text += f"\nБессрочно ограниченных на своих прокси: {summary['restricted']}."
     if summary["string_sessions_skipped"]:

@@ -17,6 +17,10 @@ class AccountSettings:
     application: Application
     proxy: Proxy | None
     password: str | None = None
+    # a Unix timestamp: the seller's registration date (modules/account_age.py), if known. Here, not in `account`:
+    # an older bot reads `account` strictly (Account(**…)) but leaves the keys out here unread — a rollback keeps
+    # every worker
+    registered_at: float | None = None
 
     @staticmethod
     def from_dict(session_dict: dict) -> "AccountSettings":
@@ -28,12 +32,14 @@ class AccountSettings:
             application=Application(**session_dict["application"]),
             proxy=Proxy(**proxy) if proxy else None,
             password=session_dict.get("password"),
+            registered_at=session_dict.get("registered_at"),
         )
 
     @staticmethod
-    def from_client(client, me, proxy: Proxy | None, password: str | None, lang_pack: str) -> "AccountSettings":
+    def from_client(client, me, proxy: Proxy | None, password: str | None, lang_pack: str,
+                    registered_at: float | None = None) -> "AccountSettings":
         """The settings of a freshly authorized client: its key, its account and the device
-        and app it presented (a later load must keep presenting them)."""
+        and app it presented (a later load must keep presenting them). `registered_at`: the seller's date."""
         init = client._init_request
         return AccountSettings(
             auth_key=client.session.save(),
@@ -56,6 +62,7 @@ class AccountSettings:
             ),
             proxy=proxy,
             password=password,
+            registered_at=registered_at,
         )
 
     def save(self, path: str):
